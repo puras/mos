@@ -56,19 +56,6 @@ sess := agent.NewSession("demo")
 reply, err := a.Run(ctx, sess, "请计算 1+2")
 ```
 
-完整可运行示例见 [examples/demo](./examples/demo/main.go)（内置 mock Provider，无需 API Key）：
-
-```bash
-go run ./examples/demo
-```
-
-接入真实模型的示例见 [examples/assistant](./examples/assistant/main.go)，模型信息配置在同目录 [config.json](./examples/assistant/config.json)（填入 `api_key` 即可联调，密钥也可用 `OPENAI_API_KEY` 环境变量注入；留空则自动降级 mock 离线演示）：
-
-```bash
-cd examples/assistant
-go run .
-```
-
 ## 开箱即用的智能体（assistant + CLI）
 
 `assistant` 包提供组装好的智能体：多协议 Provider + 8 个内置工具 + 默认安全策略，可直接作为库集成到其他工程：
@@ -176,9 +163,6 @@ mos/
 │   └── cli/              # CLI 交互逻辑（REPL，仅内部使用）
 ├── cmd/
 │   └── assistant/        # 完整智能体 CLI 薄入口
-└── examples/
-    ├── demo/             # 底层 API 完整链路示例
-    └── assistant/        # 基于 assistant 包的真实模型联调示例
 ```
 
 ## 测试
