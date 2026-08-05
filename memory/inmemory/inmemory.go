@@ -5,7 +5,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/puras/mos/llm"
+	"hegq.net/mos/llm"
 )
 
 // Store 是基于内存的 Memory 实现。

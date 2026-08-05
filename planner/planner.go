@@ -5,7 +5,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/puras/mos/llm"
+	"hegq.net/mos/llm"
 )
 
 // Action 是规划器在任务循环中作出的一个决策。

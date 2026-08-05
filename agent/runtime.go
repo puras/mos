@@ -5,17 +5,24 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/puras/mos/llm"
-	"github.com/puras/mos/planner"
-	"github.com/puras/mos/tool"
+	"hegq.net/mos/llm"
+	"hegq.net/mos/planner"
+	"hegq.net/mos/tool"
 )
 
 const defaultMaxIterations = 10
+
+// Policy 是工具调用的安全策略检查点（Harness Engineering）。
+// 在每次工具调用执行前触发，返回错误表示拒绝该次调用。
+type Policy interface {
+	Allow(ctx context.Context, call *llm.ToolCall) error
+}
 
 // Agent 是智能体运行时，驱动 感知-推理-行动 的任务循环。
 type Agent struct {
 	planner       planner.Planner
 	tools         *tool.Registry
+	policy        Policy
 	maxIterations int
 	systemPrompt  string
 	observer      Observer
@@ -52,6 +59,11 @@ func WithMaxIterations(n int) Option {
 	return func(a *Agent) { a.maxIterations = n }
 }
 
+// WithPolicy 设置工具调用安全策略（Harness Engineering）。
+func WithPolicy(p Policy) Option {
+	return func(a *Agent) { a.policy = p }
+}
+
 // WithObserver 注册事件回调，用于观测流式输出与工具调用过程。
 func WithObserver(o Observer) Option {
 	return func(a *Agent) { a.observer = o }
@@ -77,9 +89,15 @@ func (a *Agent) Run(ctx context.Context, sess *Session, input string) (string, e
 	sess.History = append(sess.History, userMsg)
 
 	for i := 0; i < a.maxIterations; i++ {
+		iteration := i + 1
 		action, err := a.planner.NextAction(ctx, history, a.tools.List())
 		if err != nil {
-			return "", fmt.Errorf("agent: plan iteration %d: %w", i, err)
+			return "", fmt.Errorf("agent: plan iteration %d: %w", iteration, err)
+		}
+
+		// 暴露本轮思考（Loop Engineering 观测点）
+		if action.Content != "" {
+			a.notify(Event{Type: EventStep, SessionID: sess.ID, Iteration: iteration, Content: action.Content})
 		}
 
 		if action.ToolCall == nil {
@@ -87,7 +105,7 @@ func (a *Agent) Run(ctx context.Context, sess *Session, input string) (string, e
 			reply := llm.Message{Role: llm.RoleAssistant, Content: action.Content}
 			history = append(history, reply)
 			sess.History = append(sess.History, reply)
-			a.notify(Event{Type: EventDone, SessionID: sess.ID, Content: action.Content})
+			a.notify(Event{Type: EventDone, SessionID: sess.ID, Iteration: iteration, Content: action.Content})
 			return action.Content, nil
 		}
 
@@ -99,10 +117,18 @@ func (a *Agent) Run(ctx context.Context, sess *Session, input string) (string, e
 		}
 		history = append(history, call)
 		sess.History = append(sess.History, call)
-		a.notify(Event{Type: EventToolCall, SessionID: sess.ID, ToolCall: action.ToolCall})
+		a.notify(Event{Type: EventToolCall, SessionID: sess.ID, Iteration: iteration, ToolCall: action.ToolCall})
 
-		// 执行工具并回填结果
-		result, err := a.tools.Call(ctx, action.ToolCall.Name, json.RawMessage(action.ToolCall.Args))
+		// 策略检查（Harness Engineering）后再执行工具
+		var result any
+		if a.policy != nil {
+			if err := a.policy.Allow(ctx, action.ToolCall); err != nil {
+				result = "工具调用被安全策略拒绝: " + err.Error()
+			}
+		}
+		if result == nil {
+			result, err = a.tools.Call(ctx, action.ToolCall.Name, json.RawMessage(action.ToolCall.Args))
+		}
 		resultMsg := formatToolResult(result)
 		if err != nil {
 			resultMsg = "工具执行出错: " + err.Error()
@@ -115,7 +141,7 @@ func (a *Agent) Run(ctx context.Context, sess *Session, input string) (string, e
 		}
 		history = append(history, feedback)
 		sess.History = append(sess.History, feedback)
-		a.notify(Event{Type: EventToolResult, SessionID: sess.ID, ToolCall: action.ToolCall, ToolResult: result})
+		a.notify(Event{Type: EventToolResult, SessionID: sess.ID, Iteration: iteration, ToolCall: action.ToolCall, ToolResult: result})
 	}
 
 	return "", fmt.Errorf("agent: max iterations %d exceeded", a.maxIterations)

@@ -11,9 +11,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/puras/mos/agent"
-	"github.com/puras/mos/llm"
-	"github.com/puras/mos/tool"
+	"hegq.net/mos/agent"
+	"hegq.net/mos/llm"
+	"hegq.net/mos/tool"
 )
 
 // ---- 工具：两数相加 ----

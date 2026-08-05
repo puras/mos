@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/puras/mos/llm"
+	"hegq.net/mos/llm"
 )
 
 func newTestProvider(t *testing.T, handler http.HandlerFunc) (*Provider, *httptest.Server) {

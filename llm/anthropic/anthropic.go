@@ -12,7 +12,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/puras/mos/llm"
+	"hegq.net/mos/llm"
 )
 
 const (

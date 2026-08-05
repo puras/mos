@@ -1,6 +1,6 @@
 package agent
 
-import "github.com/puras/mos/llm"
+import "hegq.net/mos/llm"
 
 // Session 表示一次对话会话，持有会话级的历史消息。
 // 历史仅含用户/助手/工具消息，system 引导由 Agent 在每次执行时注入。

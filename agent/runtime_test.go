@@ -3,10 +3,12 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
-	"github.com/puras/mos/llm"
-	"github.com/puras/mos/tool"
+	"hegq.net/mos/llm"
+	"hegq.net/mos/tool"
 )
 
 // mockProvider 模拟：首轮返回工具调用，收到工具结果后返回最终答案。
@@ -81,12 +83,12 @@ func TestAgentReActLoop(t *testing.T) {
 		t.Fatalf("history[2] = %+v", sess.History[2])
 	}
 
-	// 事件序列：工具调用 → 工具结果 → 完成
+	// 事件序列：思考 → 工具调用 → 工具结果 → 思考 → 完成
 	var gotTypes []EventType
 	for _, ev := range events {
 		gotTypes = append(gotTypes, ev.Type)
 	}
-	want := []EventType{EventToolCall, EventToolResult, EventDone}
+	want := []EventType{EventStep, EventToolCall, EventToolResult, EventStep, EventDone}
 	if len(gotTypes) != len(want) {
 		t.Fatalf("events = %v", gotTypes)
 	}
@@ -94,6 +96,41 @@ func TestAgentReActLoop(t *testing.T) {
 		if gotTypes[i] != want[i] {
 			t.Fatalf("events = %v, want %v", gotTypes, want)
 		}
+	}
+	if events[len(events)-1].Iteration != 2 {
+		t.Fatalf("final iteration = %d, want 2", events[len(events)-1].Iteration)
+	}
+}
+
+// denyPolicy 拒绝所有工具调用。
+type denyPolicy struct{}
+
+func (denyPolicy) Allow(_ context.Context, call *llm.ToolCall) error {
+	return fmt.Errorf("工具 %s 未授权", call.Name)
+}
+
+func TestAgentPolicyDenial(t *testing.T) {
+	reg := tool.NewRegistry()
+	if err := reg.Register(calculator{}); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+	a := New(mockProvider{}, reg, WithPolicy(denyPolicy{}))
+
+	sess := NewSession("s1")
+	reply, err := a.Run(context.Background(), sess, "1+2")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// mock 会将工具（拒绝）结果原样返回，应包含拒绝原因
+	if !strings.Contains(reply, "未授权") {
+		t.Fatalf("reply = %q, want policy denial", reply)
+	}
+	// 工具未实际执行：history[2] 是拒绝反馈
+	if len(sess.History) != 4 {
+		t.Fatalf("history len = %d", len(sess.History))
+	}
+	if !strings.Contains(sess.History[2].Content, "未授权") {
+		t.Fatalf("history[2] = %+v", sess.History[2])
 	}
 }
 

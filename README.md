@@ -12,6 +12,9 @@ MoS 是一个基于 Go 的智能体基础框架（Agent Base），提供统一�
 - **可插拔规划**：默认 ReAct 循环，可通过 `planner.Planner` 接口替换为其他策略
 - **会话记忆**：统一的 `memory.Memory` 接口，内置内存实现；长期向量记忆（sqlite-vec）规划中
 - **事件观测**：`Observer` 回调暴露工具调用与完成事件，便于流式输出与可观测性扩展
+- **Harness Engineering（工具安全防护）**：`agent.Policy` 在每次工具调用执行前拦截检查，内置默认策略可拦截危险 Shell 命令、路径越界与非 http 抓取
+- **Loop Engineering（循环可观测）**：每轮循环暴露思考/工具调用/工具结果/完成事件（含迭代序号），完整还原推理过程
+- **开箱即用的智能体**：`assistant` 包组装好 Provider + 内置工具集 + 安全策略，附带交互式 CLI
 - **零第三方依赖**：仅使用 Go 标准库
 
 ## 快速开始
@@ -59,6 +62,74 @@ reply, err := a.Run(ctx, sess, "请计算 1+2")
 go run ./examples/demo
 ```
 
+## 开箱即用的智能体（assistant + CLI）
+
+`assistant` 包提供组装好的智能体：多协议 Provider + 8 个内置工具 + 默认安全策略，可直接作为库集成到其他工程：
+
+```go
+a, err := assistant.New(assistant.Config{
+	Provider:   "openai",              // openai / anthropic / mock
+	APIKey:     os.Getenv("OPENAI_API_KEY"),
+	Model:      "gpt-4o",
+	WorkDir:    "./workspace",         // 限制文件类工具的活动范围
+	ShellAllowed: []string{"ls", "cat", "pwd"}, // Shell 命令前缀白名单
+})
+// ...
+sess := a.NewSession()
+reply, err := a.Run(ctx, sess, "帮我看看 workspace 里有什么文件")
+```
+
+配置也可从环境变量加载（无 API Key 时自动降级为 mock 离线模式）：
+
+| 环境变量 | 说明 |
+| --- | --- |
+| `MOS_PROVIDER` | openai / anthropic / mock（默认 mock） |
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | 对应协议的密钥 |
+| `MOS_BASE_URL` | 自定义网关地址（兼容 OpenAI 协议） |
+| `MOS_MODEL` | 模型名 |
+| `MOS_SYSTEM_PROMPT` | 系统引导词 |
+| `MOS_MAX_ITERATIONS` | 循环最大迭代次数 |
+| `MOS_SHELL_ALLOW` | Shell 命令白名单，逗号分隔 |
+| `MOS_WORKDIR` | 文件类工具的工作目录 |
+
+内置工具：`calculator`（表达式求值）、`current_time`（当前时间）、`web_fetch`（网页抓取转纯文本）、`shell`（受限命令执行）、`read_file` / `write_file`（文件读写）、`find_files` / `grep`（文件搜索）。
+
+交互式 CLI（同样支持环境变量配置，无 Key 时以 mock 演示完整工具调用循环）：
+
+```bash
+go run ./cmd/assistant
+```
+
+```
+你 > 计算 (1+2)*3
+  ⟳ [第1轮思考] 让我来处理
+  ▶ [第1轮] 调用工具 calculator({"expr":"(1+2)*3"})
+  ◀ [第1轮] 工具结果: 9
+  ▶ [第2轮] 调用工具 current_time({})
+  ⟳ [第3轮思考] 计算完成，结果为 9。...
+智能体 > 计算完成，结果为 9。...
+```
+
+### Harness Engineering：工具安全防护
+
+`agent.Policy` 接口在每次工具调用**执行前**拦截检查，返回错误即拒绝该次调用，并将拒绝原因回填给模型：
+
+```go
+type Policy interface {
+	Allow(ctx context.Context, call *llm.ToolCall) error
+}
+```
+
+默认策略 `assistant.NewDefaultPolicy(shellAllowed []string, workDir string)` 提供三层防护：
+
+- **Shell 危险命令防御**：拦截 `rm -rf`、`mkfs`、`dd if=`、`shutdown`、`sudo`、`kill -9` 及管道交给 shell 执行的命令
+- **命令前缀白名单**：配置 `ShellAllowed` 后仅允许白名单前缀的命令
+- **路径越界防护**：基于 `filepath.Rel` 校验文件/目录操作必须落在 `WorkDir` 内，web_fetch 仅允许 http/https
+
+### Loop Engineering：循环可观测
+
+每轮循环依次发出 `EventStep`（思考）→ `EventToolCall` → `EventToolResult` →（循环）→ `EventDone`（完成），事件携带 `Iteration` 序号，方便流式输出与过程审计。
+
 ## LLM 接入
 
 通过协议注册表创建 Provider，协议适配器均实现统一的 `llm.Provider` 接口：
@@ -85,10 +156,13 @@ mos/
 │   ├── openai/           #   OpenAI 兼容协议适配器
 │   └── anthropic/        #   Anthropic 原生协议适配器
 ├── tool/                 # 工具注册表、JSON Schema 生成、参数解析
+│   └── builtin/          #   内置工具：shell / 文件 / 计算器 / 网页抓取等
 ├── memory/               # 会话记忆抽象
 │   └── inmemory/         #   内存实现
-├── agent/                # 智能体运行时：任务循环 / Session / Observer
+├── agent/                # 智能体运行时：任务循环 / Policy / Session / Observer
 ├── planner/              # 规划策略：Planner 接口 + ReAct 实现
+├── assistant/            # 组装好的智能体：配置 / 默认策略 / 内置工具集
+├── cmd/assistant/        # 交互式 CLI 入口
 └── examples/demo/        # 完整链路示例
 ```
 
@@ -103,6 +177,7 @@ go test ./...
 ## 路线图
 
 - [x] **M1**：Agent 任务循环、多协议 LLM 接入、工具系统、工作记忆、事件观测
+- [x] **M1.5**：组装智能体（assistant 包 + CLI）、Harness Engineering 工具安全防护、Loop Engineering 循环可观测
 - [ ] **M2**：长期记忆（sqlite-vec 向量检索）、RAG、流式输出透传
 - [ ] **M3**：MCP 接入、多智能体编排
 - [ ] **M4**：生产化（插件化、可观测性完善）
