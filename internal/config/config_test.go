@@ -3,17 +3,12 @@ package config
 import "testing"
 
 func TestLoadConfig(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "sk-test")
-	t.Setenv("MOS_PROVIDER", "openai")
 	t.Setenv("MOS_SHELL_ALLOW", "ls, cat")
 	t.Setenv("MOS_MAX_ITERATIONS", "5")
 
 	cfg, err := LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
-	}
-	if cfg.Provider != "openai" || cfg.APIKey != "sk-test" {
-		t.Fatalf("cfg = %+v", cfg)
 	}
 	if len(cfg.ShellAllowed) != 2 || cfg.ShellAllowed[0] != "ls" {
 		t.Fatalf("shell allowed = %v", cfg.ShellAllowed)
@@ -26,14 +21,33 @@ func TestLoadConfig(t *testing.T) {
 	}
 }
 
-func TestLoadConfigFallbackToMock(t *testing.T) {
+func TestLoadModelWithKey(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "sk-test")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("MOS_MODEL", "deepseek-chat")
+	name, provider, err := LoadModel()
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	if name != "openai" {
+		t.Fatalf("name = %s, want openai", name)
+	}
+	if provider == nil {
+		t.Fatal("provider should not be nil")
+	}
+}
+
+func TestLoadModelFallbackToMock(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
-	cfg, err := LoadConfig()
+	name, provider, err := LoadModel()
 	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
+		t.Fatalf("LoadModel: %v", err)
 	}
-	if cfg.Provider != "mock" {
-		t.Fatalf("provider = %s, want mock", cfg.Provider)
+	if name != "mock" {
+		t.Fatalf("name = %s, want mock", name)
+	}
+	if provider == nil {
+		t.Fatal("provider should not be nil")
 	}
 }

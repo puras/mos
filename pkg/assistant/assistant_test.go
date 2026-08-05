@@ -72,7 +72,7 @@ func TestDefaultPolicyWebFetch(t *testing.T) {
 
 // mock 模式下端到端跑通工具调用与多轮历史。
 func TestAssistantMockEndToEnd(t *testing.T) {
-	a, err := New(Config{Provider: "mock"})
+	a, err := New(Mock(), Config{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestAssistantMockEndToEnd(t *testing.T) {
 // mock 模式下策略仍生效：路径越界的文件调用会被拒绝并反馈给模型。
 func TestAssistantMockPolicyApplied(t *testing.T) {
 	workDir := t.TempDir()
-	a, err := New(Config{Provider: "mock", WorkDir: workDir})
+	a, err := New(Mock(), Config{WorkDir: workDir})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

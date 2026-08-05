@@ -6,13 +6,11 @@ import (
 
 	"hegq.net/mos/pkg/agent"
 	"hegq.net/mos/pkg/llm"
-	"hegq.net/mos/pkg/llm/anthropic"
-	"hegq.net/mos/pkg/llm/openai"
 	"hegq.net/mos/pkg/tool"
 	"hegq.net/mos/pkg/tool/builtin"
 )
 
-// Assistant 是组装好的智能体实例：多协议 Provider + 内置工具集 + 安全策略。
+// Assistant 是组装好的智能体实例：模型对象 + 内置工具集 + 安全策略。
 // 外部工程可直接使用 New + Run 集成。
 type Assistant struct {
 	agent  *agent.Agent
@@ -21,13 +19,9 @@ type Assistant struct {
 	policy *DefaultPolicy
 }
 
-// New 根据配置构建智能体。
-func New(cfg Config) (*Assistant, error) {
-	provider, err := buildProvider(cfg)
-	if err != nil {
-		return nil, err
-	}
-
+// New 使用模型对象与运行配置构建智能体。
+// provider 由调用方注入（llm.Provider 模型对象），本函数不关心模型接入配置。
+func New(provider llm.Provider, cfg Config) (*Assistant, error) {
 	reg := tool.NewRegistry()
 	for _, t := range defaultTools() {
 		if err := reg.Register(t); err != nil {
@@ -68,27 +62,9 @@ func (a *Assistant) Run(ctx context.Context, sess *agent.Session, input string) 
 // ToolNames 返回已注册的工具名列表。
 func (a *Assistant) ToolNames() []string { return a.tools.Names() }
 
-// buildProvider 根据配置创建 LLM Provider。
-func buildProvider(cfg Config) (llm.Provider, error) {
-	switch cfg.Provider {
-	case "mock":
-		return mockProvider{}, nil
-	case "openai":
-		return openai.New(llm.Config{
-			"api_key":  cfg.APIKey,
-			"base_url": cfg.BaseURL,
-			"model":    cfg.Model,
-		})
-	case "anthropic":
-		return anthropic.New(llm.Config{
-			"api_key":  cfg.APIKey,
-			"base_url": cfg.BaseURL,
-			"model":    cfg.Model,
-		})
-	default:
-		return nil, fmt.Errorf("assistant: 未知 Provider %q（支持 openai/anthropic/mock）", cfg.Provider)
-	}
-}
+// Mock 返回离线演示用模型对象（按固定链路调用 calculator → current_time → 汇总作答）。
+// 应用层可在无 API Key 时注入该模型对象体验完整工具循环。
+func Mock() llm.Provider { return mockProvider{} }
 
 // defaultTools 返回预置工具集。
 func defaultTools() []tool.Tool {

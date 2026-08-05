@@ -1,23 +1,16 @@
-// Package assistant 提供开箱即用的智能体：预置常用工具、安全策略与多协议 LLM 接入，
+// Package assistant 提供开箱即用的智能体：预置常用工具、安全策略与任务循环，
 // 供上层应用（CLI、服务等）一行代码集成。
 //
-// 本包属框架层能力：只定义组装与运行的 API 契约（Config / New / Run）。
-// 具体配置来源（环境变量、配置文件等）属应用层，由上层自行组装，
-// 可参考 internal/config 的应用层实现。
+// 本包属框架层能力：只定义组装与运行的 API 契约（New / Run / Config）。
+// 模型以对象形式注入（llm.Provider），本包不关心模型接入配置
+// （API Key / 地址 / 模型名如何构建属应用层事务，可参考 internal/config）。
 package assistant
 
 import "hegq.net/mos/pkg/agent"
 
 // Config 是智能体的运行配置（框架层 API 契约）。
+// 注意：模型不在此配置中——通过 New 的 provider 参数注入模型对象。
 type Config struct {
-	// Provider 指定 LLM 协议：openai / anthropic / mock（mock 无需 API Key）。
-	Provider string
-	// APIKey LLM 服务密钥；本地模型可留空。
-	APIKey string
-	// BaseURL 协议服务地址；留空使用协议默认地址。
-	BaseURL string
-	// Model 模型名称；留空使用适配器默认。
-	Model string
 	// SystemPrompt 系统引导词。
 	SystemPrompt string
 	// MaxIterations 任务循环最大迭代次数。

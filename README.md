@@ -58,26 +58,33 @@ reply, err := a.Run(ctx, sess, "请计算 1+2")
 
 ## 开箱即用的智能体（assistant + CLI）
 
-`assistant` 包提供组装好的智能体：多协议 Provider + 8 个内置工具 + 默认安全策略，可直接作为库集成到其他工程：
+`assistant` 包提供组装好的智能体：**模型对象注入** + 8 个内置工具 + 默认安全策略，可直接作为库集成到其他工程。框架只认 `llm.Provider` 模型对象，不关心模型接入配置：
 
 ```go
-a, err := assistant.New(assistant.Config{
-	Provider:   "openai",              // openai / anthropic / mock
-	APIKey:     os.Getenv("OPENAI_API_KEY"),
-	Model:      "gpt-4o",
-	WorkDir:    "./workspace",         // 限制文件类工具的活动范围
-	ShellAllowed: []string{"ls", "cat", "pwd"}, // Shell 命令前缀白名单
+// 1. 构建模型对象（可用 openai/anthropic 适配器，或任何自定义 llm.Provider）
+provider, err := openai.New(llm.Config{
+	"api_key": os.Getenv("OPENAI_API_KEY"),
+	"model":   "gpt-4o",
+})
+if err != nil {
+	// ...
+}
+
+// 2. 注入模型对象 + 运行配置
+a, err := assistant.New(provider, assistant.Config{
+	WorkDir:      "./workspace",                          // 限制文件类工具的活动范围
+	ShellAllowed: []string{"ls", "cat", "pwd"},           // Shell 命令前缀白名单
 })
 // ...
 sess := a.NewSession()
 reply, err := a.Run(ctx, sess, "帮我看看 workspace 里有什么文件")
 ```
 
-配置也可从环境变量加载（无 API Key 时自动降级为 mock 离线模式）：
+运行配置可通过环境变量加载；模型对象从环境变量构建（`internal/config` 的应用层实现，无 API Key 时自动降级为 mock 离线模型对象 `assistant.Mock()`）：
 
 | 环境变量 | 说明 |
 | --- | --- |
-| `MOS_PROVIDER` | openai / anthropic / mock（默认 mock） |
+| `MOS_PROVIDER` | openai / anthropic / mock（默认 openai，无 Key 自动降级 mock） |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | 对应协议的密钥 |
 | `MOS_BASE_URL` | 自定义网关地址（兼容 OpenAI 协议） |
 | `MOS_MODEL` | 模型名 |
@@ -158,9 +165,9 @@ mos/
 │   │   └── inmemory/     #     内存实现
 │   ├── agent/            #   智能体运行时：任务循环 / Policy / Session / Observer
 │   ├── planner/          #   规划策略：Planner 接口 + ReAct 实现
-│   └── assistant/        #   组装好的完整智能体：配置 / 默认策略 / 内置工具集
+│   └── assistant/        #   组装好的完整智能体：模型对象注入 / 默认策略 / 内置工具集
 ├── internal/
-│   ├── config/            # 应用层配置：从环境变量组装 Config
+│   ├── config/            # 应用层：环境变量 → 模型对象 + 运行配置
 │   └── cli/               # 应用层 CLI 交互逻辑（REPL）
 ├── cmd/
 │   └── assistant/         # 完整智能体 CLI 薄入口
@@ -181,12 +188,12 @@ mos/
 | 归属 | 包 | 理由 |
 | --- | --- | --- |
 | `pkg/` | `llm` / `tool` / `memory` / `agent` / `planner` | 框架层通用基础能力 |
-| `pkg/` | `assistant` | 框架层组装智能体（`Config` 是 API 契约） |
+| `pkg/` | `assistant` | 框架层组装智能体（模型对象注入，`Config` 仅含运行配置） |
 | `pkg/` | `llm/openai` `llm/anthropic` `tool/builtin` | 框架层可选实现，外部按需选用 |
-| `internal/` | `config` | 应用层：绑定 `MOS_*` 环境变量约定 |
+| `internal/` | `config` | 应用层：从 `MOS_*` 环境变量构建模型对象与运行配置 |
 | `internal/` | `cli` | 应用层：REPL 绑定终端交互 |
 
-注意 `assistant.Config` 结构本身是框架层 API 契约（留在 `pkg/assistant`），而"如何从环境变量/配置文件构建它"属于应用层约定（放 `internal/config`）。外部工程可按自己的配置体系组装 `Config`。
+注意：框架层 `assistant.Config` 只含运行配置（系统引导、迭代次数、工具安全），**模型以 `llm.Provider` 对象形式注入**；"如何从环境变量/配置文件构建模型对象"属于应用层约定（放 `internal/config`）。外部工程可按自己的配置体系构建模型对象并注入。
 
 ## 测试
 
