@@ -7,21 +7,21 @@ MoS 是一个基于 Go 的智能体基础框架（Agent Base），提供统一�
 
 ## 特性
 
-- **多协议 LLM 接入**：统一 `Provider` 抽象 + 协议注册表，内置 OpenAI 兼容（DeepSeek / 通义千问 / GLM / Ollama 等）与 Anthropic Claude 原生协议适配器，支持函数调用与流式输出
+- **多协议 LLM 接入**：统一 `Model` 抽象（模型对象）+ 协议注册表，内置 OpenAI 兼容（DeepSeek / 通义千问 / GLM / Ollama 等）与 Anthropic Claude 原生协议适配器，支持函数调用与流式输出
 - **声明式工具系统**：结构体 tag 自动生成 JSON Schema，模型函数调用参数自动校验与解析
 - **可插拔规划**：默认 ReAct 循环，可通过 `planner.Planner` 接口替换为其他策略
 - **会话记忆**：统一的 `memory.Memory` 接口，内置内存实现；长期向量记忆（sqlite-vec）规划中
 - **事件观测**：`Observer` 回调暴露工具调用与完成事件，便于流式输出与可观测性扩展
 - **Harness Engineering（工具安全防护）**：`agent.Policy` 在每次工具调用执行前拦截检查，内置默认策略可拦截危险 Shell 命令、路径越界与非 http 抓取
 - **Loop Engineering（循环可观测）**：每轮循环暴露思考/工具调用/工具结果/完成事件（含迭代序号），完整还原推理过程
-- **开箱即用的智能体**：`assistant` 包组装好 Provider + 内置工具集 + 安全策略，附带交互式 CLI
+- **开箱即用的智能体**：`assistant` 包组装好模型对象 + 内置工具集 + 安全策略，附带交互式 CLI
 - **零第三方依赖**：仅使用 Go 标准库
 
 ## 快速开始
 
 ```go
-// 0. 创建 LLM Provider（实现 llm.Provider 即可，见下方"LLM 接入"）
-provider := ... 
+// 0. 创建模型对象（实现 llm.Model 即可，见下方"LLM 接入"）
+model := ... 
 
 // 1. 注册工具：结构体定义参数，tag 自动生成 JSON Schema
 type calcParams struct {
@@ -46,7 +46,7 @@ reg := tool.NewRegistry()
 reg.Register(calculator{})
 
 // 2. 创建 Agent（ReAct 循环 + 事件观测）
-a := agent.New(provider, reg,
+a := agent.New(model, reg,
 	agent.WithSystemPrompt("你是助手"),
 	agent.WithObserver(func(ev agent.Event) { /* 观测工具调用/完成 */ }),
 )
@@ -58,11 +58,11 @@ reply, err := a.Run(ctx, sess, "请计算 1+2")
 
 ## 开箱即用的智能体（assistant + CLI）
 
-`assistant` 包提供组装好的智能体：**模型对象注入** + 8 个内置工具 + 默认安全策略，可直接作为库集成到其他工程。框架只认 `llm.Provider` 模型对象，不关心模型接入配置：
+`assistant` 包提供组装好的智能体：**模型对象注入** + 8 个内置工具 + 默认安全策略，可直接作为库集成到其他工程。框架只认 `llm.Model` 模型对象，不关心模型接入配置：
 
 ```go
-// 1. 构建模型对象（可用 openai/anthropic 适配器，或任何自定义 llm.Provider）
-provider, err := openai.New(llm.Config{
+// 1. 构建模型对象（可用 openai/anthropic 适配器，或任何自定义 llm.Model）
+model, err := openai.New(llm.Config{
 	"api_key": os.Getenv("OPENAI_API_KEY"),
 	"model":   "gpt-4o",
 })
@@ -71,7 +71,7 @@ if err != nil {
 }
 
 // 2. 注入模型对象 + 运行配置
-a, err := assistant.New(provider, assistant.Config{
+a, err := assistant.New(model, assistant.Config{
 	WorkDir:      "./workspace",                          // 限制文件类工具的活动范围
 	ShellAllowed: []string{"ls", "cat", "pwd"},           // Shell 命令前缀白名单
 })
@@ -133,14 +133,14 @@ type Policy interface {
 
 ## LLM 接入
 
-通过协议注册表创建 Provider，协议适配器均实现统一的 `llm.Provider` 接口：
+通过协议注册表创建模型对象，协议适配器均实现统一的 `llm.Model` 接口：
 
 ```go
 reg := llm.NewRegistry()
 reg.Register("openai", openai.New)      // OpenAI 兼容协议
 reg.Register("anthropic", anthropic.New) // Anthropic 原生协议
 
-provider, err := reg.Create("openai", llm.Config{
+model, err := reg.Create("openai", llm.Config{
 	"api_key": os.Getenv("OPENAI_API_KEY"),
 	"base_url": "https://api.deepseek.com/v1", // 可选，默认 OpenAI 官方地址
 	"model":   "deepseek-chat",
@@ -156,7 +156,7 @@ provider, err := reg.Create("openai", llm.Config{
 ```
 mos/
 ├── pkg/                  # 基础库（对外 API，不依赖 internal）
-│   ├── llm/              #   Provider 抽象 + 协议注册表
+│   ├── llm/              #   Model 抽象（模型对象）+ 协议注册表
 │   │   ├── openai/       #     OpenAI 兼容协议适配器
 │   │   └── anthropic/    #     Anthropic 原生协议适配器
 │   ├── tool/             #   工具注册表、JSON Schema 生成、参数解析
@@ -193,7 +193,7 @@ mos/
 | `internal/` | `config` | 应用层：从 `MOS_*` 环境变量构建模型对象与运行配置 |
 | `internal/` | `cli` | 应用层：REPL 绑定终端交互 |
 
-注意：框架层 `assistant.Config` 只含运行配置（系统引导、迭代次数、工具安全），**模型以 `llm.Provider` 对象形式注入**；"如何从环境变量/配置文件构建模型对象"属于应用层约定（放 `internal/config`）。外部工程可按自己的配置体系构建模型对象并注入。
+注意：框架层 `assistant.Config` 只含运行配置（系统引导、迭代次数、工具安全），**模型以 `llm.Model` 对象形式注入**；"如何从环境变量/配置文件构建模型对象"属于应用层约定（放 `internal/config`）。外部工程可按自己的配置体系构建模型对象并注入。
 
 ## 测试
 

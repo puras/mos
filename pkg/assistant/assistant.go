@@ -20,8 +20,8 @@ type Assistant struct {
 }
 
 // New 使用模型对象与运行配置构建智能体。
-// provider 由调用方注入（llm.Provider 模型对象），本函数不关心模型接入配置。
-func New(provider llm.Provider, cfg Config) (*Assistant, error) {
+// model 由调用方注入（llm.Model 模型对象），本函数不关心模型接入配置。
+func New(model llm.Model, cfg Config) (*Assistant, error) {
 	reg := tool.NewRegistry()
 	for _, t := range defaultTools() {
 		if err := reg.Register(t); err != nil {
@@ -38,7 +38,7 @@ func New(provider llm.Provider, cfg Config) (*Assistant, error) {
 	if cfg.MaxIterations > 0 {
 		opts = append(opts, agent.WithMaxIterations(cfg.MaxIterations))
 	}
-	ag := agent.New(provider, reg, opts...)
+	ag := agent.New(model, reg, opts...)
 	return &Assistant{agent: ag, config: cfg, tools: reg, policy: policy}, nil
 }
 
@@ -64,7 +64,7 @@ func (a *Assistant) ToolNames() []string { return a.tools.Names() }
 
 // Mock 返回离线演示用模型对象（按固定链路调用 calculator → current_time → 汇总作答）。
 // 应用层可在无 API Key 时注入该模型对象体验完整工具循环。
-func Mock() llm.Provider { return mockProvider{} }
+func Mock() llm.Model { return mockModel{} }
 
 // defaultTools 返回预置工具集。
 func defaultTools() []tool.Tool {
@@ -80,15 +80,15 @@ func defaultTools() []tool.Tool {
 	}
 }
 
-// ---- mock Provider：离线演示用 ----
+// ---- mock Model：离线演示用 ----
 
-type mockProvider struct{}
+type mockModel struct{}
 
-func (mockProvider) Capabilities() llm.Capability {
+func (mockModel) Capabilities() llm.Capability {
 	return llm.CapFunctionCalling | llm.CapStreaming
 }
 
-func (mockProvider) Chat(_ context.Context, req *llm.Request) (*llm.Response, error) {
+func (mockModel) Chat(_ context.Context, req *llm.Request) (*llm.Response, error) {
 	// 依据历史中已完成的工具调用轮次，依次演示 calculator → current_time → 最终答复
 	var toolRounds int
 	for _, m := range req.Messages {
@@ -122,6 +122,6 @@ func (mockProvider) Chat(_ context.Context, req *llm.Request) (*llm.Response, er
 	}}, nil
 }
 
-func (mockProvider) ChatStream(context.Context, *llm.Request, func(llm.StreamChunk) error) (*llm.Response, error) {
+func (mockModel) ChatStream(context.Context, *llm.Request, func(llm.StreamChunk) error) (*llm.Response, error) {
 	return nil, llm.ErrUnsupported
 }

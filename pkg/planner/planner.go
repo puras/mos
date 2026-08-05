@@ -25,13 +25,13 @@ type Planner interface {
 // ReAct 是默认的 ReAct（Reason + Act）策略：
 // 调用模型获取回复，若模型请求调用工具则返回 ToolCall，否则返回最终作答。
 type ReAct struct {
-	provider    llm.Provider
+	model       llm.Model
 	instruction string // 可选的思考引导语，注入为 system 消息
 }
 
 // NewReAct 创建 ReAct 规划器。
-func NewReAct(provider llm.Provider, opts ...ReActOption) *ReAct {
-	p := &ReAct{provider: provider}
+func NewReAct(model llm.Model, opts ...ReActOption) *ReAct {
+	p := &ReAct{model: model}
 	for _, opt := range opts {
 		opt(p)
 	}
@@ -55,7 +55,7 @@ func (p *ReAct) NextAction(ctx context.Context, history []llm.Message, tools []l
 		req.Messages = append(msgs, history...)
 	}
 
-	resp, err := p.provider.Chat(ctx, req)
+	resp, err := p.model.Chat(ctx, req)
 	if err != nil {
 		return Action{}, fmt.Errorf("planner: chat: %w", err)
 	}

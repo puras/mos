@@ -1,4 +1,4 @@
-// Package openai 提供 OpenAI 兼容协议的 Provider 适配器。
+// Package openai 提供 OpenAI 兼容协议的 Model 适配器。
 // 该协议被 DeepSeek、通义千问、GLM、Ollama 等主流服务广泛支持。
 package openai
 
@@ -18,17 +18,17 @@ import (
 
 const defaultBaseURL = "https://api.openai.com/v1"
 
-// Provider 是 OpenAI 兼容协议的实现。
-type Provider struct {
+// Model 是 OpenAI 兼容协议的实现。
+type Model struct {
 	apiKey  string
 	baseURL string
 	model   string
 	client  *http.Client
 }
 
-// New 根据配置创建 Provider，支持键：api_key / base_url / model / http_timeout。
-func New(cfg llm.Config) (llm.Provider, error) {
-	p := &Provider{
+// New 根据配置创建 Model，支持键：api_key / base_url / model / http_timeout。
+func New(cfg llm.Config) (llm.Model, error) {
+	p := &Model{
 		apiKey:  cfg["api_key"],
 		baseURL: strings.TrimRight(cfg["base_url"], "/"),
 		model:   cfg["model"],
@@ -43,22 +43,22 @@ func New(cfg llm.Config) (llm.Provider, error) {
 	return p, nil
 }
 
-// Capabilities 实现 llm.Provider。
-func (p *Provider) Capabilities() llm.Capability {
+// Capabilities 实现 llm.Model。
+func (p *Model) Capabilities() llm.Capability {
 	return llm.CapFunctionCalling | llm.CapStreaming
 }
 
-// Chat 实现 llm.Provider。
-func (p *Provider) Chat(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+// Chat 实现 llm.Model。
+func (p *Model) Chat(ctx context.Context, req *llm.Request) (*llm.Response, error) {
 	return p.doChat(ctx, req, false, nil)
 }
 
-// ChatStream 实现 llm.Provider。
-func (p *Provider) ChatStream(ctx context.Context, req *llm.Request, emit func(llm.StreamChunk) error) (*llm.Response, error) {
+// ChatStream 实现 llm.Model。
+func (p *Model) ChatStream(ctx context.Context, req *llm.Request, emit func(llm.StreamChunk) error) (*llm.Response, error) {
 	return p.doChat(ctx, req, true, emit)
 }
 
-func (p *Provider) doChat(ctx context.Context, req *llm.Request, stream bool, emit func(llm.StreamChunk) error) (*llm.Response, error) {
+func (p *Model) doChat(ctx context.Context, req *llm.Request, stream bool, emit func(llm.StreamChunk) error) (*llm.Response, error) {
 	body, err := json.Marshal(p.buildRequest(req, stream))
 	if err != nil {
 		return nil, fmt.Errorf("openai: marshal request: %w", err)
@@ -89,7 +89,7 @@ func (p *Provider) doChat(ctx context.Context, req *llm.Request, stream bool, em
 	return p.handleResponse(resp.Body)
 }
 
-func (p *Provider) buildRequest(req *llm.Request, stream bool) *chatRequest {
+func (p *Model) buildRequest(req *llm.Request, stream bool) *chatRequest {
 	cr := &chatRequest{
 		Model:       p.model,
 		Messages:    make([]chatMessage, 0, len(req.Messages)),
@@ -127,7 +127,7 @@ func (p *Provider) buildRequest(req *llm.Request, stream bool) *chatRequest {
 	return cr
 }
 
-func (p *Provider) handleResponse(r io.Reader) (*llm.Response, error) {
+func (p *Model) handleResponse(r io.Reader) (*llm.Response, error) {
 	var raw chatResponse
 	if err := json.NewDecoder(r).Decode(&raw); err != nil {
 		return nil, fmt.Errorf("openai: decode response: %w", err)
@@ -149,7 +149,7 @@ func (p *Provider) handleResponse(r io.Reader) (*llm.Response, error) {
 }
 
 // handleStream 逐行解析 SSE 数据，聚合内容与工具调用增量。
-func (p *Provider) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm.Response, error) {
+func (p *Model) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm.Response, error) {
 	acc := newStreamAccumulator()
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)

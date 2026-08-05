@@ -82,22 +82,22 @@ type StreamChunk struct {
 	FinishReason string
 }
 
-// Provider 是统一的 LLM 协议抽象。
-type Provider interface {
+// Model 是统一的 LLM 模型抽象（模型对象）。
+type Model interface {
 	// Chat 发起一次非流式对话。
 	Chat(ctx context.Context, req *Request) (*Response, error)
 	// ChatStream 发起流式对话，增量块通过 emit 推送；emit 返回 error 可中断输出。
 	// 返回值为聚合后的完整响应。
 	ChatStream(ctx context.Context, req *Request, emit func(StreamChunk) error) (*Response, error)
-	// Capabilities 返回协议支持的能力位。
+	// Capabilities 返回模型支持的能力位。
 	Capabilities() Capability
 }
 
-// Config 是创建 Provider 的通用配置，键名约定：api_key / base_url / model / version 等。
+// Config 是创建 Model 的通用配置，键名约定：api_key / base_url / model / version 等。
 type Config map[string]string
 
-// Factory 根据配置创建 Provider。
-type Factory func(cfg Config) (Provider, error)
+// Factory 根据配置创建 Model。
+type Factory func(cfg Config) (Model, error)
 
 // Registry 管理协议适配器的注册与查找。
 type Registry struct {
@@ -117,8 +117,8 @@ func (r *Registry) Register(name string, f Factory) {
 	r.factories[name] = f
 }
 
-// Create 按名称创建 Provider。
-func (r *Registry) Create(name string, cfg Config) (Provider, error) {
+// Create 按名称创建 Model。
+func (r *Registry) Create(name string, cfg Config) (Model, error) {
 	r.mu.RLock()
 	f, ok := r.factories[name]
 	r.mu.RUnlock()

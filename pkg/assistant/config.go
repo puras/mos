@@ -2,14 +2,14 @@
 // 供上层应用（CLI、服务等）一行代码集成。
 //
 // 本包属框架层能力：只定义组装与运行的 API 契约（New / Run / Config）。
-// 模型以对象形式注入（llm.Provider），本包不关心模型接入配置
+// 模型以对象形式注入（llm.Model），本包不关心模型接入配置
 // （API Key / 地址 / 模型名如何构建属应用层事务，可参考 internal/config）。
 package assistant
 
 import "hegq.net/mos/pkg/agent"
 
 // Config 是智能体的运行配置（框架层 API 契约）。
-// 注意：模型不在此配置中——通过 New 的 provider 参数注入模型对象。
+// 注意：模型不在此配置中——通过 New 的 model 参数注入模型对象。
 type Config struct {
 	// SystemPrompt 系统引导词。
 	SystemPrompt string

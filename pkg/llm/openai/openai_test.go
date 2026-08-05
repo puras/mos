@@ -11,7 +11,7 @@ import (
 	"hegq.net/mos/pkg/llm"
 )
 
-func newTestProvider(t *testing.T, handler http.HandlerFunc) (*Provider, *httptest.Server) {
+func newTestModel(t *testing.T, handler http.HandlerFunc) (*Model, *httptest.Server) {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	p, err := New(llm.Config{
@@ -22,12 +22,12 @@ func newTestProvider(t *testing.T, handler http.HandlerFunc) (*Provider, *httpte
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	return p.(*Provider), srv
+	return p.(*Model), srv
 }
 
 func TestChatWithToolCall(t *testing.T) {
 	var gotAuth, gotBody string
-	p, srv := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		b, _ := io.ReadAll(r.Body)
 		gotBody = string(b)
@@ -75,7 +75,7 @@ func TestChatStream(t *testing.T) {
 		`data: [DONE]`,
 	}, "\n\n") + "\n\n"
 
-	p, srv := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		io.WriteString(w, sse)
 	})
@@ -110,7 +110,7 @@ func TestChatStreamToolCallAggregation(t *testing.T) {
 		`data: [DONE]`,
 	}, "\n\n") + "\n\n"
 
-	p, srv := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		io.WriteString(w, sse)
 	})

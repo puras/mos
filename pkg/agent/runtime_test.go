@@ -11,11 +11,11 @@ import (
 	"hegq.net/mos/pkg/tool"
 )
 
-// mockProvider 模拟：首轮返回工具调用，收到工具结果后返回最终答案。
-type mockProvider struct{}
+// mockModel 模拟：首轮返回工具调用，收到工具结果后返回最终答案。
+type mockModel struct{}
 
-func (mockProvider) Capabilities() llm.Capability { return llm.CapFunctionCalling }
-func (mockProvider) Chat(_ context.Context, req *llm.Request) (*llm.Response, error) {
+func (mockModel) Capabilities() llm.Capability { return llm.CapFunctionCalling }
+func (mockModel) Chat(_ context.Context, req *llm.Request) (*llm.Response, error) {
 	last := req.Messages[len(req.Messages)-1]
 	if last.Role == llm.RoleTool {
 		return &llm.Response{Message: llm.Message{
@@ -29,7 +29,7 @@ func (mockProvider) Chat(_ context.Context, req *llm.Request) (*llm.Response, er
 		ToolCalls: []llm.ToolCall{{ID: "c1", Name: "calculator", Args: `{"a":1,"b":2}`}},
 	}}, nil
 }
-func (mockProvider) ChatStream(context.Context, *llm.Request, func(llm.StreamChunk) error) (*llm.Response, error) {
+func (mockModel) ChatStream(context.Context, *llm.Request, func(llm.StreamChunk) error) (*llm.Response, error) {
 	return nil, llm.ErrUnsupported
 }
 
@@ -58,7 +58,7 @@ func TestAgentReActLoop(t *testing.T) {
 	}
 
 	var events []Event
-	a := New(mockProvider{}, reg,
+	a := New(mockModel{}, reg,
 		WithObserver(func(ev Event) { events = append(events, ev) }),
 		WithSystemPrompt("你是助手"),
 	)
@@ -114,7 +114,7 @@ func TestAgentPolicyDenial(t *testing.T) {
 	if err := reg.Register(calculator{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
-	a := New(mockProvider{}, reg, WithPolicy(denyPolicy{}))
+	a := New(mockModel{}, reg, WithPolicy(denyPolicy{}))
 
 	sess := NewSession("s1")
 	reply, err := a.Run(context.Background(), sess, "1+2")
@@ -140,7 +140,7 @@ func TestAgentMultiTurn(t *testing.T) {
 	if err := reg.Register(calculator{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
-	a := New(mockProvider{}, reg, WithSystemPrompt("你是助手"))
+	a := New(mockModel{}, reg, WithSystemPrompt("你是助手"))
 	sess := NewSession("s1")
 
 	if _, err := a.Run(context.Background(), sess, "第一轮"); err != nil {

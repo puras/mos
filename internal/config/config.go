@@ -16,7 +16,7 @@ import (
 	"hegq.net/mos/pkg/llm/openai"
 )
 
-// LoadModel 从环境变量构建模型对象（llm.Provider）：
+// LoadModel 从环境变量构建模型对象（llm.Model）：
 //
 //	MOS_PROVIDER         openai | anthropic | mock（默认 openai，无 API Key 时自动降级 mock）
 //	OPENAI_API_KEY       OpenAI 兼容服务密钥
@@ -25,7 +25,7 @@ import (
 //	MOS_MODEL            模型名称
 //
 // 返回协议名称与模型对象；调用方只需持有模型对象，无需关心接入细节。
-func LoadModel() (string, llm.Provider, error) {
+func LoadModel() (string, llm.Model, error) {
 	name := getenv("MOS_PROVIDER", "openai")
 	apiKey := firstEnv("OPENAI_API_KEY", "ANTHROPIC_API_KEY")
 	// 无 API Key 时自动降级为 mock，保证应用可离线体验

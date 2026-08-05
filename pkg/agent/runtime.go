@@ -32,9 +32,9 @@ type Agent struct {
 type Option func(*Agent)
 
 // New 创建 Agent。默认使用 ReAct 规划器，可经 WithPlanner 替换。
-func New(provider llm.Provider, tools *tool.Registry, opts ...Option) *Agent {
+func New(model llm.Model, tools *tool.Registry, opts ...Option) *Agent {
 	a := &Agent{
-		planner:       planner.NewReAct(provider),
+		planner:       planner.NewReAct(model),
 		tools:         tools,
 		maxIterations: defaultMaxIterations,
 	}

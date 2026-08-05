@@ -25,29 +25,29 @@ func TestLoadModelWithKey(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "sk-test")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("MOS_MODEL", "deepseek-chat")
-	name, provider, err := LoadModel()
+	name, model, err := LoadModel()
 	if err != nil {
 		t.Fatalf("LoadModel: %v", err)
 	}
 	if name != "openai" {
 		t.Fatalf("name = %s, want openai", name)
 	}
-	if provider == nil {
-		t.Fatal("provider should not be nil")
+	if model == nil {
+		t.Fatal("model should not be nil")
 	}
 }
 
 func TestLoadModelFallbackToMock(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
-	name, provider, err := LoadModel()
+	name, model, err := LoadModel()
 	if err != nil {
 		t.Fatalf("LoadModel: %v", err)
 	}
 	if name != "mock" {
 		t.Fatalf("name = %s, want mock", name)
 	}
-	if provider == nil {
-		t.Fatal("provider should not be nil")
+	if model == nil {
+		t.Fatal("model should not be nil")
 	}
 }

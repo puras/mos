@@ -16,7 +16,7 @@ import (
 
 // Run 启动完整智能体 CLI：加载配置 → 组装智能体 → 交互式问答。
 func Run() {
-	providerName, provider, err := config.LoadModel()
+	modelName, model, err := config.LoadModel()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "模型加载失败:", err)
 		os.Exit(1)
@@ -28,7 +28,7 @@ func Run() {
 	}
 	cfg.Observer = observer // 挂载任务循环观测（思考/工具调用过程）
 
-	a, err := assistant.New(provider, *cfg)
+	a, err := assistant.New(model, *cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "初始化失败:", err)
 		os.Exit(1)
@@ -37,7 +37,7 @@ func Run() {
 	fmt.Println("======================================")
 	fmt.Println(" MoS Assistant — 智能体 CLI")
 	fmt.Println("======================================")
-	fmt.Printf(" Provider : %s\n", providerName)
+	fmt.Printf(" Protocol : %s\n", modelName)
 	if m := os.Getenv("MOS_MODEL"); m != "" {
 		fmt.Printf(" Model    : %s\n", m)
 	}
