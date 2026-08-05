@@ -11,9 +11,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"hegq.net/mos/agent"
-	"hegq.net/mos/llm"
-	"hegq.net/mos/tool"
+	"hegq.net/mos/pkg/agent"
+	"hegq.net/mos/pkg/llm"
+	"hegq.net/mos/pkg/tool"
 )
 
 // ---- 工具：两数相加 ----

@@ -1,0 +1,10 @@
+{
+  "provider": "openai",
+  "base_url": "https://go.hegq.net/v1",
+  "model": "deepseek-v4-flash",
+  "api_key": "sk-a_-Pz-VIjvdLPUYfs4ENAMZOJtlGSisgJ8-z1nLo7zQGbju9b04Vaqpxa-JP0FLfLJNd8k51KGCjnJhP5ILREQ",
+  "system_prompt": "你是一个乐于助人的智能助手，可以调用工具完成任务。",
+  "max_iterations": 10,
+  "shell_allowed": ["ls", "cat", "pwd"],
+  "workdir": "./workspace"
+}

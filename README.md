@@ -62,6 +62,13 @@ reply, err := a.Run(ctx, sess, "请计算 1+2")
 go run ./examples/demo
 ```
 
+接入真实模型的示例见 [examples/assistant](./examples/assistant/main.go)，模型信息配置在同目录 [config.json](./examples/assistant/config.json)（填入 `api_key` 即可联调，密钥也可用 `OPENAI_API_KEY` 环境变量注入；留空则自动降级 mock 离线演示）：
+
+```bash
+cd examples/assistant
+go run .
+```
+
 ## 开箱即用的智能体（assistant + CLI）
 
 `assistant` 包提供组装好的智能体：多协议 Provider + 8 个内置工具 + 默认安全策略，可直接作为库集成到其他工程：
@@ -150,20 +157,28 @@ provider, err := reg.Create("openai", llm.Config{
 
 ## 目录结构
 
+基础库 + 完整智能体布局：**`pkg/` 对外公开 API，`internal/` 仅供仓库内部使用，依赖方向单向 `internal → pkg`**，外部工程只 import `pkg/` 即可集成。
+
 ```
 mos/
-├── llm/                  # Provider 抽象 + 协议注册表
-│   ├── openai/           #   OpenAI 兼容协议适配器
-│   └── anthropic/        #   Anthropic 原生协议适配器
-├── tool/                 # 工具注册表、JSON Schema 生成、参数解析
-│   └── builtin/          #   内置工具：shell / 文件 / 计算器 / 网页抓取等
-├── memory/               # 会话记忆抽象
-│   └── inmemory/         #   内存实现
-├── agent/                # 智能体运行时：任务循环 / Policy / Session / Observer
-├── planner/              # 规划策略：Planner 接口 + ReAct 实现
-├── assistant/            # 组装好的智能体：配置 / 默认策略 / 内置工具集
-├── cmd/assistant/        # 交互式 CLI 入口
-└── examples/demo/        # 完整链路示例
+├── pkg/                  # 基础库（对外 API，不依赖 internal）
+│   ├── llm/              #   Provider 抽象 + 协议注册表
+│   │   ├── openai/       #     OpenAI 兼容协议适配器
+│   │   └── anthropic/    #     Anthropic 原生协议适配器
+│   ├── tool/             #   工具注册表、JSON Schema 生成、参数解析
+│   │   └── builtin/      #     内置工具：shell / 文件 / 计算器 / 网页抓取等
+│   ├── memory/           #   会话记忆抽象
+│   │   └── inmemory/     #     内存实现
+│   ├── agent/            #   智能体运行时：任务循环 / Policy / Session / Observer
+│   ├── planner/          #   规划策略：Planner 接口 + ReAct 实现
+│   └── assistant/        #   组装好的完整智能体：配置 / 默认策略 / 内置工具集
+├── internal/
+│   └── cli/              # CLI 交互逻辑（REPL，仅内部使用）
+├── cmd/
+│   └── assistant/        # 完整智能体 CLI 薄入口
+└── examples/
+    ├── demo/             # 底层 API 完整链路示例
+    └── assistant/        # 基于 assistant 包的真实模型联调示例
 ```
 
 ## 测试
