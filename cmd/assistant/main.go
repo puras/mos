@@ -7,6 +7,9 @@
 //	export MOS_MODEL=deepseek-chat # 可选
 //	go run ./cmd/assistant
 //
+// 配置也可写入根目录 .env（键名与环境变量一致，路径可用 MOS_CONFIG 覆盖）；
+// 环境变量优先于 .env 文件。
+//
 // 交互命令：/exit 退出，/reset 新开会话，/tools 查看工具，/help 帮助。
 //
 // 业务逻辑位于 internal/cli（本仓库内部实现，依赖 pkg 基础库）。
