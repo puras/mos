@@ -9,13 +9,14 @@ import (
 	"os"
 	"strings"
 
+	"hegq.net/mos/internal/config"
 	"hegq.net/mos/pkg/agent"
 	"hegq.net/mos/pkg/assistant"
 )
 
 // Run 启动完整智能体 CLI：加载配置 → 组装智能体 → 交互式问答。
 func Run() {
-	cfg, err := assistant.LoadConfig()
+	cfg, err := config.LoadConfig()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "配置错误:", err)
 		os.Exit(1)

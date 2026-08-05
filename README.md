@@ -160,10 +160,33 @@ mos/
 │   ├── planner/          #   规划策略：Planner 接口 + ReAct 实现
 │   └── assistant/        #   组装好的完整智能体：配置 / 默认策略 / 内置工具集
 ├── internal/
-│   └── cli/              # CLI 交互逻辑（REPL，仅内部使用）
+│   ├── config/            # 应用层配置：从环境变量组装 Config
+│   └── cli/               # 应用层 CLI 交互逻辑（REPL）
 ├── cmd/
-│   └── assistant/        # 完整智能体 CLI 薄入口
+│   └── assistant/         # 完整智能体 CLI 薄入口
 ```
+
+### pkg 与 internal 的划分准则
+
+**`pkg/` 放框架层面的能力，`internal/` 放应用层面的能力。**
+
+`internal/` 是 **Go 语言级约束**：其下包只能被父目录以内的代码 import，外部工程引用会直接编译报错（`use of internal package not allowed`）。判断归属时先问：
+
+1. **这是框架层面的能力，还是应用层面的能力？** 框架层（通用、可复用、有 API 契约）→ `pkg/`；应用层（绑定具体产品的入口、配置约定、交互形态）→ `internal/`
+2. **外部工程集成 MoS 时需要直接 import 它吗？** 是 → `pkg/`；仅本仓库自己用 → `internal/`
+3. **它是稳定、带契约的公开 API，还是可随意重构的实现细节？** 前者 → `pkg/`；后者 → `internal/`
+
+当前划分示例：
+
+| 归属 | 包 | 理由 |
+| --- | --- | --- |
+| `pkg/` | `llm` / `tool` / `memory` / `agent` / `planner` | 框架层通用基础能力 |
+| `pkg/` | `assistant` | 框架层组装智能体（`Config` 是 API 契约） |
+| `pkg/` | `llm/openai` `llm/anthropic` `tool/builtin` | 框架层可选实现，外部按需选用 |
+| `internal/` | `config` | 应用层：绑定 `MOS_*` 环境变量约定 |
+| `internal/` | `cli` | 应用层：REPL 绑定终端交互 |
+
+注意 `assistant.Config` 结构本身是框架层 API 契约（留在 `pkg/assistant`），而"如何从环境变量/配置文件构建它"属于应用层约定（放 `internal/config`）。外部工程可按自己的配置体系组装 `Config`。
 
 ## 测试
 
