@@ -1,9 +1,12 @@
 package config
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"hegq.net/mos/pkg/llm"
 )
 
 // writeEnv 写入临时 .env 文件，并将 MOS_CONFIG 指向它。
@@ -37,15 +40,15 @@ func TestLoadEnvMissing(t *testing.T) {
 
 func TestLoadEnvFile(t *testing.T) {
 	clearEnv(t, "MOS_PROVIDER", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "MOS_BASE_URL",
-		"MOS_MODEL", "MOS_SYSTEM_PROMPT", "MOS_MAX_ITERATIONS", "MOS_SHELL_ALLOW", "MOS_WORKDIR")
+		"MOS_MODEL", "MOS_SYSTEM_PROMPT", "MOS_MAX_TURNS", "MOS_SHELL_ALLOW", "MOS_WORKDIR")
 	writeEnv(t, `# 注释行
 
-MOS_PROVIDER=openai
-OPENAI_API_KEY=sk-test
+MOS_PROVIDER=openai # 行内注释
+OPENAI_API_KEY=sk-test # 行内注释
 MOS_BASE_URL=https://api.example.com/v1
-MOS_MODEL=deepseek-chat
+MOS_MODEL=deepseek-chat # 注释带尾随空格   
 MOS_SYSTEM_PROMPT=你是测试智能体
-MOS_MAX_ITERATIONS=5
+MOS_MAX_TURNS=5
 MOS_SHELL_ALLOW=ls, cat
 MOS_WORKDIR=/tmp/work
 export ANTHROPIC_API_KEY=sk-anth
@@ -65,8 +68,8 @@ export ANTHROPIC_API_KEY=sk-anth
 	if os.Getenv("MOS_MODEL") != "deepseek-chat" {
 		t.Fatalf("model = %q", os.Getenv("MOS_MODEL"))
 	}
-	if os.Getenv("MOS_MAX_ITERATIONS") != "5" {
-		t.Fatalf("max_iterations = %q", os.Getenv("MOS_MAX_ITERATIONS"))
+	if os.Getenv("MOS_MAX_TURNS") != "5" {
+		t.Fatalf("max_turns = %q", os.Getenv("MOS_MAX_TURNS"))
 	}
 	if os.Getenv("MOS_SHELL_ALLOW") != "ls, cat" {
 		t.Fatalf("shell_allow = %q", os.Getenv("MOS_SHELL_ALLOW"))
@@ -125,8 +128,8 @@ func TestLoadModelFallbackToMockFromFile(t *testing.T) {
 }
 
 func TestLoadConfigFromEnvFile(t *testing.T) {
-	clearEnv(t, "MOS_SYSTEM_PROMPT", "MOS_MAX_ITERATIONS", "MOS_SHELL_ALLOW", "MOS_WORKDIR")
-	writeEnv(t, "MOS_SYSTEM_PROMPT=来自文件\nMOS_MAX_ITERATIONS=4\nMOS_SHELL_ALLOW=pwd\nMOS_WORKDIR=/tmp/w\n")
+	clearEnv(t, "MOS_SYSTEM_PROMPT", "MOS_MAX_TURNS", "MOS_SHELL_ALLOW", "MOS_WORKDIR")
+	writeEnv(t, "MOS_SYSTEM_PROMPT=来自文件\nMOS_MAX_TURNS=4\nMOS_SHELL_ALLOW=pwd\nMOS_WORKDIR=/tmp/w\n")
 	cfg, err := LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -134,13 +137,16 @@ func TestLoadConfigFromEnvFile(t *testing.T) {
 	if cfg.SystemPrompt != "来自文件" {
 		t.Fatalf("system prompt = %q", cfg.SystemPrompt)
 	}
-	if cfg.MaxIterations != 4 {
-		t.Fatalf("max = %d, want 4", cfg.MaxIterations)
+	if cfg.MaxTurns != 4 {
+		t.Fatalf("max = %d, want 4", cfg.MaxTurns)
 	}
-	if len(cfg.ShellAllowed) != 1 || cfg.ShellAllowed[0] != "pwd" {
-		t.Fatalf("shell allowed = %v", cfg.ShellAllowed)
+	if cfg.Policy == nil {
+		t.Fatal("policy should be constructed from env")
 	}
-	if cfg.WorkDir != "/tmp/w" {
-		t.Fatalf("workdir = %q", cfg.WorkDir)
+	if err := cfg.Policy.Allow(context.Background(), &llm.ToolCall{Name: "shell", Args: `{"command":"pwd"}`}); err != nil {
+		t.Fatalf("whitelisted pwd should pass: %v", err)
+	}
+	if err := cfg.Policy.Allow(context.Background(), &llm.ToolCall{Name: "read_file", Args: `{"path":"../x"}`}); err == nil {
+		t.Fatal("path traversal should be rejected")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"time"
@@ -37,6 +38,21 @@ func (Shell) Execute(ctx context.Context, args json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("命令不能为空")
 	}
 
+	// 配置了执行沙箱（M1.6）时优先在沙箱内执行：工作目录 jail + 资源限制 + 进程组超时。
+	if sb := tool.SandboxFrom(ctx); sb != nil {
+		out, runErr := sb.Run(ctx, p.Command)
+		res := map[string]any{"output": out}
+		if runErr != nil {
+			res["error"] = runErr.Error()
+			var ee *exec.ExitError
+			if errors.As(runErr, &ee) {
+				res["exit_code"] = ee.ExitCode()
+			}
+		}
+		return res, nil
+	}
+
+	// 未配置沙箱：回退到默认执行方式（本地 /bin/sh + 超时 + 输出截断）。
 	ctx, cancel := context.WithTimeout(ctx, shellTimeout)
 	defer cancel()
 

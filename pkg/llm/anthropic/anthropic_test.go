@@ -62,8 +62,13 @@ func TestChatWithToolUse(t *testing.T) {
 	var body struct {
 		System   string `json:"system"`
 		Messages []struct {
-			Role    string         `json:"role"`
-			Content []contentBlock `json:"content"`
+			Role    string `json:"role"`
+			Content []struct {
+				Type      string `json:"type"`
+				Text      string `json:"text"`
+				ToolUseID string `json:"tool_use_id"`
+				Content   string `json:"content"`
+			} `json:"content"`
 		} `json:"messages"`
 		MaxTokens int `json:"max_tokens"`
 	}
@@ -193,5 +198,59 @@ func TestChatStreamToolUse(t *testing.T) {
 func TestNewMissingConfig(t *testing.T) {
 	if _, err := New(llm.Config{"model": "claude-3"}); err == nil {
 		t.Fatal("New without api_key should fail")
+	}
+}
+
+func TestChatUsageCacheDetails(t *testing.T) {
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{
+			"content":[{"type":"text","text":"ok"}],
+			"usage":{"input_tokens":200,"output_tokens":50,
+				"cache_creation_input_tokens":120,"cache_read_input_tokens":80}
+		}`)
+	})
+	defer srv.Close()
+
+	resp, err := p.Chat(context.Background(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	d := resp.Usage.Details.Input
+	if d.CacheWrite != 120 || d.CacheRead != 80 {
+		t.Fatalf("cache details = %+v", d)
+	}
+	if resp.Usage.TotalTokens != 250 {
+		t.Fatalf("total = %d", resp.Usage.TotalTokens)
+	}
+}
+
+func TestChatContentPartsImage(t *testing.T) {
+	var gotBody string
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"content":[{"type":"text","text":"ok"}],"usage":{}}`)
+	})
+	defer srv.Close()
+
+	_, err := p.Chat(context.Background(), &llm.Request{
+		Messages: []llm.Message{{
+			Role: llm.RoleUser,
+			ContentParts: []llm.ContentPart{
+				{Type: "text", Text: "看图"},
+				{Type: "image", URL: "https://example.com/a.png", MIME: "image/png"},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	want := `"content":[{"type":"text","text":"看图"},{"type":"image","source":{"type":"url","url":"https://example.com/a.png"}}]`
+	if !strings.Contains(gotBody, want) {
+		t.Fatalf("request body missing image block:\n%s", gotBody)
 	}
 }

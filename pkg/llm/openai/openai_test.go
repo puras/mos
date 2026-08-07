@@ -69,9 +69,9 @@ func TestChatWithToolCall(t *testing.T) {
 
 func TestChatStream(t *testing.T) {
 	sse := strings.Join([]string{
-		`data: {"choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}`,
-		`data: {"choices":[{"index":0,"delta":{"content":"Hello"}}]}`,
-		`data: {"choices":[{"index":0,"delta":{"content":" world"},"finish_reason":"stop"}]}`,
+		`data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}`,
+		`data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Hello"}}]}`,
+		`data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":"stop"}]}`,
 		`data: [DONE]`,
 	}, "\n\n") + "\n\n"
 
@@ -103,10 +103,10 @@ func TestChatStream(t *testing.T) {
 
 func TestChatStreamToolCallAggregation(t *testing.T) {
 	sse := strings.Join([]string{
-		`data: {"choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"calculator","arguments":""}}]}}]}`,
-		`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"a\":1"}}]}}]}`,
-		`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":",\"b\":2}"}}]}}]}`,
-		`data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		`data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"calculator","arguments":""}}]}}]}`,
+		`data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"a\":1"}}]}}]}`,
+		`data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":",\"b\":2}"}}]}}]}`,
+		`data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
 		`data: [DONE]`,
 	}, "\n\n") + "\n\n"
 
@@ -149,5 +149,174 @@ func TestRegistryFactory(t *testing.T) {
 	}
 	if _, err := reg.Create("nope", nil); err == nil {
 		t.Fatal("Create unknown provider should fail")
+	}
+}
+
+func TestChatUsageDetails(t *testing.T) {
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{
+			"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+			"usage":{
+				"prompt_tokens":100,"completion_tokens":30,"total_tokens":130,
+				"prompt_tokens_details":{"cached_tokens":60,"audio_tokens":0},
+				"completion_tokens_details":{"reasoning_tokens":10,"audio_tokens":5}
+			}
+		}`)
+	})
+	defer srv.Close()
+
+	resp, err := p.Chat(context.Background(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	d := resp.Usage.Details
+	if d.Input.CacheRead != 60 {
+		t.Fatalf("cache read = %d", d.Input.CacheRead)
+	}
+	if d.Output.Reasoning != 10 {
+		t.Fatalf("reasoning = %d", d.Output.Reasoning)
+	}
+	if d.Output.Audio != 5 {
+		t.Fatalf("audio out = %d", d.Output.Audio)
+	}
+}
+
+func TestChatContentPartsAndStructuredOutput(t *testing.T) {
+	var gotBody string
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"index":0,"message":{"role":"assistant","content":"{\"ok\":true}"},"finish_reason":"stop"}],"usage":{}}`)
+	})
+	defer srv.Close()
+
+	effort := "medium"
+	_, err := p.Chat(context.Background(), &llm.Request{
+		Messages: []llm.Message{{
+			Role: llm.RoleUser,
+			ContentParts: []llm.ContentPart{
+				{Type: "text", Text: "描述这张图"},
+				{Type: "image", URL: "https://example.com/a.png", MIME: "image/png"},
+			},
+		}},
+		ResponseFormat:  &llm.ResponseFormat{Type: "json_schema", Name: "answer", Schema: map[string]any{"type": "object"}},
+		Modalities:      []string{"text"},
+		ReasoningEffort: &effort,
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	for _, want := range []string{
+		`"content":[{"type":"text","text":"描述这张图"},{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]`,
+		`"response_format":{"type":"json_schema","json_schema":{"name":"answer","schema":{"type":"object"}}}`,
+		`"modalities":["text"]`,
+		`"reasoning_effort":"medium"`,
+	} {
+		if !strings.Contains(gotBody, want) {
+			t.Fatalf("request body missing %s:\n%s", want, gotBody)
+		}
+	}
+}
+
+func TestChatReasoningContentRoundTrip(t *testing.T) {
+	var gotBody string
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{
+			"choices":[{"index":0,"message":{"role":"assistant","content":"答案","reasoning_content":"先思考再回答"},"finish_reason":"stop"}],
+			"usage":{}
+		}`)
+	})
+	defer srv.Close()
+
+	// 历史中包含带推理内容的 assistant 消息（thinking 模式多轮需原样回传）
+	_, err := p.Chat(context.Background(), &llm.Request{
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: "1+2=?"},
+			{Role: llm.RoleAssistant, Content: "我来计算", ReasoningContent: "先思考再回答"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if !strings.Contains(gotBody, `"reasoning_content":"先思考再回答"`) {
+		t.Fatalf("request body missing reasoning_content:\n%s", gotBody)
+	}
+
+	// 响应侧解析
+	resp, err := p.Chat(context.Background(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.Message.ReasoningContent != "先思考再回答" {
+		t.Fatalf("reasoning content = %q", resp.Message.ReasoningContent)
+	}
+	if resp.Message.Content != "答案" {
+		t.Fatalf("content = %q", resp.Message.Content)
+	}
+}
+
+func TestChatStreamReasoningContent(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":"先"}}]}`,
+		`data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"答案","reasoning_content":"思考"}}]}`,
+		`data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"再回答"},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+	}, "\n\n") + "\n\n"
+
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse)
+	})
+	defer srv.Close()
+
+	resp, err := p.ChatStream(context.Background(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	if resp.Message.ReasoningContent != "先思考再回答" {
+		t.Fatalf("reasoning content = %q", resp.Message.ReasoningContent)
+	}
+	if resp.Message.Content != "答案" {
+		t.Fatalf("content = %q", resp.Message.Content)
+	}
+}
+
+func TestChatStreamUsage(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}`,
+		`data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"}}]}`,
+		`data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		`data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13,"completion_tokens_details":{"reasoning_tokens":2}}}`,
+		`data: [DONE]`,
+	}, "\n\n") + "\n\n"
+
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse)
+	})
+	defer srv.Close()
+
+	resp, err := p.ChatStream(context.Background(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	if resp.Usage.TotalTokens != 13 {
+		t.Fatalf("usage = %+v", resp.Usage)
+	}
+	if resp.Usage.Details.Output.Reasoning != 2 {
+		t.Fatalf("reasoning = %+v", resp.Usage.Details)
 	}
 }
