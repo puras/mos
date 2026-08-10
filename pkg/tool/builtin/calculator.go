@@ -1,4 +1,3 @@
-// Package builtin 提供开箱即用的通用工具集，供智能体应用直接注册使用。
 package builtin
 
 import (

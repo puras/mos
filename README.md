@@ -15,8 +15,8 @@ MoS 是一个基于 Go 的智能体基础框架（Agent Base），提供统一�
 - **Harness Engineering（工具安全防护）**：`agent.Policy` 在每次工具调用执行前拦截检查，内置默认策略可拦截危险 Shell 命令、路径越界与非 http 抓取
 - **Loop Engineering（循环可观测）**：每轮循环暴露思考/工具调用/工具结果/完成事件（含迭代序号），完整还原推理过程
 - **审计式任务状态（Audit Gate + Task State）**：工具结果经 `Auditor` 审计后，仅"环境可独立验证"的事实写入独立于消息历史的 `TaskState`（目标 / 已验证事实 / 状态机）；模型自述不算数——执行上下文可刷新，进度真相不过期
-- **开箱即用的智能体**：`assistant` 包组装好 Provider + 内置工具集 + 安全策略，附带交互式 CLI
-- **零第三方依赖**：仅使用 Go 标准库
+- **开箱即用的智能体**：`assistant` 包组装好 Provider + 内置/扩展工具包 + 安全策略；交互式 CLI 见示例工程 `examples/assistant`
+- **零第三方依赖**：SDK 仅使用 Go 标准库（示例工程除 SDK 外同样零依赖）
 
 ## 快速开始
 
@@ -57,9 +57,9 @@ sess := agent.NewSession("demo")
 reply, err := a.Run(ctx, sess, "请计算 1+2")
 ```
 
-## 开箱即用的智能体（assistant + CLI）
+## 开箱即用的智能体（assistant + CLI 示例）
 
-`assistant` 包提供组装好的智能体：**模型对象、工具集与框架概念全部由调用方注入**（安全策略 / 规划器 / 审计器 / 记忆 / 观察，为 nil 时使用框架默认实现），可直接作为库集成到其他工程。框架只认 `llm.ChatModel` 模型对象与 `[]tool.Tool` 工具集，不预设默认工具、不关心模型接入配置：
+`assistant` 包提供组装好的智能体：**模型对象、工具集与框架概念全部由调用方注入**（安全策略 / 规划器 / 审计器 / 记忆 / 观察，为 nil 时使用框架默认实现），可直接作为库集成到其他工程。框架只认 `llm.ChatModel` 模型对象与 `[]tool.Tool` 工具集，不预设默认工具、不关心模型接入配置——但**随框架分发工具包并分类**：`pkg/tool/builtin` 内置工具包（计算 / 时间 / 文件读写检索 / 网页抓取，纯标准库实现，`builtin.Default()` 一键装配）+ `pkg/tool/extension` 扩展工具包（shell 沙箱执行 / web_search 搜索提供商，需依赖注入）：
 
 ```go
 // 1. 构建模型对象（可用 openai/anthropic 适配器，或任何自定义 llm.ChatModel）
@@ -71,9 +71,9 @@ if err != nil {
 	// ...
 }
 
-// 2. 注入模型对象 + 业务侧工具集 + 运行配置（概念对象由业务侧构造注入）
+// 2. 注入模型对象 + 工具集 + 运行配置（概念对象由业务侧构造注入）
 a, err := assistant.New(model, []tool.Tool{
-	builtin.Calculator{}, builtin.ReadFile{}, builtin.WriteFile{},
+	builtin.Calculator{}, builtin.ReadFile{}, builtin.WriteFile{}, // 内置工具包按需取用
 }, assistant.Config{
 	SystemPrompt: "你是 MoS 智能体",
 	Policy:       assistant.NewDefaultPolicy([]string{"ls", "cat", "pwd"}, "./workspace"), // 安全策略
@@ -83,7 +83,7 @@ sess := a.NewSession()
 reply, err := a.Run(ctx, sess, "帮我看看 workspace 里有什么文件")
 ```
 
-运行配置可通过环境变量加载；模型对象从环境变量构建（`internal/config` 的应用层实现，无 API Key 时自动降级为 mock 离线模型对象 `assistant.Mock()`）：
+运行配置可通过环境变量加载；模型对象从环境变量构建（`examples/assistant/internal/config` 的应用层实现，无 API Key 时自动降级为 mock 离线模型对象 `assistant.Mock()`）：
 
 | 环境变量 | 说明 |
 | --- | --- |
@@ -104,7 +104,7 @@ reply, err := a.Run(ctx, sess, "帮我看看 workspace 里有什么文件")
 | `MOS_SANDBOX_MAX_FILE_KB` | 沙箱单文件大小上限 KB（0 不限制） |
 | `MOS_SANDBOX_NO_NET` | 沙箱网络隔离（1 开启，尽力而为：剥离代理变量） |
 
-以上配置也可写入 **`.env` 文件**（默认根目录 `.env`，路径可用 `MOS_CONFIG` 覆盖）。键名与环境变量完全一致，读取优先级：**环境变量 > .env 文件 > 默认值**（`.env` 不覆盖已存在的环境变量）：
+以上配置也可写入 **`.env` 文件**（默认 `examples/assistant/.env`，路径可用 `MOS_CONFIG` 覆盖）。键名与环境变量完全一致，读取优先级：**环境变量 > .env 文件 > 默认值**（`.env` 不覆盖已存在的环境变量）：
 
 ```
 MOS_PROVIDER=openai
@@ -117,14 +117,14 @@ MOS_SHELL_ALLOW=ls, cat, pwd
 MOS_WORKDIR=./workspace
 ```
 
-支持 `#` 注释、空行与可选的 `export` 前缀；`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` 均为空时自动降级为 mock 离线模型。模板见根目录 `.env.example`。
+支持 `#` 注释、空行与可选的 `export` 前缀；`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` 均为空时自动降级为 mock 离线模型。模板见 `examples/assistant/.env.example`。
 
-内置工具：`calculator`（表达式求值）、`current_time`（当前时间）、`web_fetch`（网页抓取转纯文本）、`shell`（受限命令执行）、`read_file` / `write_file`（文件读写）、`find_files` / `grep`（文件搜索）。
+工具包分两类（均在 `pkg/tool` 下随框架分发）：**内置工具包 `pkg/tool/builtin`**（纯标准库，`builtin.Default()` 一键装配）——`calculator`（表达式求值）、`current_time`（当前时间）、`web_fetch`（网页抓取转纯文本）、`read_file` / `write_file`（文件读写）、`find_files` / `grep`（文件搜索）；**扩展工具包 `pkg/tool/extension`**（需依赖注入）——`shell`（受限命令执行，支持沙箱隔离）、`web_search`（联网搜索，绑定搜索提供商，提供商实现见 `pkg/tool/extension/search`）。
 
-交互式 CLI（同样支持环境变量配置，无 Key 时以 mock 演示完整工具调用循环）：
+交互式 CLI 在示例工程 `examples/assistant` 中（同样支持环境变量配置，无 Key 时以 mock 演示完整工具调用循环）：
 
 ```bash
-go run ./cmd/assistant
+cd examples/assistant && go run .
 ```
 
 ```
@@ -165,6 +165,41 @@ type Policy interface {
 
 每轮循环依次发出 `EventStep`（思考）→ `EventToolCall` → `EventToolResult` → `EventFact`（审计通过，任务状态新增事实）→（循环）→ `EventDone`（完成），事件携带 `Turn` 序号，方便流式输出与过程审计。
 
+业界 Loop Engineering（agent-harness-kit / IBM）把"循环"本身当作一等设计对象：循环不是模型自由发挥的黑盒，而是由一组杠杆（lever）显式控制的工程构件。MoS 对照九杠杆：
+
+| 杠杆 | 业界要点 | MoS 现状 |
+| --- | --- | --- |
+| 确定性传感器 | 用测试 / typecheck / lint 等可验证信号代替"问模型对不对" | ✓ 审计门 `Auditor` + Audit Gate（只接受环境验证过的事实） |
+| 显式停止条件 | 可验证的 DONE 信号 + 硬迭代上限 / 预算上限 | ✓ 完成判断 + `MaxTurns`；token 预算上限待 M4 |
+| 跨迭代上下文管理 | 压缩旧轮、JIT 检索、手写 scratchpad，防 context rot | ~ 截断（M2.3）/ 摘要（M2.5）/ 记忆（M2.7）规划中 |
+| 清晰工具设计 | 单次调用单意图、返回 crisp signal，不留歧义 | ✓ 内置 / 扩展工具签名统一；输出截断（M2.3）保留关键字段 |
+| Doom Loop 检测 | 相同工具连续 3+ 次相似调用 → 死循环检测 / 回退 / 重置 | ✗ 待新增（随 M2.5） |
+| 上下文利用率阈值 | Dumb Zone：窗口用满约 40% 后输出质量明显下降 | ✗ 待新增 40% 告警线 + 渐进式披露（随 M2.5） |
+| 进度追踪 | 维护"做到哪了"而非完整对话记录 | ✓ `TaskState` 外置、跨轮唯一真相 |
+| 可观测性 | 事件流 + trace 回放、过程审计 | ✓ Observer / Event（Turn 序号） |
+| 补偿面理论 | 模型变强 → harness 主动拆组件（Anthropic 已拆 Context Reset），只留护城河 | ✗ 设计纪律（见路线图方向） |
+
+两个关键阈值：**上下文利用率约 40%**（168K 窗口）之后模型输出质量明显下降——应对是渐进式披露（先给骨架、按需展开）、分层上下文、40% 告警线、必要时上下文重置（fresh-context，M2.5）；**Doom Loop**（相同工具连续 3 次以上相似动作）说明模型在空转——检测到后应回退到上一有效状态或重置上下文，而不是让循环耗尽预算。补偿面理论提示：这些杠杆不是越多越好，模型变强后 harness 应主动拆掉已被模型自身能力覆盖的组件（如 Anthropic 拆掉 Context Reset 改由模型记忆承担），把工程资源集中在模型替代不了的护城河上（沙箱、审计、状态外置）。
+
+### Graph Engineering：显式图编排
+
+Graph Engineering（LangGraph 为代表的"图编排"）把 Loop 的单链循环升级为显式图。四个原语：
+
+- **节点（Node）**：有界执行单元——业务规则宜用确定性函数而非 LLM；节点可承载 LLM 调用、工具 Agent、纯函数、检索、策略检查、人工审批或子图
+- **边（Edge）**：流转定义——直接 / 条件 / 并行 / 循环 / 错误 / 人工控制 / 事件触发
+- **状态（State）**：共享记录（TypedDict schema；reducers 如 `Annotated[list, add]` 让并行节点合并而非覆盖），使输入输出可见、免去传递完整对话记录
+- **Checkpointer**：持久化状态，支持中断恢复（SqliteSaver / PostgresSaver 参考）
+
+MoS 现架构已内嵌图概念，Graph Engineering 是显式化而非重构：
+
+- **TaskState = State**：跨迭代持久状态已是图的共享记录；审计写入即 reducer（只合并已验证事实，并行节点互不覆盖）
+- **Auditor = 确定性传感器**：节点边界验证，对应"业务规则宜确定性非 LLM"
+- **Policy + Sandbox + Confirmer = 守卫节点**：工具调用前的约束校验与人工审批
+- **Observer = 边事件**：hooks 挂载点，即边的触发与观测
+- **生命周期命名 = 图词汇**：`Thread` 已是"DAG 节点路径"，`Session` 可压缩可分叉
+
+图编排的使用判据（LangGraph 的 earns-its-keep）：**分支**（Branching）、**并行**（Parallelism）、**持久性**（Durability，崩溃后可恢复）、**可审计性**（Auditability，逐步解释）。MoS 的单任务顺序循环不满足判据时保持现状；满足时（M3 多智能体、LLMCompiler 并行 DAG）才引入显式图边界——图是可选编排层，不是默认架构。
+
 ### Audit Gate：审计式任务状态
 
 对应长程 Agent 的"审计式状态迁移"：`agent.Auditor` 在每次工具调用后独立审查结果，只有**被环境验证过的事实**才能写入 `Session.State`（`agent.TaskState`），模型的自我声明一律不算数。默认审计器 `agent.NewDefaultAuditor()` 采用只读白名单——`calculator` / `current_time` / `web_fetch` / `web_search` / `read_file` / `find_files` / `grep` 的输出本身就是环境的回答，视为已验证事实；`shell` / `write_file` 等变更类工具的输出属于"未核实声明"，不写入任务状态，需后续通过只读工具二次取证。可自定义 `Auditor` 或经 `Trust` 扩展白名单：
@@ -204,6 +239,7 @@ aud.Trust("my_inspect")
 | **Thread** | 从历史某点分叉出的会话分支（DAG 路径） | 分支创建 → 合并/废弃 | 预留（M2.7） |
 | **Task** | 用户目标 + 状态机（pending/running/blocked/completed） | 首个输入 → 完成/阻塞 | `agent.TaskState` |
 | **Round** | 子任务轮次：Manager 派发 → Executor 执行 → Auditor 审计 | 多智能体启用（M3） | 预留 |
+| **Team** | 多智能体团队：Team Lead + Teammates + Shared Task List | 团队创建 → 解散 / 恢复 | 预留（M3） |
 | **Message** | 消息：3 种标准（user/assistant/tool）+ 自定义（摘要等） | 单次交互 | `llm.Message` |
 
 生命周期规则（约定俗成的工程决策，实现时遵循）：
@@ -235,6 +271,22 @@ aud.Trust("my_inspect")
 **九种编排模式谱系（知乎《Agent 的九种设计模式》）**：ReAct（思考-行动-观察，MoS 默认循环）→ Plan&Solve（Planner / Replanner + Executor，计划随新约束修订）→ REWOO（Planner 生成链式依赖计划 → Worker 循环执行 → Solver 整合，Observation 隐式嵌于下一步）→ Storm（大纲生成器 + 内容生成器）→ LLMCompiler（Planner 生成 DAG + Joiner 合并，并行 function calling）→ Basic Reflection（Generator / Reflector）→ Reflexion（引入外部数据评估后 Revisor 修订，比 Basic Reflection 更具建设性）→ LATS（树搜索 + ReAct + Plan&Solve + Reflection + RL）→ Self-Discover（Selector 选推理方式 → Adaptor 应用 → Implementor 重推理）。M3 已规划 Plan&Solve / Basic Reflection / LLMCompiler；Reflexion 的"外部数据评估"恰与 Auditor 客观验证同构。
 
 **编排拓扑与共享本体（ADP 多智能体协作 / 并行化）**：协作形式七种（顺序交接 / 并行 / 辩论共识 / 层次 / 专家团队 / 批评者-审查者 / 混合），通信结构六种（单智能体 / 网络 / 监督者 / 监督者作工具 / 层次化 / 自定义）——M3 先落地"监督者/层次化"（与 Planner + 执行器契合），再演进"批评者-审查者"（即审计智能体）。并行化采用 Map-Reduce 形态：无依赖分支并发、结果经共享状态（TaskState 分支字段）汇聚、合并步骤只读分支摘要禁止引入外部知识、并行度作为计划元数据（`parallelizable`）。**TaskState 即共享本体**——各智能体读写同一状态交换数据，需定义字段级契约（谁写、谁读、格式）。
+
+**SubAgent（子智能体，Claude Code / OpenAI Agents SDK 参考）**：把任务委托给专用智能体执行，主智能体保持调度。业界两种调用形态（OpenAI 编排指南）：
+- **委托执行（handoff 语义）**：控制权交给专家、由专家负责该分支的最终答复——对应 M3 Coordinator 路由按意图分派
+- **代理即工具（agents-as-tools）**：主智能体保持所有权，把 SubAgent 包装为普通工具经 function calling 调用、只接收结构化结果——与 MoS 现有工具系统（`Registry` + `tool.Tool`）无缝对接，是 MoS 首选形态
+
+SubAgent 声明式定义（对齐 Claude Code 的 `.claude/agents/*.md` frontmatter 与 SKILL.md 风格）：`name`（标识符）+ `description`（**自动委派的判断材料**——主智能体按 description 匹配最合适的专家）+ `model`（可选覆盖，快任务用小模型降本）+ `tools`（**工具白名单**）+ 系统提示词正文。安全关键：**白名单即 blast radius 收缩**——doc-reviewer 只给 Read / Grep / Glob 就杜绝误写文件；每个 SubAgent 的 `tools` 白名单即其 `agent.Policy` 的 Allow 名单，fail-closed 语义不变。上下文隔离：SubAgent 以"空白"状态启动，只接收任务描述（结构化输入）、只回传结构化摘要，中间工具调用留在内部——主会话上下文不膨胀。审计边界：SubAgent 回传的自我声明不算数，仍须经 `Auditor` 环境验证后才写入 TaskState。生命周期：任务完成即结束（短暂），对应 Round 概念；多个独立子任务可并行执行（Map-Reduce）。**决策判据（"合同"论）**：只有指令 / 工具 / 策略（instructions/tools/policy）真正改变才值得拆 SubAgent；单纯为并行而拆会制造更多 prompt、trace 与审批面。
+
+**AgentTeam（智能体团队，Claude Code Agent Teams / ATWZ 参考）**：多个持续可用的智能体组成团队，由 Team Lead 领导、通过共享任务列表自我协调。四大组件：
+- **Team Lead**：拆解任务、创建队友、协调进度、汇总结果（主会话）
+- **Teammates**：各自独立执行分配任务（独立 Agent 实例 / 独立上下文）
+- **Shared Task List**：共享任务队列——`pending → in_progress → completed` + `blocks / blockedBy` 依赖 + 自动解锁（依赖完成即变为可领取）；与 TaskState 字段级契约一致（谁写、谁读、格式）
+- **Mailbox**：队友间点对点消息队列（文件即消息，对齐 ATWZ）
+
+与 SubAgent 的本质区别：**通信**（SubAgent 只向主智能体汇报 vs 队友间可直接通信）、**协调**（主智能体统一管理 vs 共享任务列表自我协调）、**生命周期**（任务完成即结束 vs 队友持续可用、可跨会话恢复）、**信息可见性**（主智能体只见最终摘要 vs 实时消息、进度透明）、**成本**（较低 vs 每队友独立实例较高）。适用场景：聚焦任务只需结果 → SubAgent；复杂任务需要讨论协作、跨会话持续 → AgentTeam。
+
+MoS 的 AgentTeam 关键设计：**状态落盘（files over context）**——对齐 M2.1 状态外置 + M4 `runs/<run-id>` 可恢复目录：队友是短暂的（ephemeral），角色 / 工作上下文 / 决策 / 任务文件 / 团队名册全部写盘（ATWZ 论文针对"不可恢复团队 + compaction 侵蚀细节 + agentic 技术债"三痛点）；中断后一条命令重建整个团队。**工作树隔离**——每个队友在独立工作目录 / 分支执行，测试通过才合并（对齐 M1.6 沙箱 WorkDir jail 思想扩展到团队，防文件冲突）。**审计不变式**：无论 SubAgent 还是 Team，任何成员的自述都不入状态，环境验证说了算；fail-closed 对每个成员独立生效；Observer 事件流新增 `subagent_start/end`、`task_claim/task_complete`。
 
 **审计门的边界与强化（Zagens / LHH 论文）**：完成度天花板 = 模型自分解清单的完整性——模型漏画的交付物，审计也发现不了（LHH：错误的验收合同可能得到"认真核验过的错误答案"，如隐藏性能阈值、时间性证据、多义目标）。强化手段：**机器可回放信号**（退出码 / 路径命中 / 事件日志）优先于 LLM 判断（Machine Oracle）；**"换一个 LLM 盖章"不构成独立性**（审计者-建设者共谋确认）；有界轮次耗尽后诚实停机（`audit_unmet`）而非造假绿灯。MoS 审计门保持"环境只读验证 + 机器信号"，LLM 评审只作质量补充、不作完成判定；Replanning 是受控变更而非无限重试。
 
@@ -290,64 +342,78 @@ model, err := reg.Create("openai", llm.Config{
 
 ## 目录结构
 
-基础库 + 完整智能体布局：**`pkg/` 对外公开 API，`internal/` 仅供仓库内部使用，依赖方向单向 `internal → pkg`**，外部工程只 import `pkg/` 即可集成。
+双模块布局：**仓库根是纯依赖 SDK（`hegq.net/mos`，只含 `pkg/`）**，作为库集成到外部工程；**示例应用独立成工程（`examples/assistant`，`hegq.net/mos/examples/assistant`）**，通过 `replace hegq.net/mos => ../..` 本地引用 SDK。SDK 依赖方向单向 `pkg → 外部模块`，不含任何应用层入口。
 
 ```
 mos/
-├── pkg/                  # 基础库（对外 API，不依赖 internal）
-│   ├── llm/              #   ChatModel 抽象（模型对象）+ 协议注册表
-│   │   ├── openai/       #     OpenAI 兼容协议适配器
-│   │   └── anthropic/    #     Anthropic 原生协议适配器
-│   ├── tool/             #   工具注册表、JSON Schema 生成、参数解析
-│   │   └── builtin/      #     内置工具：shell / 文件 / 计算器 / 网页抓取等
-│   ├── memory/           #   会话记忆抽象
-│   │   └── inmemory/     #     内存实现
-│   ├── agent/            #   智能体运行时：任务循环 / Policy / Session / TaskState / Auditor / Observer
-│   ├── planner/          #   规划策略：Planner 接口 + ReAct 实现
-│   └── assistant/        #   组装好的完整智能体：模型对象注入 / 默认策略 / 内置工具集
-├── internal/
-│   ├── config/            # 应用层：.env + 环境变量 → 模型对象 + 运行配置
-│   └── cli/               # 应用层 CLI 交互逻辑（REPL）
-├── cmd/
-│   └── assistant/         # 完整智能体 CLI 薄入口
-├── .env.example           # 应用层配置模板（复制为 .env 使用，MOS_CONFIG 可指定路径）
-└── .gitignore
+├── go.mod                 # SDK 模块 hegq.net/mos（纯依赖库，仅 pkg/）
+├── pkg/                   # SDK 框架层（对外公开 API）
+│   ├── llm/               #   ChatModel 抽象（模型对象）+ 协议注册表
+│   │   ├── openai/        #     OpenAI 兼容协议适配器
+│   │   ├── anthropic/     #     Anthropic 原生协议适配器
+│   │   └── gemini/        #     Google Gemini 协议适配器
+│   ├── tool/              #   工具注册表、JSON Schema 生成、参数解析、执行沙箱
+│   │   ├── sandbox.go     #     执行沙箱（M1.6）：jail + 超时 + 资源限制 + 环境裁剪
+│   │   ├── builtin/       #     内置工具包：计算/时间/文件读写检索/网页抓取（纯标准库）
+│   │   └── extension/     #     扩展工具包：shell（沙箱执行）/ web_search（搜索提供商）
+│   │       └── search/    #       搜索提供商：duckduckgo / tavily / serper / brave / searxng
+│   ├── memory/            #   会话记忆抽象
+│   │   └── inmemory/      #     内存实现
+│   ├── agent/             #   智能体运行时：任务循环 / Policy / Session / TaskState / Auditor / Observer
+│   ├── planner/           #   规划策略：Planner 接口 + ReAct 实现
+│   └── assistant/         #   组装好的完整智能体：模型对象注入 / 默认策略 / 内置+扩展工具包
+└── examples/
+    └── assistant/         # 示例应用（独立 Go module：hegq.net/mos/examples/assistant）
+        ├── go.mod         #   replace hegq.net/mos => ../..（本地引用 SDK）
+        ├── main.go        #   CLI 薄入口
+        ├── internal/
+        │   ├── config/    #     应用层：.env + 环境变量 → 模型对象 + 运行配置
+        │   └── cli/       #     应用层 CLI 交互逻辑（REPL / TUI）
+        ├── .env.example   #   应用层配置模板（复制为 .env 使用，MOS_CONFIG 可指定路径）
+        └── .gitignore
 ```
 
-### pkg 与 internal 的划分准则
+### pkg 与示例应用 internal 的划分准则
 
-**`pkg/` 放框架层面的能力，`internal/` 放应用层面的能力。**
+**`pkg/` 放框架层面的能力，`examples/assistant/internal/` 放示例应用层面的能力。**
 
 `internal/` 是 **Go 语言级约束**：其下包只能被父目录以内的代码 import，外部工程引用会直接编译报错（`use of internal package not allowed`）。判断归属时先问：
 
-1. **这是框架层面的能力，还是应用层面的能力？** 框架层（通用、可复用、有 API 契约）→ `pkg/`；应用层（绑定具体产品的入口、配置约定、交互形态）→ `internal/`
-2. **外部工程集成 MoS 时需要直接 import 它吗？** 是 → `pkg/`；仅本仓库自己用 → `internal/`
-3. **它是稳定、带契约的公开 API，还是可随意重构的实现细节？** 前者 → `pkg/`；后者 → `internal/`
+1. **这是框架层面的能力，还是应用层面的能力？** 框架层（通用、可复用、有 API 契约）→ `pkg/`；应用层（绑定具体产品的入口、配置约定、交互形态）→ 示例工程的 `internal/`
+2. **外部工程集成 MoS 时需要直接 import 它吗？** 是 → `pkg/`；仅示例应用自己用 → 示例工程的 `internal/`
+3. **它是稳定、带契约的公开 API，还是可随意重构的实现细节？** 前者 → `pkg/`；后者 → 示例工程的 `internal/`
 
 当前划分示例：
 
 | 归属 | 包 | 理由 |
 | --- | --- | --- |
 | `pkg/` | `llm` / `tool` / `memory` / `agent` / `planner` | 框架层通用基础能力 |
+| `pkg/` | `tool/builtin` | 框架层内置工具包：纯标准库通用工具，随框架分发，`builtin.Default()` 一键装配 |
+| `pkg/` | `tool/extension` | 框架层扩展工具包：shell（沙箱执行）/ web_search（搜索提供商，实现见 `extension/search`），需依赖注入 |
 | `pkg/` | `assistant` | 框架层组装智能体（模型对象注入，`Config` 仅含运行配置） |
-| `pkg/` | `llm/openai` `llm/anthropic` | 框架层协议适配器，外部按需选用 |
-| `internal/` | `config` | 应用层：从 `.env` + `MOS_*` 环境变量构建模型对象与运行配置 |
-| `internal/` | `cli` | 应用层：REPL 绑定终端交互 |
-| `internal/` | `tool/builtin` | 业务侧工具实现，由应用层装配（框架不预设默认工具） |
+| `pkg/` | `llm/openai` `llm/anthropic` `llm/gemini` | 框架层协议适配器，外部按需选用 |
+| `examples/assistant/internal/` | `config` | 示例应用层：从 `.env` + `MOS_*` 环境变量构建模型对象与运行配置 |
+| `examples/assistant/internal/` | `cli` | 示例应用层：REPL/TUI 绑定终端交互，装配内置 + 扩展工具包 |
 
-注意：框架层 `assistant.Config` 只含系统引导、迭代次数与框架概念对象（`Policy` / `Planner` / `Auditor` / `Memory` / `Observer`，nil 时用框架默认实现）；**模型、工具与概念对象均由外部注入**（`llm.ChatModel` + `[]tool.Tool` + 概念实例）。"如何从环境变量/配置文件构建模型对象、装配哪些工具、构造安全策略"属于应用层约定（放 `internal/config` / `internal/cli`）。外部工程可按自己的配置体系注入模型、工具与概念实现。
+注意：框架层 `assistant.Config` 只含系统引导、迭代次数与框架概念对象（`Policy` / `Planner` / `Auditor` / `Memory` / `Observer`，nil 时用框架默认实现）；**模型、工具与概念对象均由外部注入**（`llm.ChatModel` + `[]tool.Tool` + 概念实例）。"如何从环境变量/配置文件构建模型对象、装配哪些工具、构造安全策略"属于应用层约定（放示例工程 `examples/assistant/internal/config` / `internal/cli`）。外部工程可按自己的配置体系注入模型、工具与概念实现。
 
 ## 测试
 
+双模块分别测试：
+
 ```bash
+# SDK（仓库根）
 go test ./...
+
+# 示例应用
+cd examples/assistant && go test ./...
 ```
 
 适配器测试通过 `httptest` 模拟协议服务，验证请求构造与响应解析的正确性，不依赖真实网络。
 
 ## 路线图
 
-方向参考 LongHorizon-Harness 的"审计式状态迁移"（状态外置、只接受被环境独立验证过的事实、执行上下文可刷新）、Pi-Agent 的"上下文工程"（工具输出截断、结构化压缩、两层消息翻译边界）、Agentic Design Patterns 的"路由 / 异常处理 / 人机协同"、Harness Engineering 的铁律（上下文越少越好、专才 > 通才、状态写文件不写上下文、能写成 Linter 的约束别写成文档）与九种编排模式谱系（ReAct → Plan&Solve → REWOO → Storm → LLMCompiler → Basic Reflection → Reflexion → LATS → Self-Discover）、Agent Plugins 1.0.0 的插件打包规范（plugin.json + skills/ + mcp.json + 客户端命名空间，组件独立校验）。
+方向参考 LongHorizon-Harness 的"审计式状态迁移"（状态外置、只接受被环境独立验证过的事实、执行上下文可刷新）、Pi-Agent 的"上下文工程"（工具输出截断、结构化压缩、两层消息翻译边界）、Agentic Design Patterns 的"路由 / 异常处理 / 人机协同"、Harness Engineering 的铁律（上下文越少越好、专才 > 通才、状态写文件不写上下文、能写成 Linter 的约束别写成文档）与九种编排模式谱系（ReAct → Plan&Solve → REWOO → Storm → LLMCompiler → Basic Reflection → Reflexion → LATS → Self-Discover）、Loop Engineering 的九杠杆（确定性传感器 / 显式停止条件 / 跨迭代上下文管理 / 清晰工具设计 / Doom Loop 检测 / 上下文利用率 40% Dumb Zone 阈值 / 补偿面理论——harness 随模型变强主动拆组件，Anthropic 已拆 Context Reset）、Graph Engineering 的图编排四原语（节点 / 边 / 状态 schema + reducers / checkpointer 中断恢复，LangGraph 参考）与使用判据（分支 / 并行 / 持久 / 可审计——不满足判据不引入显式图）、Agent Plugins 1.0.0 的插件打包规范（plugin.json + skills/ + mcp.json + 客户端命名空间，组件独立校验）。
 
 - [x] **M1**：Agent 任务循环、多协议 LLM 接入、工具系统、工作记忆、事件观测
 - [x] **M1.5**：组装智能体（assistant 包 + CLI）、Harness Engineering 工具安全防护、Loop Engineering 循环可观测
@@ -356,12 +422,12 @@ go test ./...
 - [x] **M2.2**：审计门（`Auditor`：默认审计器仅接受白名单只读工具的可验证输出，模型自述不算数）
 - [ ] **M2.3**：工具输出截断（行数/字节双重限制 + read 截头 / bash 截尾 + 逃生通道提示，防单次工具结果撑爆窗口）
 - [ ] **M2.4**：两层消息与翻译边界（内部结构化消息 → LLM 标准消息 `convertToLlm`，自定义消息转 user 角色，支持摘要注入与 `excludeFromContext`）
-- [ ] **M2.5**：fresh-context 压缩（两轮之间触发，切割点不切断 ToolCall-Result 对；压缩摘要直接采用审计写入的 `TaskState`，而非 LLM 重新总结）
+- [ ] **M2.5**：fresh-context 压缩（两轮之间触发，切割点不切断 ToolCall-Result 对；压缩摘要直接采用审计写入的 `TaskState`，而非 LLM 重新总结）+ 上下文利用率监控（40% Dumb Zone 告警线：渐进式披露——先给骨架、按需展开；分层上下文——常驻摘要 / 按需展开 / 懒加载）+ Doom Loop 检测（相同工具连续 3+ 次相似调用 → 回退上一有效状态或重置上下文）+ 上下文重置 / handoff（压缩后过渡到新一轮，跨 Session 交接，对齐 Loop Engineering 九杠杆）
 - [ ] **M2.6**：系统提示词动态组装（按"系统约束 / 任务定义 / 当前状态 / 工具签名 / 历史摘要"分段槽位；克制主义——静态模板应足够小（Pi 仅约 1K token 对比 Claude Code 数万），固定指令占得越少留给任务上下文越多；多级 CLAUDE.md 向上递归 + Skills 懒加载清单（对齐 Agent Skills 规范：SKILL.md frontmatter 声明 name + description 触发条件 + 步骤化正文 + references/ 按需 read））
 - [ ] **M2.7**：长期记忆（sqlite-vec 向量检索 + SQLite FTS5 的 BM25 混合检索）、RAG（分块策略 chunk_size/overlap + 检索注入 + 来源引用）、Agentic RAG 知识守门人（源验证 / 冲突裁决 / 多步检索 / 知识差距触发外部工具）、流式输出透传
-- [ ] **M2.8**：人工介入工具 + 升级策略（`request_human_input`：模型主动请求人类输入/确认/授权，作为普通工具接入；升级策略定义"何时、如何交给人类"，配合人工网关；注意 HITL 权衡：可扩展性不足、依赖专家、敏感数据需匿名化）
+- [ ] **M2.8**：人工介入工具 + 升级策略（`request_human_input`：模型主动请求人类输入/确认/授权，作为普通工具接入；升级策略定义"何时、如何交给人类"，配合人工网关；注意 HITL 权衡：可扩展性不足、依赖专家、敏感数据需匿名化）+ interrupt-before（等待人工输入前用 Checkpointer 持久化状态，恢复后从断点继续，对齐 Graph Engineering 的 checkpointer 语义）
 - [ ] **M2.9**：经验记忆（知识进化第 1 层：执行历史沉淀为成功策略 / 已知陷阱库，按成功率 / 时间 / 成本加权评分择优，决策时检索注入——复用 M2.7 记忆基础设施，零代码风险）
 - [ ] **M2.10**：工具规模化——schema 生成缓存（`generateSchema` 反射结果按工具 memo 化，避免循环内每轮重复）+ schema 压缩（删 title / $defs、过滤注入参数）+ deferred 懒加载（`tool_search` 工具按需取 schema，名字清单进 prompt；工具描述占上下文超阈值自动启用，小工具集保持全量注入，参考 Claude Code 10% 自动阈值）+ 静态系统提示保 prompt cache（动态内容放 user 消息侧，参考 DeerFlow）
-- [ ] **M3**：多智能体编排——Coordinator 路由（按意图分派：LLM 路由处理模糊输入、规则路由保证确定性可审计）+ 编排拓扑可选（监督者 / 层次化 / 批评者-审查者，先落地监督者再演进）+ 三权分离 Manager / Executor / Auditor（审计式）+ Sub-Agent 隔离（独立 Context / 只装载所需工具 / 主 Agent 只收结构化输出）+ 双阶段架构（Initializer 写 plan.md → Executor 接力，不共享 Context Window，即 Plan&Solve Replanner）+ Basic Reflection（Generator / Reflector / Revisor 自查循环，Reflector 用独立 Context 避免"自我合理化"污染；Reflexion 变体引入外部数据评估）+ LLMCompiler 并行 DAG（可选模式，Map-Reduce：分支并发 + 共享状态汇聚 + 合并只读分支摘要）+ Elo 择优（多方案比较排序）+ 合约化任务（可验证交付物 + 协商澄清 + 子合约分解）+ MCP 接入（五步交互：发现 → 请求制定 → 调用 → 错误回传 → 结果注入；mcp.json 声明服务器与 transport：stdio / streamable-http）；Agent Loop 升级（Turn 语义 + 批量工具执行 + 错误注入反馈——错误信息解释"为何违反规则 + 正确做法"）
+- [ ] **M3**：多智能体编排——Coordinator 路由（按意图分派：LLM 路由处理模糊输入、规则路由保证确定性可审计）+ 编排拓扑可选（监督者 / 层次化 / 批评者-审查者，先落地监督者再演进）+ 三权分离 Manager / Executor / Auditor（审计式）+ SubAgent 子智能体（声明式定义：`name` / `description` 自动委派匹配 / `model` 覆盖 / `tools` 白名单即 blast radius 收缩 / 系统提示词正文，对齐 Claude Code `.claude/agents/` frontmatter；首选 **agents-as-tools** 形态——SubAgent 实现 `tool.Tool` 包装进 Registry，主 Agent 经 function calling 调用只收结构化结果；handoff 形态走 Coordinator 路由；独立 Context、中间工具调用留内部、回传自述仍须 `Auditor` 验证；决策判据——instructions/tools/policy 真正改变才拆）+ 双阶段架构（Initializer 写 plan.md → Executor 接力，不共享 Context Window，即 Plan&Solve Replanner）+ Basic Reflection（Generator / Reflector / Revisor 自查循环，Reflector 用独立 Context 避免"自我合理化"污染；Reflexion 变体引入外部数据评估）+ LLMCompiler 并行 DAG（可选模式，Map-Reduce：分支并发 + 共享状态汇聚 + 合并只读分支摘要）+ Elo 择优（多方案比较排序）+ 合约化任务（可验证交付物 + 协商澄清 + 子合约分解）+ MCP 接入（五步交互：发现 → 请求制定 → 调用 → 错误回传 → 结果注入；mcp.json 声明服务器与 transport：stdio / streamable-http）；Agent Loop 升级（Turn 语义 + 批量工具执行 + 错误注入反馈——错误信息解释"为何违反规则 + 正确做法"）+ Graph Engineering 显式图边界（节点 / 边 / 状态 schema + reducers / checkpointer；编译期校验——节点可达性、状态字段一致性、边类型合法性，不合法图拒绝运行；仅在满足分支 / 并行 / 持久 / 可审计判据时引入，LangGraph 参考）+ AgentTeam 智能体团队（Team Lead 拆解 / 创建队友 / 协调 / 汇总 + Teammates 独立 Agent 实例 + Shared Task List 共享任务队列——`pending → in_progress → completed` + `blocks/blockedBy` 依赖 + 自动解锁，字段级契约对齐 TaskState + Mailbox 文件即消息的点对点通信 + 状态落盘（角色 / 工作上下文 / 决策 / 任务文件 / 团队名册写 `runs/<run-id>`，中断后一条命令重建，对齐 ATWZ）+ 工作树隔离（队友独立工作目录 / 分支，测试通过才合并，防文件冲突））
 - [ ] **M4**：生产化——异常处理与恢复（错误检测：工具输出验证 / API 错误码 / 超时；错误处理：日志 / 重试 / 回退 / 优雅降级 / 通知；恢复：状态回滚 / 诊断 / 自我纠正 / 升级）+ 沙箱强隔离后端（L3：Docker / containerd，替换 M1.6 轻量实现，`agent.Sandbox` 接口不变）+ 模型分级路由（按任务复杂度选档：简单→经济模型、复杂→强模型，附顺序回退链）+ 评估与监控（轨迹评估 Golden 测试集 + LLM-as-a-Judge 结构化评分 + 漂移检测 + 配置 A/B 择优：工具描述 / 提示词 / 路由与 Policy 规则版本化晋级，即知识进化第 2 层）+ 优先级调度（紧急性 / 重要性 / 依赖关系，限流配额按优先级区分）+ 生命周期控制 API（启动 / 暂停 / 恢复 / 终止）、`runs/<run-id>` 可恢复运行目录（Workspace 即真相：状态 / 中间结果 / 审计回放走文件系统，断点续传）、人工网关、Dashboard 可视化、限流 / 重试 / 缓存、熵管理（后台文档园丁定时清理过期文档 / 架构漂移）、插件化（对齐 Agent Plugins 1.0 目录规范：plugin.json + skills/ + mcp.json + 客户端命名空间目录；组件独立校验——单个 skill 无效跳过、MCP 失败不阻塞其余加载；marketplace 索引 + 安装/认证策略；MoS 特定数据走 extensions / 命名空间，不污染可移植字段）
 - [ ] **M5**：自我进化第 3 层（实验性）——独立"进化 Agent"不参与主循环、只消费审计事件流，在工作区修改外围策略/工具代码 → 编译 → 跑测试 → 通过才归档；核心引擎人类控制，合并走人工批准；版本档案支持回滚（SICA / AlphaEvolve / DPO 参考）

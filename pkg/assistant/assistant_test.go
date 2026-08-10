@@ -6,9 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"hegq.net/mos/internal/tool/builtin"
 	"hegq.net/mos/pkg/llm"
 	"hegq.net/mos/pkg/tool"
+	"hegq.net/mos/pkg/tool/builtin"
+	"hegq.net/mos/pkg/tool/extension"
 )
 
 func toolCall(name, args string) *llm.ToolCall {
@@ -342,7 +343,7 @@ func TestTUIModeRestrictedShellRejected(t *testing.T) {
 		t.Fatal("TUI 模式不应挂载确认器")
 	}
 
-	a, err := New(tuiShellModel(workDir), []tool.Tool{builtin.Shell{}}, Config{Policy: policy})
+	a, err := New(tuiShellModel(workDir), []tool.Tool{extension.Shell{}}, Config{Policy: policy})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

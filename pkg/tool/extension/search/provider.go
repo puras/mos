@@ -5,7 +5,8 @@
 //   - tavily / serper / brave：需 API Key
 //   - searxng：自托管 SearXNG，提供 base_url 即可
 //
-// 所有提供商统一返回 Result 结构；装配信息见 internal/config 的 MOS_SEARCH_* 约定。
+// 所有提供商统一返回 Result 结构；应用层装配信息见 MOS_SEARCH_* 约定
+// （internal/config），本包不关心具体配置来源。
 package search
 
 import (

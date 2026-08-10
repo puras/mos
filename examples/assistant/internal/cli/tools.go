@@ -3,12 +3,14 @@ package cli
 import (
 	"log"
 
-	"hegq.net/mos/internal/config"
-	"hegq.net/mos/internal/tool/builtin"
+	"hegq.net/mos/examples/assistant/internal/config"
 	"hegq.net/mos/pkg/tool"
+	"hegq.net/mos/pkg/tool/builtin"
+	"hegq.net/mos/pkg/tool/extension"
 )
 
-// allBuiltinTools 是业务侧默认工具集：框架不预设工具，由应用层显式装配。
+// allBuiltinTools 是业务侧默认工具集：
+// 内置工具包（builtin.Default，随框架分发） + 扩展工具包（extension：shell / web_search）。
 func allBuiltinTools() []tool.Tool {
 	// web_search 使用配置指定的搜索提供商（MOS_SEARCH_*）；
 	// 构建失败（如缺少 API Key）时回退默认 DuckDuckGo，避免应用无法启动。
@@ -17,17 +19,10 @@ func allBuiltinTools() []tool.Tool {
 		log.Printf("web_search: %v，使用默认 DuckDuckGo", err)
 		sp = nil
 	}
-	return []tool.Tool{
-		builtin.Calculator{},
-		builtin.CurrentTime{},
-		builtin.WebFetch{},
-		builtin.WebSearch{Provider: sp},
-		builtin.Shell{},
-		builtin.ReadFile{},
-		builtin.WriteFile{},
-		builtin.FindFiles{},
-		builtin.Grep{},
-	}
+	return append(builtin.Default(),
+		extension.WebSearch{Provider: sp},
+		extension.Shell{},
+	)
 }
 
 // loadTools 装配业务侧工具集：按 MOS_TOOLS 按需启用（逗号分隔工具名），

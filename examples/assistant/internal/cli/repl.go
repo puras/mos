@@ -11,7 +11,7 @@ import (
 
 	"github.com/mattn/go-isatty"
 
-	"hegq.net/mos/internal/config"
+	"hegq.net/mos/examples/assistant/internal/config"
 	"hegq.net/mos/pkg/agent"
 	"hegq.net/mos/pkg/assistant"
 	"hegq.net/mos/pkg/llm"

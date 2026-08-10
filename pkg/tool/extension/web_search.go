@@ -1,4 +1,4 @@
-package builtin
+package extension
 
 import (
 	"context"
@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"strings"
 
-	"hegq.net/mos/internal/tool/search"
 	"hegq.net/mos/pkg/tool"
+	"hegq.net/mos/pkg/tool/extension/search"
 )
 
 // WebSearch 搜索互联网获取实时信息，返回标题、链接与摘要列表。
-// Provider 指定搜索提供商（可用 search.New / internal/config 装配）；空时使用默认 DuckDuckGo。
+// Provider 指定搜索提供商（可用 search.New 装配，或应用层注入自定义实现）；空时使用默认 DuckDuckGo。
 type WebSearch struct {
 	Provider search.Provider
 }
