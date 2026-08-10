@@ -27,6 +27,7 @@ type Agent struct {
 	auditor      Auditor
 	memory       memory.Memory
 	sandbox      *tool.Sandbox
+	truncator    ResultTruncator
 	maxTurns     int
 	systemPrompt string
 	observer     Observer
@@ -91,6 +92,15 @@ func WithObserver(o Observer) Option {
 // 工作目录 jail + 资源限制 + 进程组超时。nil 时工具使用默认执行方式。
 func WithSandbox(s *tool.Sandbox) Option {
 	return func(a *Agent) { a.sandbox = s }
+}
+
+// WithResultTruncator 设置工具结果截断器（M2.3 上下文工程）：
+// 对"给模型看的工具结果文本"做行数/字节上限的瘦身，超限时截断并携带
+// 逃生通道提示（完整结果落盘路径，模型可经 read_file 按偏移回读）。
+// 截断只影响模型可见文本，工具原始返回值（含审计）不受影响。
+// 未设置时工具结果原样注入上下文。
+func WithResultTruncator(tr ResultTruncator) Option {
+	return func(a *Agent) { a.truncator = tr }
 }
 
 // Run 在会话上执行一次任务（非流式）：接收用户输入，循环 推理→工具调用 直至产出最终回复。
@@ -197,6 +207,12 @@ func (a *Agent) run(ctx context.Context, sess *Session, input string, stream boo
 		resultMsg := formatToolResult(result)
 		if err != nil {
 			resultMsg = "工具执行出错: " + err.Error()
+		}
+		// M2.3 上下文瘦身：截断只作用于模型可见文本，Auditor 仍审计原始 result
+		if a.truncator != nil {
+			if s, truncated := a.truncator.Truncate(action.ToolCall.Name, resultMsg); truncated {
+				resultMsg = s
+			}
 		}
 		feedback := llm.Message{
 			Role:       llm.RoleTool,

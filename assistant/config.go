@@ -36,4 +36,8 @@ type Config struct {
 	// Sandbox shell 命令执行沙箱（M1.6 隔离层）：工作目录 jail + 资源限制 + 进程组超时。
 	// 为 nil 时 shell 工具使用默认执行方式（10s 超时 + 64KB 截断）。
 	Sandbox *tool.Sandbox
+	// Truncator 工具结果截断器（M2.3 上下文工程）：对模型可见的工具结果做
+	// 行数/字节上限瘦身，超限时截断并携带逃生通道提示（完整结果落盘 + read_file 回读）。
+	// 为 nil 时启用框架默认实现（64KB / 2000 行，见 agent.NewDefaultTruncator）。
+	Truncator agent.ResultTruncator
 }

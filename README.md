@@ -109,6 +109,8 @@ reply, err := a.Run(ctx, sess, "帮我看看 workspace 里有什么文件")
 | `MOS_SEARCH_REGION` | duckduckgo 区域参数（如 `cn-cn`） |
 | `MOS_SEARCH_API_KEY` | tavily / serper / brave 的 API Key |
 | `MOS_SEARCH_BASE_URL` | searxng 服务地址；duckduckgo 自定义端点 |
+| `MOS_TOOL_OUTPUT_KB` | 工具结果截断：单次结果最大字节数 KB（默认 64，0 不限制） |
+| `MOS_TOOL_OUTPUT_LINES` | 工具结果截断：单次结果最大行数（默认 2000，0 不限制） |
 
 以上配置也可写入 **`.env` 文件**（默认 `examples/assistant/.env`，路径可用 `MOS_CONFIG` 覆盖）。键名与环境变量完全一致，读取优先级：**环境变量 > .env 文件 > 默认值**（`.env` 不覆盖已存在的环境变量）：
 
@@ -425,7 +427,7 @@ cd examples/assistant && go test ./...
 - [x] **M1.6**：执行沙箱（隔离层）——`tool.Sandbox`：Policy 管"该不该调用"、沙箱管"放行后能造成多大破坏"；本地轻量实现 = 工作目录 jail + 单次调用超时（进程组终止）+ 输出上限（丢弃式截断）+ 进程资源限制（CPU / 虚拟内存 / 单文件，`ulimit` 预置）+ 环境裁剪（白名单）+ 网络控制（NoNet 剥离代理，尽力而为），纯 Go 标准库零依赖；ctx 注入 `WithSandbox` / `SandboxFrom`，agent runtime 统一注入，shell 工具优先沙箱执行；远程强隔离（M4）可换 Docker / containerd 后端，对外 API 不变
 - [x] **M2.1**：任务状态外置（`TaskState`：目标 / 已验证事实 / 状态机，独立于消息历史，跨轮可恢复）
 - [x] **M2.2**：审计门（`Auditor`：默认审计器仅接受白名单只读工具的可验证输出，模型自述不算数）
-- [ ] **M2.3**：工具输出截断（行数/字节双重限制 + read 截头 / bash 截尾 + 逃生通道提示，防单次工具结果撑爆窗口）
+- [x] **M2.3**：工具输出截断（行数/字节双重限制 + 按工具类型智能截断——read/web 类截头、shell 类截尾、其余 head+tail + 逃生通道——完整结果落盘、提示模型用 read_file 按偏移回读；截断只作用于模型可见文本，Auditor 仍审计完整原始结果；框架层 `agent.ResultTruncator` 接口 + `agent.NewDefaultTruncator`，assistant 默认开启 64KB/2000 行，应用层经 `MOS_TOOL_OUTPUT_KB` / `MOS_TOOL_OUTPUT_LINES` 配置）
 - [ ] **M2.4**：两层消息与翻译边界（内部结构化消息 → LLM 标准消息 `convertToLlm`，自定义消息转 user 角色，支持摘要注入与 `excludeFromContext`）
 - [ ] **M2.5**：fresh-context 压缩（两轮之间触发，切割点不切断 ToolCall-Result 对；压缩摘要直接采用审计写入的 `TaskState`，而非 LLM 重新总结）+ 上下文利用率监控（40% Dumb Zone 告警线：渐进式披露——先给骨架、按需展开；分层上下文——常驻摘要 / 按需展开 / 懒加载）+ Doom Loop 检测（相同工具连续 3+ 次相似调用 → 回退上一有效状态或重置上下文）+ 上下文重置 / handoff（压缩后过渡到新一轮，跨 Session 交接，对齐 Loop Engineering 九杠杆）
 - [ ] **M2.6**：系统提示词动态组装（按"系统约束 / 任务定义 / 当前状态 / 工具签名 / 历史摘要"分段槽位；克制主义——静态模板应足够小（Pi 仅约 1K token 对比 Claude Code 数万），固定指令占得越少留给任务上下文越多；多级 CLAUDE.md 向上递归 + Skills 懒加载清单（对齐 Agent Skills 规范：SKILL.md frontmatter 声明 name + description 触发条件 + 步骤化正文 + references/ 按需 read））

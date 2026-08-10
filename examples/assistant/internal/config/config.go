@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"hegq.net/mos/agent"
 	"hegq.net/mos/assistant"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/llm/anthropic"
@@ -126,6 +127,8 @@ func LoadModel() (string, llm.ChatModel, error) {
 //	MOS_SANDBOX_MEM_KB   沙箱虚拟内存上限 KB（0 不限制）
 //	MOS_SANDBOX_MAX_FILE_KB 沙箱单文件大小上限 KB（0 不限制）
 //	MOS_SANDBOX_NO_NET   沙箱网络隔离（1 开启，尽力而为：剥离代理变量）
+//	MOS_TOOL_OUTPUT_KB   工具结果截断：单次结果最大字节数 KB（默认 64，0 表示不限制）
+//	MOS_TOOL_OUTPUT_LINES 工具结果截断：单次结果最大行数（默认 2000，0 表示不限制）
 //
 // 环境变量优先于 .env 文件；最大 Turn 数默认 10。
 // 安全策略由本应用层构造框架默认实现（assistant.NewDefaultPolicy）后注入，
@@ -154,7 +157,34 @@ func LoadConfig() (*assistant.Config, error) {
 		return nil, err
 	}
 	cfg.Sandbox = sandbox
+	tr, err := loadTruncator()
+	if err != nil {
+		return nil, err
+	}
+	cfg.Truncator = tr
 	return cfg, nil
+}
+
+// loadTruncator 从环境变量构造工具结果截断器（M2.3；默认 64KB / 2000 行）。
+func loadTruncator() (agent.ResultTruncator, error) {
+	cfg := agent.TruncatorConfig{}
+	if v := os.Getenv("MOS_TOOL_OUTPUT_KB"); v != "" {
+		kb, err := strconv.Atoi(v)
+		if err != nil || kb < 0 {
+			return nil, fmt.Errorf("config: MOS_TOOL_OUTPUT_KB 无效: %q", v)
+		}
+		if kb > 0 {
+			cfg.MaxBytes = kb * 1024
+		}
+	}
+	if v := os.Getenv("MOS_TOOL_OUTPUT_LINES"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("config: MOS_TOOL_OUTPUT_LINES 无效: %q", v)
+		}
+		cfg.MaxLines = n
+	}
+	return agent.NewDefaultTruncator(cfg), nil
 }
 
 // loadSandbox 从环境变量构造执行沙箱（MOS_SANDBOX=0 时返回 nil，shell 用默认执行方式）。

@@ -85,6 +85,9 @@ func New(model llm.ChatModel, tools []tool.Tool, cfg Config) (*Assistant, error)
 	if cfg.SystemPrompt == "" {
 		cfg.SystemPrompt = DefaultSystemPrompt
 	}
+	if cfg.Truncator == nil {
+		cfg.Truncator = agent.NewDefaultTruncator(agent.TruncatorConfig{})
+	}
 
 	opts := []agent.Option{
 		agent.WithPolicy(cfg.Policy),
@@ -94,6 +97,7 @@ func New(model llm.ChatModel, tools []tool.Tool, cfg Config) (*Assistant, error)
 		agent.WithSystemPrompt(cfg.SystemPrompt),
 		agent.WithObserver(cfg.Observer),
 		agent.WithSandbox(cfg.Sandbox),
+		agent.WithResultTruncator(cfg.Truncator),
 	}
 	if cfg.MaxTurns > 0 {
 		opts = append(opts, agent.WithMaxTurns(cfg.MaxTurns))
