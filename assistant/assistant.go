@@ -120,6 +120,12 @@ func New(model llm.ChatModel, tools []tool.Tool, cfg Config) (*Assistant, error)
 	if cfg.MaxTurns > 0 {
 		opts = append(opts, agent.WithMaxTurns(cfg.MaxTurns))
 	}
+	// M2.7 RAG 检索注入：配置了 Retriever 时每轮按任务目标检索注入（知识守门）
+	if cfg.Retriever != nil {
+		opts = append(opts, agent.WithRetriever(cfg.Retriever, agent.RetrieverConfig{
+			MinScore: cfg.RetrieverMinScore,
+		}))
+	}
 	ag := agent.New(model, reg, opts...)
 	return &Assistant{agent: ag, config: cfg, tools: reg, policy: cfg.Policy}, nil
 }

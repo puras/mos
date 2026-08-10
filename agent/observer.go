@@ -23,6 +23,9 @@ const (
 	EventCompacted
 	// EventContextUsage 上下文利用率观测（M2.5）：Content 为 "N%"，Usage 承载本次用量。
 	EventContextUsage
+	// EventKnowledgeGap 知识差距（M2.7 Agentic RAG）：检索有候选但全部低于知识守门
+	// 最低分，Content 为查询，交由模型经外部工具补齐。
+	EventKnowledgeGap
 )
 
 // Event 是运行时向外广播的事件，用于流式输出、中间过程观测等。

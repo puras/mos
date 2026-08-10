@@ -43,6 +43,12 @@ type Config struct {
 	Auditor agent.Auditor
 	// Memory 会话记忆存储（默认 inmemory.New()，进程内实现）。
 	Memory memory.Memory
+	// Retriever 长期记忆检索器（M2.7 RAG 注入）：每轮按任务目标检索相关知识，
+	// 经知识守门后注入上下文（携带来源引用）。为 nil 时不注入。
+	Retriever memory.Retriever
+	// RetrieverMinScore 知识守门最低分（M2.7 Agentic RAG）：>0 时低于该阈值的
+	// 检索分块不注入，全部低于阈值则判定知识差距（模型经外部工具补齐）。
+	RetrieverMinScore float64
 	// Observer 任务循环事件回调（可观测工具调用与思考过程）。
 	Observer agent.Observer
 	// Sandbox shell 命令执行沙箱（M1.6 隔离层）：工作目录 jail + 资源限制 + 进程组超时。

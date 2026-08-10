@@ -34,6 +34,8 @@ type Agent struct {
 	maxTurns      int
 	systemPrompt  string
 	assembler     SystemAssembler // M2.6 槽位式系统提示词动态组装（优先于 systemPrompt）
+	retriever     memory.Retriever
+	retrieverCfg  RetrieverConfig // M2.7 RAG 检索注入配置
 	observer      Observer
 }
 
@@ -231,7 +233,27 @@ func (a *Agent) run(ctx context.Context, sess *Session, input string, stream boo
 			}
 		}
 
-		action, err := a.nextAction(ctx, sess, turn, history, stream)
+		// M2.7 RAG 检索注入：按任务目标检索长期记忆，经知识守门后以 CustomMsg 注入
+		// （来源标注 [rag]，携带来源引用）。注入只作用于当轮发送给模型的副本——
+		// 不进会话历史，每轮按最新知识重检，避免旧注入消息跨轮累积。
+		toSend := history
+		if a.retriever != nil {
+			query := sess.State.Goal
+			if query == "" {
+				query = input
+			}
+			extras, err := a.retrieveAndInject(ctx, sess, turn, query)
+			if err != nil {
+				return "", err
+			}
+			if len(extras) > 0 {
+				toSend = make([]InternalMessage, 0, len(history)+len(extras))
+				toSend = append(toSend, history...)
+				toSend = append(toSend, extras...)
+			}
+		}
+
+		action, err := a.nextAction(ctx, sess, turn, toSend, stream)
 		if err != nil {
 			return "", fmt.Errorf("agent: plan turn %d: %w", turn, err)
 		}

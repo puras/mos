@@ -9,6 +9,7 @@ import (
 
 	"hegq.net/mos/agent"
 	"hegq.net/mos/llm"
+	"hegq.net/mos/memory"
 	"hegq.net/mos/tool"
 	"hegq.net/mos/tool/builtin"
 	"hegq.net/mos/tool/extension"
@@ -173,6 +174,83 @@ func TestAssistantSystemAssemblerCustom(t *testing.T) {
 	sys := m.last.Messages[0].Content
 	if !strings.Contains(sys, "来自应用层") || strings.Contains(sys, "不应出现") {
 		t.Fatalf("system = %q, want custom assembler output", sys)
+	}
+}
+
+// ---- M2.7 长期记忆 RAG 检索注入装配 ----
+
+// stubRetriever 固定返回预设分块的检索器，供装配层验证。
+type stubRetriever struct{ docs []memory.Document }
+
+func (s *stubRetriever) Retrieve(_ context.Context, _ string, _ int) ([]memory.Document, error) {
+	return s.docs, nil
+}
+
+// 配置 Retriever 后每轮按任务目标检索并以 [rag] 来源注入；
+// 注入消息不写入会话历史。
+func TestAssistantRetrieverInjection(t *testing.T) {
+	ctx := context.Background()
+	m := &captureModel{}
+	a, err := New(m, nil, Config{
+		Retriever: &stubRetriever{docs: []memory.Document{
+			{Source: "doc-x", Content: "远程数据库连接串位于配置中心", Score: 0.7},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	sess := a.NewSession()
+	if _, err := a.Run(ctx, sess, "数据库密码在哪"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	last := m.last.Messages[len(m.last.Messages)-1]
+	for _, want := range []string{"[rag]", "检索到的相关记忆", "doc-x", "远程数据库连接串"} {
+		if !strings.Contains(last.Content, want) {
+			t.Fatalf("injected content missing %q:\n%s", want, last.Content)
+		}
+	}
+	for _, msg := range sess.History {
+		if strings.Contains(msg.Content, "检索到的相关记忆") {
+			t.Fatalf("rag injection leaked into session history: %+v", sess.History)
+		}
+	}
+}
+
+// RetrieverMinScore 知识守门：全部检索分块低于阈值时广播 EventKnowledgeGap，
+// 不注入任何 rag 内容（交由模型经外部工具补齐）。
+func TestAssistantRetrieverMinScoreGap(t *testing.T) {
+	ctx := context.Background()
+	m := &captureModel{}
+	var events []agent.Event
+	a, err := New(m, nil, Config{
+		Retriever: &stubRetriever{docs: []memory.Document{
+			{Source: "doc-x", Content: "与查询无关", Score: 0.1},
+		}},
+		RetrieverMinScore: 0.5,
+		Observer:          func(ev agent.Event) { events = append(events, ev) },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := a.Run(ctx, a.NewSession(), "隔离级别是什么"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, msg := range m.last.Messages {
+		if strings.Contains(msg.Content, "[rag]") {
+			t.Fatalf("knowledge gap should not inject rag: %+v", msg)
+		}
+	}
+	var gap bool
+	for _, ev := range events {
+		if ev.Type == agent.EventKnowledgeGap {
+			gap = true
+			if ev.Content != "隔离级别是什么" {
+				t.Fatalf("gap content = %q, want 查询文本", ev.Content)
+			}
+		}
+	}
+	if !gap {
+		t.Fatalf("no EventKnowledgeGap emitted: %+v", events)
 	}
 }
 
