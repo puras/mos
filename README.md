@@ -7,7 +7,7 @@ MoS 是一个基于 Go 的智能体基础框架（Agent Base），提供统一�
 
 ## 特性
 
-- **多协议 LLM 接入**：统一 `ChatModel` 抽象（模型对象）+ 协议注册表，内置 OpenAI 兼容（DeepSeek / 通义千问 / GLM / Ollama 等）与 Anthropic Claude 原生协议适配器，支持函数调用与流式输出
+- **多协议 LLM 接入**：统一 `ChatModel` 抽象（模型对象）+ 协议注册表，内置 OpenAI 兼容（DeepSeek / 通义千问 / GLM / Ollama 等）、Anthropic Claude 与 Google Gemini 原生协议适配器，支持函数调用与流式输出
 - **声明式工具系统**：结构体 tag 自动生成 JSON Schema，模型函数调用参数自动校验与解析
 - **可插拔规划**：默认 ReAct 循环，可通过 `planner.Planner` 接口替换为其他策略
 - **会话记忆**：统一的 `memory.Memory` 接口，内置内存实现；长期向量记忆（sqlite-vec）规划中
@@ -16,9 +16,11 @@ MoS 是一个基于 Go 的智能体基础框架（Agent Base），提供统一�
 - **Loop Engineering（循环可观测）**：每轮循环暴露思考/工具调用/工具结果/完成事件（含迭代序号），完整还原推理过程
 - **审计式任务状态（Audit Gate + Task State）**：工具结果经 `Auditor` 审计后，仅"环境可独立验证"的事实写入独立于消息历史的 `TaskState`（目标 / 已验证事实 / 状态机）；模型自述不算数——执行上下文可刷新，进度真相不过期
 - **开箱即用的智能体**：`assistant` 包组装好 Provider + 内置/扩展工具包 + 安全策略；交互式 CLI 见示例工程 `examples/assistant`
-- **零第三方依赖**：SDK 仅使用 Go 标准库（示例工程除 SDK 外同样零依赖）
+- **零第三方依赖**：SDK 仅使用 Go 标准库；示例工程 TUI 依赖 charmbracelet 系列（bubbles / bubbletea / glamour / lipgloss）
 
 ## 快速开始
+
+MoS 是纯依赖库：外部工程 `go get hegq.net/mos` 后按需 import 各包（如 `hegq.net/mos/agent`、`hegq.net/mos/tool`、`hegq.net/mos/llm/openai`），SDK 零第三方依赖：
 
 ```go
 // 0. 创建模型对象（实现 llm.ChatModel 即可，见下方"LLM 接入"）
@@ -87,8 +89,8 @@ reply, err := a.Run(ctx, sess, "帮我看看 workspace 里有什么文件")
 
 | 环境变量 | 说明 |
 | --- | --- |
-| `MOS_PROVIDER` | openai / anthropic / mock（默认 openai，无 Key 自动降级 mock） |
-| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | 对应协议的密钥 |
+| `MOS_PROVIDER` | openai / anthropic / gemini / mock（默认 openai，无 Key 自动降级 mock） |
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` | 对应协议的密钥 |
 | `MOS_BASE_URL` | 自定义网关地址（兼容 OpenAI 协议） |
 | `MOS_MODEL` | 模型名 |
 | `MOS_SYSTEM_PROMPT` | 系统引导词 |
@@ -103,6 +105,10 @@ reply, err := a.Run(ctx, sess, "帮我看看 workspace 里有什么文件")
 | `MOS_SANDBOX_MEM_KB` | 沙箱虚拟内存上限 KB（0 不限制） |
 | `MOS_SANDBOX_MAX_FILE_KB` | 沙箱单文件大小上限 KB（0 不限制） |
 | `MOS_SANDBOX_NO_NET` | 沙箱网络隔离（1 开启，尽力而为：剥离代理变量） |
+| `MOS_SEARCH_PROVIDER` | web_search 搜索提供商：duckduckgo / tavily / serper / brave / searxng（默认 duckduckgo，无需 Key） |
+| `MOS_SEARCH_REGION` | duckduckgo 区域参数（如 `cn-cn`） |
+| `MOS_SEARCH_API_KEY` | tavily / serper / brave 的 API Key |
+| `MOS_SEARCH_BASE_URL` | searxng 服务地址；duckduckgo 自定义端点 |
 
 以上配置也可写入 **`.env` 文件**（默认 `examples/assistant/.env`，路径可用 `MOS_CONFIG` 覆盖）。键名与环境变量完全一致，读取优先级：**环境变量 > .env 文件 > 默认值**（`.env` 不覆盖已存在的环境变量）：
 
@@ -117,7 +123,7 @@ MOS_SHELL_ALLOW=ls, cat, pwd
 MOS_WORKDIR=./workspace
 ```
 
-支持 `#` 注释、空行与可选的 `export` 前缀；`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` 均为空时自动降级为 mock 离线模型。模板见 `examples/assistant/.env.example`。
+支持 `#` 注释、空行与可选的 `export` 前缀；`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` 均为空时自动降级为 mock 离线模型。模板见 `examples/assistant/.env.example`。
 
 工具包分两类（均在 `tool/` 下随框架分发）：**内置工具包 `tool/builtin`**（纯标准库，`builtin.Default()` 一键装配）——`calculator`（表达式求值）、`current_time`（当前时间）、`web_fetch`（网页抓取转纯文本）、`read_file` / `write_file`（文件读写）、`find_files` / `grep`（文件搜索）；**扩展工具包 `tool/extension`**（需依赖注入）——`shell`（受限命令执行，支持沙箱隔离）、`web_search`（联网搜索，绑定搜索提供商，提供商实现见 `tool/extension/search`）。
 
@@ -361,15 +367,15 @@ mos/
 ├── agent/                 # 智能体运行时：任务循环 / Policy / Session / TaskState / Auditor / Observer
 ├── planner/               # 规划策略：Planner 接口 + ReAct 实现
 ├── assistant/             # 组装好的完整智能体：模型对象注入 / 默认策略 / 内置+扩展工具包
+├── .gitignore
 └── examples/
     └── assistant/         # 示例应用（独立 Go module：hegq.net/mos/examples/assistant）
-        ├── go.mod         #   replace hegq.net/mos => ../..（本地引用 SDK）
+        ├── go.mod         #   replace hegq.net/mos => ../.. 本地引用 SDK（mogo 为 SDK 传递依赖，需重复声明 replace，不跨模块传递）
         ├── main.go        #   CLI 薄入口
         ├── internal/
         │   ├── config/    #     应用层：.env + 环境变量 → 模型对象 + 运行配置
         │   └── cli/       #     应用层 CLI 交互逻辑（REPL / TUI）
-        ├── .env.example   #   应用层配置模板（复制为 .env 使用，MOS_CONFIG 可指定路径）
-        └── .gitignore
+        └── .env.example   #   应用层配置模板（复制为 .env 使用，MOS_CONFIG 可指定路径）
 ```
 
 ### SDK 根目录包与示例应用 internal 的划分准则
@@ -415,7 +421,7 @@ cd examples/assistant && go test ./...
 方向参考 LongHorizon-Harness 的"审计式状态迁移"（状态外置、只接受被环境独立验证过的事实、执行上下文可刷新）、Pi-Agent 的"上下文工程"（工具输出截断、结构化压缩、两层消息翻译边界）、Agentic Design Patterns 的"路由 / 异常处理 / 人机协同"、Harness Engineering 的铁律（上下文越少越好、专才 > 通才、状态写文件不写上下文、能写成 Linter 的约束别写成文档）与九种编排模式谱系（ReAct → Plan&Solve → REWOO → Storm → LLMCompiler → Basic Reflection → Reflexion → LATS → Self-Discover）、Loop Engineering 的九杠杆（确定性传感器 / 显式停止条件 / 跨迭代上下文管理 / 清晰工具设计 / Doom Loop 检测 / 上下文利用率 40% Dumb Zone 阈值 / 补偿面理论——harness 随模型变强主动拆组件，Anthropic 已拆 Context Reset）、Graph Engineering 的图编排四原语（节点 / 边 / 状态 schema + reducers / checkpointer 中断恢复，LangGraph 参考）与使用判据（分支 / 并行 / 持久 / 可审计——不满足判据不引入显式图）、Agent Plugins 1.0.0 的插件打包规范（plugin.json + skills/ + mcp.json + 客户端命名空间，组件独立校验）。
 
 - [x] **M1**：Agent 任务循环、多协议 LLM 接入、工具系统、工作记忆、事件观测
-- [x] **M1.5**：组装智能体（assistant 包 + CLI）、Harness Engineering 工具安全防护、Loop Engineering 循环可观测
+- [x] **M1.5**：组装智能体（assistant 包 + 示例工程 CLI）、Harness Engineering 工具安全防护、Loop Engineering 循环可观测
 - [x] **M1.6**：执行沙箱（隔离层）——`tool.Sandbox`：Policy 管"该不该调用"、沙箱管"放行后能造成多大破坏"；本地轻量实现 = 工作目录 jail + 单次调用超时（进程组终止）+ 输出上限（丢弃式截断）+ 进程资源限制（CPU / 虚拟内存 / 单文件，`ulimit` 预置）+ 环境裁剪（白名单）+ 网络控制（NoNet 剥离代理，尽力而为），纯 Go 标准库零依赖；ctx 注入 `WithSandbox` / `SandboxFrom`，agent runtime 统一注入，shell 工具优先沙箱执行；远程强隔离（M4）可换 Docker / containerd 后端，对外 API 不变
 - [x] **M2.1**：任务状态外置（`TaskState`：目标 / 已验证事实 / 状态机，独立于消息历史，跨轮可恢复）
 - [x] **M2.2**：审计门（`Auditor`：默认审计器仅接受白名单只读工具的可验证输出，模型自述不算数）
