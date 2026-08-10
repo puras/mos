@@ -179,10 +179,10 @@ type Policy interface {
 | --- | --- | --- |
 | 确定性传感器 | 用测试 / typecheck / lint 等可验证信号代替"问模型对不对" | ✓ 审计门 `Auditor` + Audit Gate（只接受环境验证过的事实） |
 | 显式停止条件 | 可验证的 DONE 信号 + 硬迭代上限 / 预算上限 | ✓ 完成判断 + `MaxTurns`；token 预算上限待 M4 |
-| 跨迭代上下文管理 | 压缩旧轮、JIT 检索、手写 scratchpad，防 context rot | ~ 截断（M2.3）/ 摘要（M2.5）/ 记忆（M2.7）规划中 |
+| 跨迭代上下文管理 | 压缩旧轮、JIT 检索、手写 scratchpad，防 context rot | ✓ 截断（M2.3）+ 摘要压缩（M2.5）；JIT 检索记忆待 M2.7 |
 | 清晰工具设计 | 单次调用单意图、返回 crisp signal，不留歧义 | ✓ 内置 / 扩展工具签名统一；输出截断（M2.3）保留关键字段 |
-| Doom Loop 检测 | 相同工具连续 3+ 次相似调用 → 死循环检测 / 回退 / 重置 | ✗ 待新增（随 M2.5） |
-| 上下文利用率阈值 | Dumb Zone：窗口用满约 40% 后输出质量明显下降 | ✗ 待新增 40% 告警线 + 渐进式披露（随 M2.5） |
+| Doom Loop 检测 | 相同工具连续 3+ 次相似调用 → 死循环检测 / 回退 / 重置 | ✓ 连续相同调用 ≥3 中断为 blocked（M2.5）；回退 / 重置留待 M2.6 |
+| 上下文利用率阈值 | Dumb Zone：窗口用满约 40% 后输出质量明显下降 | ✓ 40% 告警线事件广播（M2.5）；渐进式披露 / 分层懒加载留待 M2.6 |
 | 进度追踪 | 维护"做到哪了"而非完整对话记录 | ✓ `TaskState` 外置、跨轮唯一真相 |
 | 可观测性 | 事件流 + trace 回放、过程审计 | ✓ Observer / Event（Turn 序号） |
 | 补偿面理论 | 模型变强 → harness 主动拆组件（Anthropic 已拆 Context Reset），只留护城河 | ✗ 设计纪律（见路线图方向） |
@@ -429,7 +429,7 @@ cd examples/assistant && go test ./...
 - [x] **M2.2**：审计门（`Auditor`：默认审计器仅接受白名单只读工具的可验证输出，模型自述不算数）
 - [x] **M2.3**：工具输出截断（行数/字节双重限制 + 按工具类型智能截断——read/web 类截头、shell 类截尾、其余 head+tail + 逃生通道——完整结果落盘、提示模型用 read_file 按偏移回读；截断只作用于模型可见文本，Auditor 仍审计完整原始结果；框架层 `agent.ResultTruncator` 接口 + `agent.NewDefaultTruncator`，assistant 默认开启 64KB/2000 行，应用层经 `MOS_TOOL_OUTPUT_KB` / `MOS_TOOL_OUTPUT_LINES` 配置）
 - [x] **M2.4**：两层消息与翻译边界（`Session.History` 升级为内部结构化消息 `agent.InternalMessage`——嵌入 `llm.Message` 并附加 `ExcludeFromContext` / `Summary` / `Source` 运行期元数据；翻译边界 `convertToLlm` 在发送给规划器/模型前统一执行——过滤 `ExcludeFromContext` 消息、标准角色原样转换、摘要消息（`SummaryMsg`，M2.5 压缩产物）与自定义消息（`CustomMsg`，应用层注入/Agent 间通信）统一转 user 角色并按来源标注，`[历史摘要]` / `[source]` 前缀；memory/planner 接口不变，`fromLlm` 将持久化标准消息接回内部层，工具调用消息的 `ToolCalls`/`ReasoningContent`/`ToolCallID` 字段翻译边界不丢失）
-- [ ] **M2.5**：fresh-context 压缩（两轮之间触发，切割点不切断 ToolCall-Result 对；压缩摘要直接采用审计写入的 `TaskState`，而非 LLM 重新总结）+ 上下文利用率监控（40% Dumb Zone 告警线：渐进式披露——先给骨架、按需展开；分层上下文——常驻摘要 / 按需展开 / 懒加载）+ Doom Loop 检测（相同工具连续 3+ 次相似调用 → 回退上一有效状态或重置上下文）+ 上下文重置 / handoff（压缩后过渡到新一轮，跨 Session 交接，对齐 Loop Engineering 九杠杆）
+- [x] **M2.5**：fresh-context 压缩（`agent.Compactor` 接口 + `NewDefaultCompactor`：两轮之间超 `KeepRecent`（默认 12）触发，切割点从尾部数且不切断 ToolCall-Result 对——首条若为孤儿 tool 结果则前移切割点；压缩摘要直接采用审计写入的 `TaskState.Snapshot()` 而非 LLM 重新总结，以 `SummaryMsg` 注入、翻译边界转 user 角色标 `[历史摘要]`；压缩后 `syncHistory` 剔除 system 引导并把保留消息重放回 memory）+ 上下文利用率监控（`planner.Action.Usage` 透出模型 token 用量，`WithContextBudget` 设置窗口预算，超过 40% Dumb Zone 广播 `EventContextUsage`）+ Doom Loop 检测（`WithDoomLoopDetection`：相同工具名+参数连续 3 次调用 → 中断任务置 blocked 并返回错误）——渐进式披露 / 分层上下文懒加载 / 上下文重置与跨 Session handoff 留待 M2.6+；框架层均为可选 Option，assistant 默认开启 Compactor
 - [ ] **M2.6**：系统提示词动态组装（按"系统约束 / 任务定义 / 当前状态 / 工具签名 / 历史摘要"分段槽位；克制主义——静态模板应足够小（Pi 仅约 1K token 对比 Claude Code 数万），固定指令占得越少留给任务上下文越多；多级 CLAUDE.md 向上递归 + Skills 懒加载清单（对齐 Agent Skills 规范：SKILL.md frontmatter 声明 name + description 触发条件 + 步骤化正文 + references/ 按需 read））
 - [ ] **M2.7**：长期记忆（sqlite-vec 向量检索 + SQLite FTS5 的 BM25 混合检索）、RAG（分块策略 chunk_size/overlap + 检索注入 + 来源引用）、Agentic RAG 知识守门人（源验证 / 冲突裁决 / 多步检索 / 知识差距触发外部工具）、流式输出透传
 - [ ] **M2.8**：人工介入工具 + 升级策略（`request_human_input`：模型主动请求人类输入/确认/授权，作为普通工具接入；升级策略定义"何时、如何交给人类"，配合人工网关；注意 HITL 权衡：可扩展性不足、依赖专家、敏感数据需匿名化）+ interrupt-before（等待人工输入前用 Checkpointer 持久化状态，恢复后从断点继续，对齐 Graph Engineering 的 checkpointer 语义）

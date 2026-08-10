@@ -40,4 +40,8 @@ type Config struct {
 	// 行数/字节上限瘦身，超限时截断并携带逃生通道提示（完整结果落盘 + read_file 回读）。
 	// 为 nil 时启用框架默认实现（64KB / 2000 行，见 agent.NewDefaultTruncator）。
 	Truncator agent.ResultTruncator
+	// Compactor fresh-context 压缩器（M2.5 上下文工程）：两轮之间历史超过阈值时，
+	// 将旧消息压缩为摘要（TaskState 已验证事实）注入并保留最近消息，防跨轮上下文腐化。
+	// 为 nil 时启用框架默认实现（保留最近 12 条，见 agent.NewDefaultCompactor）。
+	Compactor agent.Compactor
 }

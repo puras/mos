@@ -21,16 +21,19 @@ type Policy interface {
 
 // Agent 是智能体运行时，驱动 感知-推理-行动 的任务循环。
 type Agent struct {
-	planner      planner.Planner
-	tools        *tool.Registry
-	policy       Policy
-	auditor      Auditor
-	memory       memory.Memory
-	sandbox      *tool.Sandbox
-	truncator    ResultTruncator
-	maxTurns     int
-	systemPrompt string
-	observer     Observer
+	planner       planner.Planner
+	tools         *tool.Registry
+	policy        Policy
+	auditor       Auditor
+	memory        memory.Memory
+	sandbox       *tool.Sandbox
+	truncator     ResultTruncator
+	compactor     Compactor         // M2.5 fresh-context 压缩
+	doomLoop      *doomLoopDetector // M2.5 Doom Loop 检测
+	contextBudget int               // M2.5 上下文利用率监控（模型窗口 token 预算）
+	maxTurns      int
+	systemPrompt  string
+	observer      Observer
 }
 
 // Option 是 Agent 的配置项。
@@ -103,6 +106,27 @@ func WithResultTruncator(tr ResultTruncator) Option {
 	return func(a *Agent) { a.truncator = tr }
 }
 
+// WithCompactor 设置 fresh-context 压缩器（M2.5 上下文工程）：
+// 两轮之间历史超过阈值时，将旧消息压缩为摘要（TaskState 已验证事实）注入，
+// 保留最近消息，防跨轮上下文腐化。未设置时不压缩。
+func WithCompactor(c Compactor) Option {
+	return func(a *Agent) { a.compactor = c }
+}
+
+// WithDoomLoopDetection 开启 Doom Loop 检测（M2.5）：
+// 相同工具连续 maxRepeat 次相同参数调用时判定为循环，任务中断（状态 blocked），
+// 避免空转耗尽上下文。maxRepeat<=0 时默认 3。未调用则不检测。
+func WithDoomLoopDetection(maxRepeat int) Option {
+	return func(a *Agent) { a.doomLoop = newDoomLoopDetector(maxRepeat) }
+}
+
+// WithContextBudget 设置模型上下文窗口 token 预算（M2.5 上下文利用率监控）：
+// 每次模型调用后统计 PromptTokens/预算 利用率并广播 EventContextUsage 事件，
+// 超过 40% Dumb Zone 阈值时附告警。未设置时不监控。
+func WithContextBudget(budget int) Option {
+	return func(a *Agent) { a.contextBudget = budget }
+}
+
 // Run 在会话上执行一次任务（非流式）：接收用户输入，循环 推理→工具调用 直至产出最终回复。
 func (a *Agent) Run(ctx context.Context, sess *Session, input string) (string, error) {
 	return a.run(ctx, sess, input, false)
@@ -159,9 +183,34 @@ func (a *Agent) run(ctx context.Context, sess *Session, input string, stream boo
 
 	for i := 0; i < a.maxTurns; i++ {
 		turn := i + 1
+
+		// M2.5 fresh-context 压缩：两轮之间触发（第二轮起，历史超过阈值时）
+		if a.compactor != nil && turn > 1 {
+			if newHist, ok := a.compactor.Compact(history, &sess.State); ok {
+				history = newHist
+				if err := a.syncHistory(ctx, sess, newHist); err != nil {
+					return "", fmt.Errorf("agent: sync history: %w", err)
+				}
+				a.notify(Event{Type: EventCompacted, SessionID: sess.ID, Turn: turn, Content: sess.State.Snapshot()})
+			}
+		}
+
 		action, err := a.nextAction(ctx, sess, turn, history, stream)
 		if err != nil {
 			return "", fmt.Errorf("agent: plan turn %d: %w", turn, err)
+		}
+
+		// M2.5 上下文利用率监控：广播用量事件，超 40% Dumb Zone 阈值时告警
+		if a.contextBudget > 0 && action.Usage.PromptTokens > 0 {
+			ratio := float64(action.Usage.PromptTokens) / float64(a.contextBudget)
+			ev := Event{
+				Type:      EventContextUsage,
+				SessionID: sess.ID,
+				Turn:      turn,
+				Content:   fmt.Sprintf("%.0f%%", ratio*100),
+				Usage:     action.Usage,
+			}
+			a.notify(ev)
 		}
 
 		// 暴露本轮思考（Loop Engineering 观测点）
@@ -188,6 +237,12 @@ func (a *Agent) run(ctx context.Context, sess *Session, input string, stream boo
 			return "", fmt.Errorf("agent: save memory: %w", err)
 		}
 		a.notify(Event{Type: EventToolCall, SessionID: sess.ID, Turn: turn, ToolCall: action.ToolCall})
+
+		// M2.5 Doom Loop 检测：相同工具连续相同参数调用 → 中断，避免空转耗尽上下文
+		if a.doomLoop != nil && a.doomLoop.observe(action.ToolCall) {
+			sess.State.Status = StatusBlocked
+			return "", fmt.Errorf("agent: doom loop detected: tool %q called %d times with identical args", action.ToolCall.Name, a.doomLoop.maxRepeat)
+		}
 
 		// 策略检查（Harness Engineering）后再执行工具
 		var result any
@@ -271,6 +326,31 @@ func (a *Agent) append(ctx context.Context, sess *Session, msg InternalMessage) 
 	sess.History = append(sess.History, msg)
 	if a.memory != nil {
 		return a.memory.Append(ctx, sess.ID, msg.Message)
+	}
+	return nil
+}
+
+// syncHistory 在 fresh-context 压缩（M2.5）后同步会话历史与持久化记忆：
+// 剔除 system 引导（每次执行注入），摘要与保留消息写入会话并重放记忆存储。
+func (a *Agent) syncHistory(ctx context.Context, sess *Session, history []InternalMessage) error {
+	persist := make([]InternalMessage, 0, len(history))
+	for _, m := range history {
+		if m.Role == llm.RoleSystem {
+			continue
+		}
+		persist = append(persist, m)
+	}
+	sess.History = persist
+	if a.memory == nil {
+		return nil
+	}
+	if err := a.memory.Clear(ctx, sess.ID); err != nil {
+		return err
+	}
+	for _, m := range persist {
+		if err := a.memory.Append(ctx, sess.ID, m.Message); err != nil {
+			return err
+		}
 	}
 	return nil
 }

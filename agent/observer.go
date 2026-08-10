@@ -19,6 +19,10 @@ const (
 	EventFact
 	// EventStream 模型流式输出的文本增量（Delta 字段承载）。
 	EventStream
+	// EventCompacted 历史被 fresh-context 压缩（M2.5）：Content 为压缩摘要文本。
+	EventCompacted
+	// EventContextUsage 上下文利用率观测（M2.5）：Content 为 "N%"，Usage 承载本次用量。
+	EventContextUsage
 )
 
 // Event 是运行时向外广播的事件，用于流式输出、中间过程观测等。
@@ -27,11 +31,12 @@ type Event struct {
 	Type       EventType
 	SessionID  string
 	Turn       int    // 当前 Turn 序号（从 1 开始）
-	Content    string // EventStep 的思考文本 / EventDone 的最终回复
+	Content    string // EventStep 的思考文本 / EventDone 的最终回复 / EventCompacted 摘要 / EventContextUsage 利用率
 	Delta      string // 预留：流式文本增量
 	ToolCall   *llm.ToolCall
 	ToolResult any
-	Fact       *Fact // EventFact：审计通过的已验证事实
+	Fact       *Fact     // EventFact：审计通过的已验证事实
+	Usage      llm.Usage // EventContextUsage：模型 token 用量
 }
 
 // Observer 是事件回调函数。

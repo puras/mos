@@ -17,6 +17,8 @@ type Action struct {
 	ReasoningContent string
 	// ToolCall 非空表示需要调用该工具，为空表示直接作答（任务结束）。
 	ToolCall *llm.ToolCall
+	// Usage 是本次决策的模型 token 用量（供上下文利用率监控等观测，M2.5）。
+	Usage llm.Usage
 }
 
 // Planner 在任务循环中决定下一步动作。
@@ -103,7 +105,7 @@ func (p *ReAct) buildRequest(history []llm.Message, tools []llm.Tool) *llm.Reque
 
 // toAction 将模型响应转换为规划器决策。
 func toAction(resp *llm.Response) Action {
-	action := Action{Content: resp.Message.Content, ReasoningContent: resp.Message.ReasoningContent}
+	action := Action{Content: resp.Message.Content, ReasoningContent: resp.Message.ReasoningContent, Usage: resp.Usage}
 	if len(resp.Message.ToolCalls) > 0 {
 		action.ToolCall = &resp.Message.ToolCalls[0]
 	}
