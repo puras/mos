@@ -2,6 +2,7 @@
 package tool
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -103,10 +104,29 @@ func Parse[T any](args json.RawMessage) (T, error) {
 	if len(args) == 0 {
 		return out, nil
 	}
+	args = normalizeArgs(args)
 	if err := json.Unmarshal(args, &out); err != nil {
 		return out, fmt.Errorf("tool: parse args: %w", err)
 	}
 	return out, nil
+}
+
+// normalizeArgs 容错修复模型输出的非法参数 JSON。
+// 部分模型偶发输出 "{…}{…}" 这类多个 JSON 值拼接的参数，整体解析会失败；
+// 此时尝试取第一个顶层 JSON 值作为参数，避免工具链路整条中断。
+func normalizeArgs(args json.RawMessage) json.RawMessage {
+	var probe any
+	if err := json.Unmarshal(args, &probe); err == nil {
+		return args
+	}
+	dec := json.NewDecoder(bytes.NewReader(args))
+	var first any
+	if err := dec.Decode(&first); err == nil {
+		if b, err := json.Marshal(first); err == nil {
+			return b
+		}
+	}
+	return args
 }
 
 // generateSchema 通过反射从结构体示例生成 JSON Schema。

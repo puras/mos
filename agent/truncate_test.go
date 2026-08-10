@@ -192,7 +192,7 @@ func TestTruncatorInAgentKeepsAuditRaw(t *testing.T) {
 	}
 
 	// 历史中的 tool 消息应被截断（含逃生通道提示）
-	var toolMsg *llm.Message
+	var toolMsg *InternalMessage
 	for i := range sess.History {
 		if sess.History[i].Role == llm.RoleTool {
 			toolMsg = &sess.History[i]

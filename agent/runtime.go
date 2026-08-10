@@ -127,21 +127,23 @@ func (a *Agent) run(ctx context.Context, sess *Session, input string, stream boo
 	ctx = tool.WithSandbox(ctx, a.sandbox)
 
 	// 组装本轮完整消息：system 引导 + 会话历史（配置了 Memory 时以其为准）+ 用户输入
-	var prev []llm.Message
+	var prev []InternalMessage
 	if a.memory != nil {
 		var err error
-		if prev, err = a.memory.Load(ctx, sess.ID); err != nil {
+		msgs, err := a.memory.Load(ctx, sess.ID)
+		if err != nil {
 			return "", fmt.Errorf("agent: load memory: %w", err)
 		}
+		prev = fromLlm(msgs)
 	} else {
 		prev = sess.History
 	}
-	history := make([]llm.Message, 0, len(prev)+2)
+	history := make([]InternalMessage, 0, len(prev)+2)
 	if a.systemPrompt != "" {
-		history = append(history, llm.Message{Role: llm.RoleSystem, Content: a.systemPrompt})
+		history = append(history, SystemMsg(a.systemPrompt))
 	}
 	history = append(history, prev...)
-	userMsg := llm.Message{Role: llm.RoleUser, Content: input}
+	userMsg := UserMsg(input)
 	history = append(history, userMsg)
 	if err := a.append(ctx, sess, userMsg); err != nil {
 		return "", fmt.Errorf("agent: save memory: %w", err)
@@ -169,7 +171,7 @@ func (a *Agent) run(ctx context.Context, sess *Session, input string, stream boo
 
 		if action.ToolCall == nil {
 			// 直接作答，任务完成
-			reply := llm.Message{Role: llm.RoleAssistant, Content: action.Content, ReasoningContent: action.ReasoningContent}
+			reply := AssistantMsg(action.Content, action.ReasoningContent)
 			history = append(history, reply)
 			if err := a.append(ctx, sess, reply); err != nil {
 				return "", fmt.Errorf("agent: save memory: %w", err)
@@ -180,12 +182,7 @@ func (a *Agent) run(ctx context.Context, sess *Session, input string, stream boo
 		}
 
 		// 记录模型发起的工具调用
-		call := llm.Message{
-			Role:             llm.RoleAssistant,
-			Content:          action.Content,
-			ReasoningContent: action.ReasoningContent, // thinking 模式须原样回传
-			ToolCalls:        []llm.ToolCall{*action.ToolCall},
-		}
+		call := AssistantToolMsg(action.Content, action.ReasoningContent, []llm.ToolCall{*action.ToolCall})
 		history = append(history, call)
 		if err := a.append(ctx, sess, call); err != nil {
 			return "", fmt.Errorf("agent: save memory: %w", err)
@@ -214,12 +211,7 @@ func (a *Agent) run(ctx context.Context, sess *Session, input string, stream boo
 				resultMsg = s
 			}
 		}
-		feedback := llm.Message{
-			Role:       llm.RoleTool,
-			Content:    resultMsg,
-			ToolCallID: action.ToolCall.ID,
-			Name:       action.ToolCall.Name,
-		}
+		feedback := ToolMsg(action.ToolCall.ID, action.ToolCall.Name, resultMsg)
 		history = append(history, feedback)
 		if err := a.append(ctx, sess, feedback); err != nil {
 			return "", fmt.Errorf("agent: save memory: %w", err)
@@ -249,16 +241,18 @@ func (a *Agent) notify(ev Event) {
 
 // nextAction 执行单轮规划。流式路径下转发模型文本增量事件（EventStream）；
 // 规划器不支持流式接口时回退非流式 NextAction。
-func (a *Agent) nextAction(ctx context.Context, sess *Session, turn int, history []llm.Message, stream bool) (planner.Action, error) {
+// M2.4：内部消息先经翻译边界 convertToLlm 转为 LLM 标准消息再交给规划器。
+func (a *Agent) nextAction(ctx context.Context, sess *Session, turn int, history []InternalMessage, stream bool) (planner.Action, error) {
 	tools := a.tools.List()
+	llmMsgs := convertToLlm(history)
 	if !stream {
-		return a.planner.NextAction(ctx, history, tools)
+		return a.planner.NextAction(ctx, llmMsgs, tools)
 	}
 	sp, ok := a.planner.(planner.StreamingPlanner)
 	if !ok {
-		return a.planner.NextAction(ctx, history, tools)
+		return a.planner.NextAction(ctx, llmMsgs, tools)
 	}
-	action, err := sp.NextActionStream(ctx, history, tools, func(chunk llm.StreamChunk) error {
+	action, err := sp.NextActionStream(ctx, llmMsgs, tools, func(chunk llm.StreamChunk) error {
 		if chunk.Delta != "" {
 			a.notify(Event{Type: EventStream, SessionID: sess.ID, Turn: turn, Delta: chunk.Delta})
 		}
@@ -270,11 +264,13 @@ func (a *Agent) nextAction(ctx context.Context, sess *Session, turn int, history
 	return action, nil
 }
 
-// append 将会话消息写入会话历史，并（若配置了 Memory）持久化到记忆存储。
-func (a *Agent) append(ctx context.Context, sess *Session, msg llm.Message) error {
+// append 将会话消息写入会话历史（两层消息的第一层 InternalMessage），
+// 并（若配置了 Memory）持久化其 LLM 标准消息部分到记忆存储。
+// 注意：ExcludeFromContext 是运行期元数据，不随 memory 持久化。
+func (a *Agent) append(ctx context.Context, sess *Session, msg InternalMessage) error {
 	sess.History = append(sess.History, msg)
 	if a.memory != nil {
-		return a.memory.Append(ctx, sess.ID, msg)
+		return a.memory.Append(ctx, sess.ID, msg.Message)
 	}
 	return nil
 }
