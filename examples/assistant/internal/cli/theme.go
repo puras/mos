@@ -18,19 +18,19 @@ const (
 
 // 高对比 24-bit 配色（深色/浅色主题共用同一套色板，仅背景/前景互换）。
 const (
-	cInk      = "#e8e3d9" // 主前景：亮米色
-	cUser     = "#87d7ff" // 用户：亮青
-	cAgent    = "#c792ea" // 智能体：亮紫
-	cTool     = "#ff9e64" // 工具：亮橙
-	cThink    = "#ffe082" // 思考/标题：亮黄
-	cSuccess  = "#b9f6ca" // 成功/H2：亮绿
-	cErr      = "#ff7b8a" // 错误：亮红
-	cMuted    = "#9aa0a6" // 静默辅助文字：灰
-	cLine     = "#5d5d5d" // 分割线/边框
-	cCodeBG   = "#0f1219" // 代码块背景（深色主题）
-	cCodeFG   = "#d2a8ff" // 代码前景：亮紫
-	cChipFG   = "#1a1b26" // 亮黄底上的前景：深蓝近黑
-	cPanelBG  = "#1a1b26" // 面板/输入框背景
+	cInk     = "#e8e3d9" // 主前景：亮米色
+	cUser    = "#87d7ff" // 用户：亮青
+	cAgent   = "#c792ea" // 智能体：亮紫
+	cTool    = "#ff9e64" // 工具：亮橙
+	cThink   = "#ffe082" // 思考/标题：亮黄
+	cSuccess = "#b9f6ca" // 成功/H2：亮绿
+	cErr     = "#ff7b8a" // 错误：亮红
+	cMuted   = "#9aa0a6" // 静默辅助文字：灰
+	cLine    = "#5d5d5d" // 分割线/边框
+	cCodeBG  = "#0f1219" // 代码块背景（深色主题）
+	cCodeFG  = "#d2a8ff" // 代码前景：亮紫
+	cChipFG  = "#1a1b26" // 亮黄底上的前景：深蓝近黑
+	cPanelBG = "#1a1b26" // 面板/输入框背景
 )
 
 func detectTheme() themeKind {
@@ -65,23 +65,23 @@ func applyTheme(t themeKind) {
 		toolStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#b85a00"))
 		errStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#c01a2a"))
 		thinkBox = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#5a3a00")).
-				Background(lipgloss.Color("#fde79a")).
-				Padding(0, 1)
+			Foreground(lipgloss.Color("#5a3a00")).
+			Background(lipgloss.Color("#fde79a")).
+			Padding(0, 1)
 		tuiHeader = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.Color("#1a1b26")).
-				Background(lipgloss.Color("#fde79a")).
-				Padding(0, 2).
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("#b88a00")).
-				Align(lipgloss.Center)
+			Bold(true).
+			Foreground(lipgloss.Color("#1a1b26")).
+			Background(lipgloss.Color("#fde79a")).
+			Padding(0, 2).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#b88a00")).
+			Align(lipgloss.Center)
 		inputBoxActive = lipgloss.NewStyle().
-				Border(lipgloss.NormalBorder(), true, false, false, false).
-				BorderForeground(lipgloss.Color("#3a4ec0"))
+			Border(lipgloss.NormalBorder(), true, false, false, false).
+			BorderForeground(lipgloss.Color("#3a4ec0"))
 		inputBoxInactive = lipgloss.NewStyle().
-				Border(lipgloss.NormalBorder(), true, false, false, false).
-				BorderForeground(lipgloss.Color("#9aa0a6"))
+			Border(lipgloss.NormalBorder(), true, false, false, false).
+			BorderForeground(lipgloss.Color("#9aa0a6"))
 	default: // themeDark —— 深蓝/深色背景下使用全亮前景 + 强对比
 		userStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(cUser)).Bold(true)
 		agentStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(cAgent)).Bold(true)
@@ -89,24 +89,24 @@ func applyTheme(t themeKind) {
 		errStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(cErr))
 		// 思考卡片：亮黄底深色字，确保在深蓝背景下有最高对比度。
 		thinkBox = lipgloss.NewStyle().
-				Foreground(lipgloss.Color(cChipFG)).
-				Background(lipgloss.Color(cThink)).
-				Bold(true).
-				Padding(0, 1)
+			Foreground(lipgloss.Color(cChipFG)).
+			Background(lipgloss.Color(cThink)).
+			Bold(true).
+			Padding(0, 1)
 		tuiHeader = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.Color(cThink)).
-				Background(lipgloss.Color(cPanelBG)).
-				Padding(0, 2).
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color(cThink)).
-				Align(lipgloss.Center)
+			Bold(true).
+			Foreground(lipgloss.Color(cThink)).
+			Background(lipgloss.Color(cPanelBG)).
+			Padding(0, 2).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color(cThink)).
+			Align(lipgloss.Center)
 		inputBoxActive = lipgloss.NewStyle().
-				Border(lipgloss.NormalBorder(), true, false, false, false).
-				BorderForeground(lipgloss.Color(cAgent))
+			Border(lipgloss.NormalBorder(), true, false, false, false).
+			BorderForeground(lipgloss.Color(cAgent))
 		inputBoxInactive = lipgloss.NewStyle().
-				Border(lipgloss.NormalBorder(), true, false, false, false).
-				BorderForeground(lipgloss.Color(cLine))
+			Border(lipgloss.NormalBorder(), true, false, false, false).
+			BorderForeground(lipgloss.Color(cLine))
 	}
 	logStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(cMuted))
 	infoStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(cMuted))

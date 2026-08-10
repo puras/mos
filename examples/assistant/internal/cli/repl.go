@@ -11,10 +11,10 @@ import (
 
 	"github.com/mattn/go-isatty"
 
+	"hegq.net/mos/agent"
+	"hegq.net/mos/assistant"
 	"hegq.net/mos/examples/assistant/internal/config"
-	"hegq.net/mos/pkg/agent"
-	"hegq.net/mos/pkg/assistant"
-	"hegq.net/mos/pkg/llm"
+	"hegq.net/mos/llm"
 )
 
 // Run 启动完整智能体 CLI：加载配置 → 组装智能体 → 交互式问答。

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"hegq.net/mos/pkg/llm"
+	"hegq.net/mos/llm"
 )
 
 // writeEnv 写入临时 .env 文件，并将 MOS_CONFIG 指向它。

@@ -12,8 +12,8 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 
-	"hegq.net/mos/pkg/agent"
-	"hegq.net/mos/pkg/assistant"
+	"hegq.net/mos/agent"
+	"hegq.net/mos/assistant"
 )
 
 // tuiEvent 是智能体运行协程流向 TUI 界面的消息（应用层展示数据源）。
@@ -411,10 +411,10 @@ func (m *tuiModel) histPush(line string) {
 }
 
 // handleMouse 处理鼠标交互：
-//  - 滚轮：交给 viewport，并暂停 auto-follow
-//  - Shift + 左键按下：临时禁用 mouse capture，让终端接管拖动选中复制，
-//    3 秒后定时器自动恢复 mouse（用户拖选完成后能继续滚轮/点击）
-//  - 左键点击输入区切焦点到 input；点击思考行（▸/▾）展开/收起
+//   - 滚轮：交给 viewport，并暂停 auto-follow
+//   - Shift + 左键按下：临时禁用 mouse capture，让终端接管拖动选中复制，
+//     3 秒后定时器自动恢复 mouse（用户拖选完成后能继续滚轮/点击）
+//   - 左键点击输入区切焦点到 input；点击思考行（▸/▾）展开/收起
 func (m tuiModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if msg.Action == tea.MouseActionPress {
 		switch msg.Button {

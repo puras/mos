@@ -4,9 +4,9 @@ import (
 	"log"
 
 	"hegq.net/mos/examples/assistant/internal/config"
-	"hegq.net/mos/pkg/tool"
-	"hegq.net/mos/pkg/tool/builtin"
-	"hegq.net/mos/pkg/tool/extension"
+	"hegq.net/mos/tool"
+	"hegq.net/mos/tool/builtin"
+	"hegq.net/mos/tool/extension"
 )
 
 // allBuiltinTools 是业务侧默认工具集：

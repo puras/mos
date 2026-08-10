@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"hegq.net/mos/pkg/llm"
+	"hegq.net/mos/llm"
 )
 
 func TestLoadConfig(t *testing.T) {

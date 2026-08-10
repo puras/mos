@@ -13,13 +13,13 @@ import (
 	"strings"
 	"time"
 
-	"hegq.net/mos/pkg/assistant"
-	"hegq.net/mos/pkg/llm"
-	"hegq.net/mos/pkg/llm/anthropic"
-	"hegq.net/mos/pkg/llm/gemini"
-	"hegq.net/mos/pkg/llm/openai"
-	"hegq.net/mos/pkg/tool"
-	"hegq.net/mos/pkg/tool/extension/search"
+	"hegq.net/mos/assistant"
+	"hegq.net/mos/llm"
+	"hegq.net/mos/llm/anthropic"
+	"hegq.net/mos/llm/gemini"
+	"hegq.net/mos/llm/openai"
+	"hegq.net/mos/tool"
+	"hegq.net/mos/tool/extension/search"
 )
 
 // ConfigPath 返回配置文件路径：MOS_CONFIG 环境变量指定，默认 .env。

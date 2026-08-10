@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"hegq.net/mos/pkg/assistant"
+	"hegq.net/mos/assistant"
 )
 
 // cliConfirm 是纯文本 REPL 下的交互确认器：

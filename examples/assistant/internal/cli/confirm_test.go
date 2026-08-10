@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"hegq.net/mos/pkg/assistant"
-	"hegq.net/mos/pkg/llm"
+	"hegq.net/mos/assistant"
+	"hegq.net/mos/llm"
 )
 
 // denyAllPolicy 是一个自定义策略（非 DefaultPolicy），用于验证 attachConfirmer 不改动自定义策略。

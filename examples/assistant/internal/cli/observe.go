@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"hegq.net/mos/pkg/llm"
+	"hegq.net/mos/llm"
 )
 
 // logSink 模型调用日志的输出口：TUI 模式下由界面接管（通道转发），否则回退到 stdout。

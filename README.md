@@ -59,7 +59,7 @@ reply, err := a.Run(ctx, sess, "请计算 1+2")
 
 ## 开箱即用的智能体（assistant + CLI 示例）
 
-`assistant` 包提供组装好的智能体：**模型对象、工具集与框架概念全部由调用方注入**（安全策略 / 规划器 / 审计器 / 记忆 / 观察，为 nil 时使用框架默认实现），可直接作为库集成到其他工程。框架只认 `llm.ChatModel` 模型对象与 `[]tool.Tool` 工具集，不预设默认工具、不关心模型接入配置——但**随框架分发工具包并分类**：`pkg/tool/builtin` 内置工具包（计算 / 时间 / 文件读写检索 / 网页抓取，纯标准库实现，`builtin.Default()` 一键装配）+ `pkg/tool/extension` 扩展工具包（shell 沙箱执行 / web_search 搜索提供商，需依赖注入）：
+`assistant` 包提供组装好的智能体：**模型对象、工具集与框架概念全部由调用方注入**（安全策略 / 规划器 / 审计器 / 记忆 / 观察，为 nil 时使用框架默认实现），可直接作为库集成到其他工程。框架只认 `llm.ChatModel` 模型对象与 `[]tool.Tool` 工具集，不预设默认工具、不关心模型接入配置——但**随框架分发工具包并分类**：`tool/builtin` 内置工具包（计算 / 时间 / 文件读写检索 / 网页抓取，纯标准库实现，`builtin.Default()` 一键装配）+ `tool/extension` 扩展工具包（shell 沙箱执行 / web_search 搜索提供商，需依赖注入）：
 
 ```go
 // 1. 构建模型对象（可用 openai/anthropic 适配器，或任何自定义 llm.ChatModel）
@@ -119,7 +119,7 @@ MOS_WORKDIR=./workspace
 
 支持 `#` 注释、空行与可选的 `export` 前缀；`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` 均为空时自动降级为 mock 离线模型。模板见 `examples/assistant/.env.example`。
 
-工具包分两类（均在 `pkg/tool` 下随框架分发）：**内置工具包 `pkg/tool/builtin`**（纯标准库，`builtin.Default()` 一键装配）——`calculator`（表达式求值）、`current_time`（当前时间）、`web_fetch`（网页抓取转纯文本）、`read_file` / `write_file`（文件读写）、`find_files` / `grep`（文件搜索）；**扩展工具包 `pkg/tool/extension`**（需依赖注入）——`shell`（受限命令执行，支持沙箱隔离）、`web_search`（联网搜索，绑定搜索提供商，提供商实现见 `pkg/tool/extension/search`）。
+工具包分两类（均在 `tool/` 下随框架分发）：**内置工具包 `tool/builtin`**（纯标准库，`builtin.Default()` 一键装配）——`calculator`（表达式求值）、`current_time`（当前时间）、`web_fetch`（网页抓取转纯文本）、`read_file` / `write_file`（文件读写）、`find_files` / `grep`（文件搜索）；**扩展工具包 `tool/extension`**（需依赖注入）——`shell`（受限命令执行，支持沙箱隔离）、`web_search`（联网搜索，绑定搜索提供商，提供商实现见 `tool/extension/search`）。
 
 交互式 CLI 在示例工程 `examples/assistant` 中（同样支持环境变量配置，无 Key 时以 mock 演示完整工具调用循环）：
 
@@ -342,26 +342,25 @@ model, err := reg.Create("openai", llm.Config{
 
 ## 目录结构
 
-双模块布局：**仓库根是纯依赖 SDK（`hegq.net/mos`，只含 `pkg/`）**，作为库集成到外部工程；**示例应用独立成工程（`examples/assistant`，`hegq.net/mos/examples/assistant`）**，通过 `replace hegq.net/mos => ../..` 本地引用 SDK。SDK 依赖方向单向 `pkg → 外部模块`，不含任何应用层入口。
+双模块布局：**仓库根是纯依赖 SDK（`hegq.net/mos`，包直接位于 module 根目录）**，作为库集成到外部工程；**示例应用独立成工程（`examples/assistant`，`hegq.net/mos/examples/assistant`）**，通过 `replace hegq.net/mos => ../..` 本地引用 SDK。SDK 不含任何应用层入口。
 
 ```
 mos/
-├── go.mod                 # SDK 模块 hegq.net/mos（纯依赖库，仅 pkg/）
-├── pkg/                   # SDK 框架层（对外公开 API）
-│   ├── llm/               #   ChatModel 抽象（模型对象）+ 协议注册表
-│   │   ├── openai/        #     OpenAI 兼容协议适配器
-│   │   ├── anthropic/     #     Anthropic 原生协议适配器
-│   │   └── gemini/        #     Google Gemini 协议适配器
-│   ├── tool/              #   工具注册表、JSON Schema 生成、参数解析、执行沙箱
-│   │   ├── sandbox.go     #     执行沙箱（M1.6）：jail + 超时 + 资源限制 + 环境裁剪
-│   │   ├── builtin/       #     内置工具包：计算/时间/文件读写检索/网页抓取（纯标准库）
-│   │   └── extension/     #     扩展工具包：shell（沙箱执行）/ web_search（搜索提供商）
-│   │       └── search/    #       搜索提供商：duckduckgo / tavily / serper / brave / searxng
-│   ├── memory/            #   会话记忆抽象
-│   │   └── inmemory/      #     内存实现
-│   ├── agent/             #   智能体运行时：任务循环 / Policy / Session / TaskState / Auditor / Observer
-│   ├── planner/           #   规划策略：Planner 接口 + ReAct 实现
-│   └── assistant/         #   组装好的完整智能体：模型对象注入 / 默认策略 / 内置+扩展工具包
+├── go.mod                 # SDK 模块 hegq.net/mos（纯依赖库，包直接位于根目录）
+├── llm/                   # ChatModel 抽象（模型对象）+ 协议注册表
+│   ├── openai/            #   OpenAI 兼容协议适配器
+│   ├── anthropic/         #   Anthropic 原生协议适配器
+│   └── gemini/            #   Google Gemini 协议适配器
+├── tool/                  # 工具注册表、JSON Schema 生成、参数解析、执行沙箱
+│   ├── sandbox.go         #   执行沙箱（M1.6）：jail + 超时 + 资源限制 + 环境裁剪
+│   ├── builtin/           #   内置工具包：计算/时间/文件读写检索/网页抓取（纯标准库）
+│   └── extension/         #   扩展工具包：shell（沙箱执行）/ web_search（搜索提供商）
+│       └── search/        #     搜索提供商：duckduckgo / tavily / serper / brave / searxng
+├── memory/                # 会话记忆抽象
+│   └── inmemory/          #   内存实现
+├── agent/                 # 智能体运行时：任务循环 / Policy / Session / TaskState / Auditor / Observer
+├── planner/               # 规划策略：Planner 接口 + ReAct 实现
+├── assistant/             # 组装好的完整智能体：模型对象注入 / 默认策略 / 内置+扩展工具包
 └── examples/
     └── assistant/         # 示例应用（独立 Go module：hegq.net/mos/examples/assistant）
         ├── go.mod         #   replace hegq.net/mos => ../..（本地引用 SDK）
@@ -373,25 +372,25 @@ mos/
         └── .gitignore
 ```
 
-### pkg 与示例应用 internal 的划分准则
+### SDK 根目录包与示例应用 internal 的划分准则
 
-**`pkg/` 放框架层面的能力，`examples/assistant/internal/` 放示例应用层面的能力。**
+**SDK module 根目录的包放框架层面的能力，`examples/assistant/internal/` 放示例应用层面的能力。**
 
-`internal/` 是 **Go 语言级约束**：其下包只能被父目录以内的代码 import，外部工程引用会直接编译报错（`use of internal package not allowed`）。判断归属时先问：
+Go 语言本身没有 `pkg/` 目录语义（只有 `internal/` 有编译器强制约束），纯依赖库的包直接放在 module 根目录即可，外部工程以 `hegq.net/mos/xxx` 导入。`internal/` 是 **Go 语言级约束**：其下包只能被父目录以内的代码 import，外部工程引用会直接编译报错（`use of internal package not allowed`）。判断归属时先问：
 
-1. **这是框架层面的能力，还是应用层面的能力？** 框架层（通用、可复用、有 API 契约）→ `pkg/`；应用层（绑定具体产品的入口、配置约定、交互形态）→ 示例工程的 `internal/`
-2. **外部工程集成 MoS 时需要直接 import 它吗？** 是 → `pkg/`；仅示例应用自己用 → 示例工程的 `internal/`
-3. **它是稳定、带契约的公开 API，还是可随意重构的实现细节？** 前者 → `pkg/`；后者 → 示例工程的 `internal/`
+1. **这是框架层面的能力，还是应用层面的能力？** 框架层（通用、可复用、有 API 契约）→ SDK 根目录包；应用层（绑定具体产品的入口、配置约定、交互形态）→ 示例工程的 `internal/`
+2. **外部工程集成 MoS 时需要直接 import 它吗？** 是 → SDK 根目录包；仅示例应用自己用 → 示例工程的 `internal/`
+3. **它是稳定、带契约的公开 API，还是可随意重构的实现细节？** 前者 → SDK 根目录包；后者 → 示例工程的 `internal/`
 
 当前划分示例：
 
 | 归属 | 包 | 理由 |
 | --- | --- | --- |
-| `pkg/` | `llm` / `tool` / `memory` / `agent` / `planner` | 框架层通用基础能力 |
-| `pkg/` | `tool/builtin` | 框架层内置工具包：纯标准库通用工具，随框架分发，`builtin.Default()` 一键装配 |
-| `pkg/` | `tool/extension` | 框架层扩展工具包：shell（沙箱执行）/ web_search（搜索提供商，实现见 `extension/search`），需依赖注入 |
-| `pkg/` | `assistant` | 框架层组装智能体（模型对象注入，`Config` 仅含运行配置） |
-| `pkg/` | `llm/openai` `llm/anthropic` `llm/gemini` | 框架层协议适配器，外部按需选用 |
+| SDK 根目录 | `llm` / `tool` / `memory` / `agent` / `planner` | 框架层通用基础能力 |
+| SDK 根目录 | `tool/builtin` | 框架层内置工具包：纯标准库通用工具，随框架分发，`builtin.Default()` 一键装配 |
+| SDK 根目录 | `tool/extension` | 框架层扩展工具包：shell（沙箱执行）/ web_search（搜索提供商，实现见 `extension/search`），需依赖注入 |
+| SDK 根目录 | `assistant` | 框架层组装智能体（模型对象注入，`Config` 仅含运行配置） |
+| SDK 根目录 | `llm/openai` `llm/anthropic` `llm/gemini` | 框架层协议适配器，外部按需选用 |
 | `examples/assistant/internal/` | `config` | 示例应用层：从 `.env` + `MOS_*` 环境变量构建模型对象与运行配置 |
 | `examples/assistant/internal/` | `cli` | 示例应用层：REPL/TUI 绑定终端交互，装配内置 + 扩展工具包 |
 
