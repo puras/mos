@@ -97,11 +97,25 @@ func New(model llm.ChatModel, tools []tool.Tool, cfg Config) (*Assistant, error)
 		agent.WithPlanner(cfg.Planner),
 		agent.WithAuditor(cfg.Auditor),
 		agent.WithMemory(cfg.Memory),
-		agent.WithSystemPrompt(cfg.SystemPrompt),
 		agent.WithObserver(cfg.Observer),
 		agent.WithSandbox(cfg.Sandbox),
 		agent.WithResultTruncator(cfg.Truncator),
 		agent.WithCompactor(cfg.Compactor),
+	}
+	// M2.6 系统提示词：显式组装器优先；配置了项目指令/技能目录时自动构建默认组装器；
+	// 否则回退到 SystemPrompt 静态引导（既有行为不变）。
+	switch {
+	case cfg.Assembler != nil:
+		opts = append(opts, agent.WithSystemAssembler(cfg.Assembler))
+	case cfg.ProjectDocDir != "" || cfg.SkillsDir != "":
+		opts = append(opts, agent.WithSystemAssembler(agent.NewDefaultSystemAssembler(
+			agent.SystemAssemblerConfig{
+				Constraints:   cfg.SystemPrompt,
+				ProjectDocDir: cfg.ProjectDocDir,
+				SkillsDir:     cfg.SkillsDir,
+			})))
+	default:
+		opts = append(opts, agent.WithSystemPrompt(cfg.SystemPrompt))
 	}
 	if cfg.MaxTurns > 0 {
 		opts = append(opts, agent.WithMaxTurns(cfg.MaxTurns))

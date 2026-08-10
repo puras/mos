@@ -18,10 +18,22 @@ import (
 // 框架级概念（Policy/Planner/Auditor/Memory/Observer）由外部注入实例；
 // 为 nil 时装配层使用框架默认实现，可在 New 前按需覆盖。
 type Config struct {
-	// SystemPrompt 系统引导词。
+	// SystemPrompt 系统引导词（系统约束槽位内容）。
+	// 设置了 Assembler 时，本字段作为默认组装器的约束槽位（可被组装器配置覆盖）。
 	SystemPrompt string
 	// MaxTurns 一次任务循环的最大 Turn 数（0 表示使用框架默认）。
 	MaxTurns int
+	// Assembler 槽位式系统提示词组装器（M2.6 动态组装）。
+	// 设置后按槽位（系统约束/任务定义/当前状态/工具签名/项目指令/技能清单）每轮动态
+	// 组装系统提示词；为 nil 时使用 SystemPrompt 静态引导。
+	Assembler agent.SystemAssembler
+	// ProjectDocDir 项目指令目录（M2.6）：从该目录向上递归查找 CLAUDE.md 合并，
+	// 顶层在前、就近覆盖。与 Assembler 均为 nil 时无效；设置后将自动构建默认组装器。
+	ProjectDocDir string
+	// SkillsDir 技能目录（M2.6）：扫描其中的 SKILL.md（frontmatter 的 name/description）
+	// 生成懒加载清单注入系统提示词，正文由模型触发时经 read_file 按需读取。
+	// 与 Assembler 均为 nil 时无效；设置后将自动构建默认组装器。
+	SkillsDir string
 
 	// Policy 工具调用安全策略（默认 NewDefaultPolicy(nil, "")，即无额外限制）。
 	Policy agent.Policy

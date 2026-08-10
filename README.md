@@ -181,8 +181,8 @@ type Policy interface {
 | 显式停止条件 | 可验证的 DONE 信号 + 硬迭代上限 / 预算上限 | ✓ 完成判断 + `MaxTurns`；token 预算上限待 M4 |
 | 跨迭代上下文管理 | 压缩旧轮、JIT 检索、手写 scratchpad，防 context rot | ✓ 截断（M2.3）+ 摘要压缩（M2.5）；JIT 检索记忆待 M2.7 |
 | 清晰工具设计 | 单次调用单意图、返回 crisp signal，不留歧义 | ✓ 内置 / 扩展工具签名统一；输出截断（M2.3）保留关键字段 |
-| Doom Loop 检测 | 相同工具连续 3+ 次相似调用 → 死循环检测 / 回退 / 重置 | ✓ 连续相同调用 ≥3 中断为 blocked（M2.5）；回退 / 重置留待 M2.6 |
-| 上下文利用率阈值 | Dumb Zone：窗口用满约 40% 后输出质量明显下降 | ✓ 40% 告警线事件广播（M2.5）；渐进式披露 / 分层懒加载留待 M2.6 |
+| Doom Loop 检测 | 相同工具连续 3+ 次相似调用 → 死循环检测 / 回退 / 重置 | ✓ 连续相同调用 ≥3 中断为 blocked（M2.5）；回退 / 重置留待后续 |
+| 上下文利用率阈值 | Dumb Zone：窗口用满约 40% 后输出质量明显下降 | ✓ 40% 告警线事件广播（M2.5）；渐进式披露 / 分层懒加载留待后续 |
 | 进度追踪 | 维护"做到哪了"而非完整对话记录 | ✓ `TaskState` 外置、跨轮唯一真相 |
 | 可观测性 | 事件流 + trace 回放、过程审计 | ✓ Observer / Event（Turn 序号） |
 | 补偿面理论 | 模型变强 → harness 主动拆组件（Anthropic 已拆 Context Reset），只留护城河 | ✗ 设计纪律（见路线图方向） |
@@ -328,7 +328,7 @@ MoS 当前工具注入为**全量原生 function calling**（`Registry.List()` �
 5. **工具集分组 / 裁剪**（DeerFlow / Claude Code / Pi / LangChain）：按 Agent 角色 / 技能白名单 / 激活集合过滤，每阶段只暴露相关工具（M3 多智能体天然具备）
 6. **工具结果外置 + 历史瘦身**（全部项目）：输出超限落盘 / 截断 + 旧结果清理 + 静态系统提示保 prompt cache
 
-**MoS 对齐**：M2.3 工具输出截断参考 Claude Code 落盘模式（阈值 + 预览 + read_file 回读）与 OpenClaw 预算占比（单条 30% / 聚合 50%）；M2.10 实现 schema 缓存与 deferred 懒加载；M3 子 Agent 工具集裁剪参考 DeerFlow tool_groups + Claude Code 角色白名单；M4 静态系统提示保 prompt cache 参考 DeerFlow（动态内容放 user 消息侧）。
+**MoS 对齐**：M2.3 工具输出截断参考 Claude Code 落盘模式（阈值 + 预览 + read_file 回读）与 OpenClaw 预算占比（单条 30% / 聚合 50%）；M2.6 槽位式系统提示词 + CLAUDE.md 向上递归 + Skills 懒加载清单参考 Claude Code 与 Agent Skills 规范（SKILL.md frontmatter + references/ 按需 read）；M2.10 实现 schema 缓存与 deferred 懒加载；M3 子 Agent 工具集裁剪参考 DeerFlow tool_groups + Claude Code 角色白名单；M4 静态系统提示保 prompt cache 参考 DeerFlow（动态内容放 user 消息侧）。
 
 ## LLM 接入
 
@@ -430,7 +430,7 @@ cd examples/assistant && go test ./...
 - [x] **M2.3**：工具输出截断（行数/字节双重限制 + 按工具类型智能截断——read/web 类截头、shell 类截尾、其余 head+tail + 逃生通道——完整结果落盘、提示模型用 read_file 按偏移回读；截断只作用于模型可见文本，Auditor 仍审计完整原始结果；框架层 `agent.ResultTruncator` 接口 + `agent.NewDefaultTruncator`，assistant 默认开启 64KB/2000 行，应用层经 `MOS_TOOL_OUTPUT_KB` / `MOS_TOOL_OUTPUT_LINES` 配置）
 - [x] **M2.4**：两层消息与翻译边界（`Session.History` 升级为内部结构化消息 `agent.InternalMessage`——嵌入 `llm.Message` 并附加 `ExcludeFromContext` / `Summary` / `Source` 运行期元数据；翻译边界 `convertToLlm` 在发送给规划器/模型前统一执行——过滤 `ExcludeFromContext` 消息、标准角色原样转换、摘要消息（`SummaryMsg`，M2.5 压缩产物）与自定义消息（`CustomMsg`，应用层注入/Agent 间通信）统一转 user 角色并按来源标注，`[历史摘要]` / `[source]` 前缀；memory/planner 接口不变，`fromLlm` 将持久化标准消息接回内部层，工具调用消息的 `ToolCalls`/`ReasoningContent`/`ToolCallID` 字段翻译边界不丢失）
 - [x] **M2.5**：fresh-context 压缩（`agent.Compactor` 接口 + `NewDefaultCompactor`：两轮之间超 `KeepRecent`（默认 12）触发，切割点从尾部数且不切断 ToolCall-Result 对——首条若为孤儿 tool 结果则前移切割点；压缩摘要直接采用审计写入的 `TaskState.Snapshot()` 而非 LLM 重新总结，以 `SummaryMsg` 注入、翻译边界转 user 角色标 `[历史摘要]`；压缩后 `syncHistory` 剔除 system 引导并把保留消息重放回 memory）+ 上下文利用率监控（`planner.Action.Usage` 透出模型 token 用量，`WithContextBudget` 设置窗口预算，超过 40% Dumb Zone 广播 `EventContextUsage`）+ Doom Loop 检测（`WithDoomLoopDetection`：相同工具名+参数连续 3 次调用 → 中断任务置 blocked 并返回错误）——渐进式披露 / 分层上下文懒加载 / 上下文重置与跨 Session handoff 留待 M2.6+；框架层均为可选 Option，assistant 默认开启 Compactor
-- [ ] **M2.6**：系统提示词动态组装（按"系统约束 / 任务定义 / 当前状态 / 工具签名 / 历史摘要"分段槽位；克制主义——静态模板应足够小（Pi 仅约 1K token 对比 Claude Code 数万），固定指令占得越少留给任务上下文越多；多级 CLAUDE.md 向上递归 + Skills 懒加载清单（对齐 Agent Skills 规范：SKILL.md frontmatter 声明 name + description 触发条件 + 步骤化正文 + references/ 按需 read））
+- [x] **M2.6**：系统提示词动态组装（槽位化：系统约束 / 任务定义 / 当前状态 / 工具签名 / 项目指令 / 技能清单 / 历史摘要；`agent.SystemAssembler` 接口 + `NewDefaultSystemAssembler`——每轮模型调用前重新组装，固定指令保持静态利于 prompt cache，运行时状态随 TaskState 进度刷新（当前状态槽位 = 审计写入的已验证事实快照）；克制主义——系统约束槽位独立为最小静态文本，工具签名紧凑逐行渲染不重复全量 schema；`RenderSystem` 以【标题】分段拼接。多级 CLAUDE.md 向上递归：`LoadProjectDocs` 从工作目录向上合并，顶层在前、就近覆盖，注入项目指令槽位。Skills 懒加载清单：`LoadSkills` 扫描 SKILL.md 的 frontmatter（name + description 触发条件），清单注入技能槽位，正文与 references/ 由模型触发时经 read_file 按需读取，不占常驻上下文。历史摘要槽位默认关闭——M2.5 压缩摘要已由 Compactor 注入消息历史，避免冗余。框架层为可选 Option（`WithSystemAssembler` / `SystemAssemblerFunc` 函数式适配器），assistant 经 `Config.Assembler` / `Config.ProjectDocDir` / `Config.SkillsDir` 装配，未配置时回退静态引导行为不变）
 - [ ] **M2.7**：长期记忆（sqlite-vec 向量检索 + SQLite FTS5 的 BM25 混合检索）、RAG（分块策略 chunk_size/overlap + 检索注入 + 来源引用）、Agentic RAG 知识守门人（源验证 / 冲突裁决 / 多步检索 / 知识差距触发外部工具）、流式输出透传
 - [ ] **M2.8**：人工介入工具 + 升级策略（`request_human_input`：模型主动请求人类输入/确认/授权，作为普通工具接入；升级策略定义"何时、如何交给人类"，配合人工网关；注意 HITL 权衡：可扩展性不足、依赖专家、敏感数据需匿名化）+ interrupt-before（等待人工输入前用 Checkpointer 持久化状态，恢复后从断点继续，对齐 Graph Engineering 的 checkpointer 语义）
 - [ ] **M2.9**：经验记忆（知识进化第 1 层：执行历史沉淀为成功策略 / 已知陷阱库，按成功率 / 时间 / 成本加权评分择优，决策时检索注入——复用 M2.7 记忆基础设施，零代码风险）

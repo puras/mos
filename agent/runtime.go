@@ -33,6 +33,7 @@ type Agent struct {
 	contextBudget int               // M2.5 上下文利用率监控（模型窗口 token 预算）
 	maxTurns      int
 	systemPrompt  string
+	assembler     SystemAssembler // M2.6 槽位式系统提示词动态组装（优先于 systemPrompt）
 	observer      Observer
 }
 
@@ -58,9 +59,18 @@ func WithPlanner(p planner.Planner) Option {
 	return func(a *Agent) { a.planner = p }
 }
 
-// WithSystemPrompt 设置系统引导词。
+// WithSystemPrompt 设置系统引导词（静态文本，每轮原样注入）。
+// 与 WithSystemAssembler 同时设置时，组装器优先。
 func WithSystemPrompt(p string) Option {
 	return func(a *Agent) { a.systemPrompt = p }
+}
+
+// WithSystemAssembler 设置槽位式系统提示词组装器（M2.6 动态组装）：
+// 每轮模型调用前按槽位（系统约束 / 任务定义 / 当前状态 / 工具签名 / 项目指令 /
+// 技能清单）重新组装——固定指令保持静态利于 prompt cache，运行时状态随 TaskState
+// 进度刷新。未设置时回退到 WithSystemPrompt 的静态引导。
+func WithSystemAssembler(asm SystemAssembler) Option {
+	return func(a *Agent) { a.assembler = asm }
 }
 
 // WithMaxTurns 设置一次任务循环的最大 Turn 数（一个 Turn = 一次模型调用 + 其触发的所有工具执行）。
@@ -163,7 +173,15 @@ func (a *Agent) run(ctx context.Context, sess *Session, input string, stream boo
 		prev = sess.History
 	}
 	history := make([]InternalMessage, 0, len(prev)+2)
-	if a.systemPrompt != "" {
+	if a.assembler != nil {
+		sys, err := a.assembleSystem(ctx, sess)
+		if err != nil {
+			return "", fmt.Errorf("agent: assemble system: %w", err)
+		}
+		if sys != "" {
+			history = append(history, SystemMsg(sys))
+		}
+	} else if a.systemPrompt != "" {
 		history = append(history, SystemMsg(a.systemPrompt))
 	}
 	history = append(history, prev...)
@@ -192,6 +210,24 @@ func (a *Agent) run(ctx context.Context, sess *Session, input string, stream boo
 					return "", fmt.Errorf("agent: sync history: %w", err)
 				}
 				a.notify(Event{Type: EventCompacted, SessionID: sess.ID, Turn: turn, Content: sess.State.Snapshot()})
+			}
+		}
+
+		// M2.6 动态组装：每轮模型调用前刷新系统提示词（当前状态随 TaskState 进度更新），
+		// 直接替换 history 首位的 system 引导，避免重复累积
+		if a.assembler != nil {
+			sys, err := a.assembleSystem(ctx, sess)
+			if err != nil {
+				return "", fmt.Errorf("agent: assemble system: %w", err)
+			}
+			if sys != "" {
+				if len(history) > 0 && history[0].Role == llm.RoleSystem {
+					history[0] = SystemMsg(sys)
+				} else {
+					history = append([]InternalMessage{SystemMsg(sys)}, history...)
+				}
+			} else if len(history) > 0 && history[0].Role == llm.RoleSystem {
+				history = history[1:]
 			}
 		}
 
@@ -292,6 +328,15 @@ func (a *Agent) notify(ev Event) {
 	if a.observer != nil {
 		a.observer(ev)
 	}
+}
+
+// assembleSystem 调用槽位式组装器产出本轮系统提示词文本（M2.6）。
+func (a *Agent) assembleSystem(ctx context.Context, sess *Session) (string, error) {
+	sections, err := a.assembler.Assemble(ctx, sess, a.tools.List())
+	if err != nil {
+		return "", err
+	}
+	return RenderSystem(sections), nil
 }
 
 // nextAction 执行单轮规划。流式路径下转发模型文本增量事件（EventStream）；

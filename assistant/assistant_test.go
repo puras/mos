@@ -2,10 +2,12 @@ package assistant
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"hegq.net/mos/agent"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/tool"
 	"hegq.net/mos/tool/builtin"
@@ -115,6 +117,62 @@ func TestDefaultSystemPrompt(t *testing.T) {
 	}
 	if m2.last.Messages[0].Content != "自定义引导" {
 		t.Fatalf("custom prompt = %q", m2.last.Messages[0].Content)
+	}
+}
+
+// ---- M2.6 系统提示词动态组装装配 ----
+
+// 配置 SkillsDir / ProjectDocDir 时自动构建默认槽位组装器：
+// 系统约束（默认引导）+ 任务定义 + 当前状态 + 工具签名 + 技能清单。
+func TestAssistantSystemAssemblerAuto(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "web-debug")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: web-debug\ndescription: 排查网页抓取失败\n---\n步骤化正文，仅触发时读取"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+
+	m := &captureModel{}
+	a, err := New(m, nil, Config{SkillsDir: root})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := a.Run(ctx, a.NewSession(), "hi"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	sys := m.last.Messages[0].Content
+	for _, want := range []string{"【系统约束】", "【任务定义】", "【技能清单】", "web-debug"} {
+		if !strings.Contains(sys, want) {
+			t.Fatalf("system = %q, want contains %q", sys, want)
+		}
+	}
+	// 技能正文不注入（懒加载清单）
+	if strings.Contains(sys, "仅触发时读取") {
+		t.Fatalf("skill body should not be injected: %q", sys)
+	}
+}
+
+// 显式注入自定义组装器时直接生效，SystemPrompt 不参与组装。
+func TestAssistantSystemAssemblerCustom(t *testing.T) {
+	ctx := context.Background()
+	custom := agent.SystemAssemblerFunc(func(_ context.Context, _ *agent.Session, _ []llm.Tool) ([]agent.SystemSection, error) {
+		return []agent.SystemSection{{Title: "自定义", Content: "来自应用层"}}, nil
+	})
+
+	m := &captureModel{}
+	a, err := New(m, nil, Config{Assembler: custom, SystemPrompt: "不应出现"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := a.Run(ctx, a.NewSession(), "hi"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	sys := m.last.Messages[0].Content
+	if !strings.Contains(sys, "来自应用层") || strings.Contains(sys, "不应出现") {
+		t.Fatalf("system = %q, want custom assembler output", sys)
 	}
 }
 
