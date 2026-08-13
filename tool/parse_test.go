@@ -13,13 +13,13 @@ type grepArgs struct {
 }
 
 func TestParseNormalizesConcatenatedJSON(t *testing.T) {
-	// 模型偶发输出 "{...}{...}" 拼接，应取第一个完整 JSON 值
-	raw := json.RawMessage(`{"root": "/x"}{"root": "/y", "pattern": "MOSS", "max_matches": 10}`)
+	// 模型偶发输出 "{...}{...}" 拼接（常为一次想调多个工具），应合并为单一对象
+	raw := json.RawMessage(`{"query": "桌面智能体应用", "max_results": 5}{"pattern": "*.go", "root": "/Users/x/moss", "max_matches": 10}`)
 	got, err := Parse[grepArgs](raw)
 	if err != nil {
 		t.Fatalf("Parse error: %v", err)
 	}
-	if got.Root != "/x" || got.Pattern != "" {
+	if got.Pattern != "*.go" || got.Root != "/Users/x/moss" || got.MaxMatches != 10 {
 		t.Fatalf("unexpected parsed args: %+v", got)
 	}
 }

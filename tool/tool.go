@@ -90,12 +90,13 @@ func (r *Registry) List() []llm.Tool {
 }
 
 // Call 执行指定名称的工具调用。
+// 统一入口先做参数容错（normalizeArgs），保证各工具与其包装器拿到干净的单一 JSON 对象。
 func (r *Registry) Call(ctx context.Context, name string, args json.RawMessage) (any, error) {
 	t, ok := r.Get(name)
 	if !ok {
 		return nil, fmt.Errorf("tool: unknown tool %q", name)
 	}
-	return t.Execute(ctx, args)
+	return t.Execute(ctx, normalizeArgs(args))
 }
 
 // Parse 将模型传入的 JSON 参数反序列化为指定结构体类型。
@@ -112,17 +113,29 @@ func Parse[T any](args json.RawMessage) (T, error) {
 }
 
 // normalizeArgs 容错修复模型输出的非法参数 JSON。
-// 部分模型偶发输出 "{…}{…}" 这类多个 JSON 值拼接的参数，整体解析会失败；
-// 此时尝试取第一个顶层 JSON 值作为参数，避免工具链路整条中断。
+// 部分模型偶发输出 "{…}{…}" 这类多个 JSON 值拼接的参数（常为一次想调多个工具），
+// 整体解析会失败；此时尝试按顶层对象逐个解码并合并为单一对象，
+// 避免整条工具链路中断或仅取第一个对象导致字段丢失。
 func normalizeArgs(args json.RawMessage) json.RawMessage {
 	var probe any
 	if err := json.Unmarshal(args, &probe); err == nil {
 		return args
 	}
 	dec := json.NewDecoder(bytes.NewReader(args))
-	var first any
-	if err := dec.Decode(&first); err == nil {
-		if b, err := json.Marshal(first); err == nil {
+	merged := map[string]any{}
+	for {
+		var v any
+		if err := dec.Decode(&v); err != nil {
+			break
+		}
+		if obj, ok := v.(map[string]any); ok {
+			for k, val := range obj {
+				merged[k] = val
+			}
+		}
+	}
+	if len(merged) > 0 {
+		if b, err := json.Marshal(merged); err == nil {
 			return b
 		}
 	}
