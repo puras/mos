@@ -10,17 +10,17 @@ MoS 是一个基于 Go 的智能体基础框架（Agent Base），提供统一�
 - **多协议 LLM 接入**：统一 `ChatModel` 抽象（模型对象）+ 协议注册表，内置 OpenAI 兼容（DeepSeek / 通义千问 / GLM / Ollama 等）、Anthropic Claude 与 Google Gemini 原生协议适配器，支持函数调用与流式输出
 - **声明式工具系统**：结构体 tag 自动生成 JSON Schema，模型函数调用参数自动校验与解析
 - **可插拔规划**：默认 ReAct 循环，可通过 `planner.Planner` 接口替换为其他策略
-- **会话记忆**：统一的 `memory.Memory` 接口，内置内存实现；长期向量记忆（sqlite-vec）规划中
+- **会话记忆**：统一的 `memory.Memory` 接口，内置内存实现；长期记忆（SQLite + FTS5 混合检索：BM25 + 向量余弦 + 中文检索）已实现，支持 RAG 每轮注入
 - **事件观测**：`Observer` 回调暴露工具调用与完成事件，便于流式输出与可观测性扩展
 - **Harness Engineering（工具安全防护）**：`agent.Policy` 在每次工具调用执行前拦截检查，内置默认策略可拦截危险 Shell 命令、路径越界与非 http 抓取
 - **Loop Engineering（循环可观测）**：每轮循环暴露思考/工具调用/工具结果/完成事件（含迭代序号），完整还原推理过程
 - **审计式任务状态（Audit Gate + Task State）**：工具结果经 `Auditor` 审计后，仅"环境可独立验证"的事实写入独立于消息历史的 `TaskState`（目标 / 已验证事实 / 状态机）；模型自述不算数——执行上下文可刷新，进度真相不过期
 - **开箱即用的智能体**：`assistant` 包组装好 Provider + 内置/扩展工具包 + 安全策略；交互式 CLI 见示例工程 `examples/assistant`
-- **零第三方依赖**：SDK 仅使用 Go 标准库；示例工程 TUI 依赖 charmbracelet 系列（bubbles / bubbletea / glamour / lipgloss）
+- **近零依赖**：SDK 仅依赖 `modernc.org/sqlite`（纯 Go，零 CGO）与本地协议库 `hegq.net/mogo`；示例工程 TUI 依赖 charmbracelet 系列（bubbles / bubbletea / glamour / lipgloss）
 
 ## 快速开始
 
-MoS 是纯依赖库：外部工程 `go get hegq.net/mos` 后按需 import 各包（如 `hegq.net/mos/agent`、`hegq.net/mos/tool`、`hegq.net/mos/llm/openai`），SDK 零第三方依赖：
+MoS 是纯依赖库：外部工程 `go get hegq.net/mos` 后按需 import 各包（如 `hegq.net/mos/agent`、`hegq.net/mos/tool`、`hegq.net/mos/llm/openai`），SDK 仅依赖 `modernc.org/sqlite`（纯 Go，零 CGO）与本地协议库 `hegq.net/mogo`：
 
 ```go
 // 0. 创建模型对象（实现 llm.ChatModel 即可，见下方"LLM 接入"）

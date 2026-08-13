@@ -327,7 +327,7 @@ func (p *Model) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*ll
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
-		evt, _, err, u := pkggemini.ParseGeminiStreamChunk(line)
+		evt, _, err, u := pkggemini.ParseGeminiStreamChunk(line, nil)
 		if err != nil {
 			return nil, fmt.Errorf("gemini: parse stream frame: %w", err)
 		}
