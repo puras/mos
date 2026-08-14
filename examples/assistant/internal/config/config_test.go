@@ -103,18 +103,3 @@ func TestLoadModelWithKey(t *testing.T) {
 		t.Fatal("model should not be nil")
 	}
 }
-
-func TestLoadModelFallbackToMock(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "")
-	t.Setenv("ANTHROPIC_API_KEY", "")
-	name, model, err := LoadModel()
-	if err != nil {
-		t.Fatalf("LoadModel: %v", err)
-	}
-	if name != "mock" {
-		t.Fatalf("name = %s, want mock", name)
-	}
-	if model == nil {
-		t.Fatal("model should not be nil")
-	}
-}

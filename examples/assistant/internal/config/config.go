@@ -73,7 +73,7 @@ func stripComment(s string) string {
 
 // LoadModel 从 .env 文件与环境变量构建模型对象（llm.ChatModel）：
 //
-//	MOS_PROVIDER         openai | anthropic | gemini | mock（默认 openai，无 API Key 时自动降级 mock）
+//	MOS_PROVIDER         openai | anthropic | gemini（默认 openai）
 //	OPENAI_API_KEY       OpenAI 兼容服务密钥
 //	ANTHROPIC_API_KEY    Anthropic 服务密钥
 //	GEMINI_API_KEY       Gemini 服务密钥
@@ -87,10 +87,6 @@ func LoadModel() (string, llm.ChatModel, error) {
 	}
 	name := getenv("MOS_PROVIDER", "openai")
 	apiKey := firstEnv("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY")
-	// 无 API Key 时自动降级为 mock，保证应用可离线体验
-	if name != "mock" && apiKey == "" {
-		name = "mock"
-	}
 
 	cfg := llm.Config{
 		"api_key":  apiKey,
@@ -98,8 +94,6 @@ func LoadModel() (string, llm.ChatModel, error) {
 		"model":    os.Getenv("MOS_MODEL"),
 	}
 	switch name {
-	case "mock":
-		return name, assistant.Mock(), nil
 	case "openai":
 		p, err := openai.New(cfg)
 		return name, p, err
@@ -110,7 +104,7 @@ func LoadModel() (string, llm.ChatModel, error) {
 		p, err := gemini.New(cfg)
 		return name, p, err
 	default:
-		return "", nil, fmt.Errorf("config: 未知协议 %q（支持 openai/anthropic/gemini/mock）", name)
+		return "", nil, fmt.Errorf("config: 未知协议 %q（支持 openai/anthropic/gemini）", name)
 	}
 }
 

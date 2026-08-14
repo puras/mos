@@ -47,7 +47,7 @@ MoS（Sapient）是基于 Go 的智能体基础框架（Agent Base），提供�
 
 ### 2.8 组装层与示例（`assistant/` + `examples/assistant`）
 - `assistant.New`：注入模型对象 + 工具集 + 运行配置，nil 时用框架默认（策略 / 规划器 / 审计器 / 记忆 / 观察）
-- 环境变量 / `.env` 配置（优先级：环境变量 > .env > 默认值）；无 Key 自动降级 mock 离线模型
+- 环境变量 / `.env` 配置（优先级：环境变量 > .env > 默认值）
 - 交互式 CLI：TUI（charmbracelet）流式输出 + 思考折叠卡片 + 焦点分区 + 主题 + 鼠标策略
 
 ## 3. 架构组成
@@ -90,6 +90,6 @@ go test ./...
 # 示例工程测试
 cd examples/assistant && go test ./...
 
-# 运行交互式 CLI（无 Key 自动降级 mock）
+# 运行交互式 CLI
 cd examples/assistant && go run .
 ```

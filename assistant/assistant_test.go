@@ -11,7 +11,6 @@ import (
 	"hegq.net/mos/llm"
 	"hegq.net/mos/memory"
 	"hegq.net/mos/tool"
-	"hegq.net/mos/tool/builtin"
 	"hegq.net/mos/tool/extension"
 )
 
@@ -254,36 +253,21 @@ func TestAssistantRetrieverMinScoreGap(t *testing.T) {
 	}
 }
 
-// 工具集由业务侧注入（框架不预设默认工具）。
-func TestAssistantMockEndToEnd(t *testing.T) {
-	a, err := New(Mock(), []tool.Tool{builtin.Calculator{}, builtin.CurrentTime{}}, Config{})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	tools := a.ToolNames()
-	want := []string{"calculator", "current_time"}
-	if len(tools) != len(want) {
-		t.Fatalf("tools = %v", tools)
-	}
+// directModel 不调用工具直接作答（本地桩，替代已移除的离线演示模型）。
+type directModel struct{}
 
-	sess := a.NewSession()
-	reply, err := a.Run(context.Background(), sess, "计算 (1+2)*3")
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if !strings.Contains(reply, "9") {
-		t.Fatalf("reply = %q, want contains 9", reply)
-	}
-	// 两轮工具调用后：user + 2×(assistant+tool) + assistant 最终回复
-	if len(sess.Messages()) != 6 {
-		t.Fatalf("history len = %d, want 6: %+v", len(sess.Messages()), sess.Messages())
-	}
+func (directModel) Capabilities() llm.Capability { return 0 }
+func (directModel) Chat(_ context.Context, _ *llm.Request) (*llm.Response, error) {
+	return &llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: "ok"}}, nil
+}
+func (directModel) ChatStream(context.Context, *llm.Request, func(llm.StreamChunk) error) (*llm.Response, error) {
+	return nil, llm.ErrUnsupported
 }
 
-// mock 模式下策略仍生效：路径越界的文件调用会被拒绝并反馈给模型。
-func TestAssistantMockPolicyApplied(t *testing.T) {
+// 策略装配后仍生效：路径越界的文件调用会被拒绝。
+func TestAssistantPolicyApplied(t *testing.T) {
 	workDir := t.TempDir()
-	a, err := New(Mock(), nil, Config{Policy: NewDefaultPolicy(nil, workDir)})
+	a, err := New(directModel{}, nil, Config{Policy: NewDefaultPolicy(nil, workDir)})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

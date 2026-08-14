@@ -85,11 +85,11 @@ sess := a.NewSession()
 reply, err := a.Run(ctx, sess, "帮我看看 workspace 里有什么文件")
 ```
 
-运行配置可通过环境变量加载；模型对象从环境变量构建（`examples/assistant/internal/config` 的应用层实现，无 API Key 时自动降级为 mock 离线模型对象 `assistant.Mock()`）：
+运行配置可通过环境变量加载；模型对象从环境变量构建（`examples/assistant/internal/config` 的应用层实现）：
 
 | 环境变量 | 说明 |
 | --- | --- |
-| `MOS_PROVIDER` | openai / anthropic / gemini / mock（默认 openai，无 Key 自动降级 mock） |
+| `MOS_PROVIDER` | openai / anthropic / gemini（默认 openai） |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` | 对应协议的密钥 |
 | `MOS_BASE_URL` | 自定义网关地址（兼容 OpenAI 协议） |
 | `MOS_MODEL` | 模型名 |
@@ -125,11 +125,11 @@ MOS_SHELL_ALLOW=ls, cat, pwd
 MOS_WORKDIR=./workspace
 ```
 
-支持 `#` 注释、空行与可选的 `export` 前缀；`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` 均为空时自动降级为 mock 离线模型。模板见 `examples/assistant/.env.example`。
+支持 `#` 注释、空行与可选的 `export` 前缀；`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` 对应所选协议的密钥。模板见 `examples/assistant/.env.example`。
 
 工具包分两类（均在 `tool/` 下随框架分发）：**内置工具包 `tool/builtin`**（纯标准库，`builtin.Default()` 一键装配）——`calculator`（表达式求值）、`current_time`（当前时间）、`web_fetch`（网页抓取转纯文本）、`read_file` / `write_file`（文件读写）、`find_files` / `grep`（文件搜索）；**扩展工具包 `tool/extension`**（需依赖注入）——`shell`（受限命令执行，支持沙箱隔离）、`web_search`（联网搜索，绑定搜索提供商，提供商实现见 `tool/extension/search`）。
 
-交互式 CLI 在示例工程 `examples/assistant` 中（同样支持环境变量配置，无 Key 时以 mock 演示完整工具调用循环）：
+交互式 CLI 在示例工程 `examples/assistant` 中（支持环境变量配置）：
 
 ```bash
 cd examples/assistant && go run .

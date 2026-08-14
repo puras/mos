@@ -114,19 +114,6 @@ func TestLoadModelFromEnvFile(t *testing.T) {
 	}
 }
 
-// TestLoadModelFallbackToMockFromFile 验证协议来自文件但无 Key 时仍降级 mock。
-func TestLoadModelFallbackToMockFromFile(t *testing.T) {
-	clearEnv(t, "MOS_PROVIDER", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
-	writeEnv(t, "MOS_PROVIDER=openai\n")
-	name, model, err := LoadModel()
-	if err != nil {
-		t.Fatalf("LoadModel: %v", err)
-	}
-	if name != "mock" || model == nil {
-		t.Fatalf("name=%s model=%v, want mock non-nil", name, model)
-	}
-}
-
 func TestLoadConfigFromEnvFile(t *testing.T) {
 	clearEnv(t, "MOS_SYSTEM_PROMPT", "MOS_MAX_TURNS", "MOS_SHELL_ALLOW", "MOS_WORKDIR")
 	writeEnv(t, "MOS_SYSTEM_PROMPT=来自文件\nMOS_MAX_TURNS=4\nMOS_SHELL_ALLOW=pwd\nMOS_WORKDIR=/tmp/w\n")
