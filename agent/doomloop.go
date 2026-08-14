@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"context"
+	"fmt"
 	"strings"
 
 	"hegq.net/mos/llm"
@@ -37,4 +39,39 @@ func (d *doomLoopDetector) observe(call *llm.ToolCall) bool {
 		d.count = 1
 	}
 	return d.count >= d.maxRepeat
+}
+
+// DoomLoopError 表示任务因 Doom Loop（相同工具连续相同参数调用）被中断。
+// 由 DoomLoopGuard 作为守卫错误抛出；循环层识别后终止任务并置状态 blocked。
+type DoomLoopError struct {
+	ToolName string
+	Repeat   int
+}
+
+func (e *DoomLoopError) Error() string {
+	return fmt.Sprintf("agent: doom loop detected: tool %q called %d times with identical args", e.ToolName, e.Repeat)
+}
+
+// DoomLoopGuard 是工具执行前（tool/pre-execute）的单调守卫：
+// 相同工具连续相同参数调用达到阈值时拒绝并终止任务，避免空转耗尽上下文。
+// 与 Policy 守卫同级注册在 GuardBus（不可被普通钩子改写绕过），见架构 v2 §3.4。
+type DoomLoopGuard struct {
+	maxRepeat int
+	det       *doomLoopDetector
+}
+
+// NewDoomLoopGuard 创建 Doom Loop 守卫；maxRepeat<=0 时默认 3。
+func NewDoomLoopGuard(maxRepeat int) *DoomLoopGuard {
+	return &DoomLoopGuard{maxRepeat: maxRepeat, det: newDoomLoopDetector(maxRepeat)}
+}
+
+// Guard 实现 Guard 接口：命中 Doom Loop 时返回 *DoomLoopError（致命，循环层终止任务）。
+func (g *DoomLoopGuard) Guard(_ context.Context, ev *HookEvent) error {
+	if g == nil || ev == nil || ev.ToolCall == nil {
+		return nil
+	}
+	if g.det.observe(ev.ToolCall) {
+		return &DoomLoopError{ToolName: ev.ToolCall.Name, Repeat: g.maxRepeat}
+	}
+	return nil
 }

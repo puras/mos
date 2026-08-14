@@ -7,6 +7,7 @@
 
 | 日期 | 版本 | 更新内容 |
 | --- | --- | --- |
+| 2026-08-14 | v2.4 | 引入 PI（@earendil-works/pi-agent-core）对照：§1.3 补 PI 借鉴表；P0 落地——llm.Response.FinishReason 三协议透传、ReActDriver 截断工具调用 fail-closed（对齐 PI failToolCallsFromTruncatedMessage）、DoomLoop 迁为单调守卫（DoomLoopGuard）；§3.9 补批量执行三阶段语义、§3.10 Inbox 拆三队列、新增 §3.11 Telemetry seam（规划） |
 | 2026-08-14 | v2.3 | 实施进度：MVP 核心（实施顺序 1-5）落地——EventBus 四模式、Session 事件日志（deriveMessages + 不变式）、HookBus+GuardBus、RunContext+LoopDriver+ReActDriver、assistant 默认装配；废弃命令式 run 与 WithXxx 选项；SDK 契约文档 §3 同步为事件日志格式 |
 | 2026-08-14 | v2.3 | 清理：移除死代码（fromLlm、Session.LastSeq、planner.WithInstruction）与零引用包 memory/inmemory；术语表状态同步为已实现/规划中 |
 | 2026-08-14 | v2.2 | 新增第 12 章：概念与名词术语表（按模块分组，标注现有/规划状态） |
@@ -34,7 +35,7 @@
 
 ### 1.3 借鉴与不借鉴（对照 dsh）
 
-| dsh 机制 | 借鉴 | 落地形态（Go） |
+| 机制 | 借鉴 | 落地形态（Go） |
 | --- | --- | --- |
 | Cordis 插件树 + ctx 服务仓库 | ✅ 概念 | `SeamRegistry`（组件注册表，编译期注册/运行期选择） |
 | 事件四模式（emit/waterfall/parallel/serial） | ✅ | `EventBus`（Go 实现四种调度） |
@@ -45,6 +46,18 @@
 | Profile/Bundle 配置装配 | ✅ | 声明式配置加载器（实施顺序 7） |
 | 运行期插件加载/卸载/DI | ❌ | 不实现（Go SDK 场景收益为负） |
 | 事件声明合并（TS declaration merging） | ⚠️ | Go 用事件名 + payload + typed helper 近似 |
+| PI `transformContext → convertToLlm` 双层消息管道 | ✅ | `HookPreStep`（pre-step 瀑布，压缩/RAG/注入）+ `convertToLlm` 翻译边界 |
+| PI `beforeToolCall` block/reason/terminate | ✅ 概念 | `tool/pre-execute` 守卫 + 审批（单调、不可绕过） |
+| PI `afterToolCall` 字段级合并覆盖（content/details/isError/usage/terminate） | ✅ | `tool/post-execute` 瀑布（截断/审计，结果可改写） |
+| PI `prepareNextTurn`（跨轮换模型/思考级别） | ✅ | `ModelResolver` + `HookRequest`（模型分级路由，M4） |
+| PI `failToolCallsFromTruncatedMessage`（截断显式失败） | ✅ 已落地 | `llm.Response.FinishReason` + ReActDriver 截断 fail-closed（见 3.3） |
+| PI 批量工具执行三阶段（preflight → 并发执行 → 按序回填）+ per-tool sequential | ✅ | `ConcurrentExecutor`（见 3.9，规划） |
+| PI `TelemetryContext/TelemetrySpan` 显式契约 + no-op + conformance tests | ✅ | `telemetry` seam（见 3.11，规划） |
+| PI 动态凭据 `getApiKey`（短期 OAuth 刷新） | ✅ | `CredentialResolver` seam（见 11，规划） |
+| PI `SuspendedOperation`（deferred 挂起 + missing 资源校验） | ✅ | approval 异步化 + 会话恢复资源校验（见 3.4/3.8，规划） |
+| PI steer/followUp/nextRun 三队列 + QueueMode | ✅ | `Inbox` 三队列（见 3.10，规划） |
+| PI `pi-protocol` 权威快照 vs transient 事件原则 | ✅ 原则 | 写入 `docs/sdk-contracts.md`（平台渲染约束） |
+| PI 手动驱动（peekAction/executeAction，drive manual） | ⚠️ | 预留 driver action 事件抽象（见 5.2，可选） |
 
 ## 2. 总体架构（分层）
 
@@ -131,6 +144,11 @@ func deriveMessages(events []SessionEvent) []InternalMessage
 - fork（SubAgent/分叉）= 新 Session 携带 `Header.ParentID` + `SeedSeq`（复制到 seed 边界），子日志独立追加
 - `Session.History` 字段**废弃删除**（一次性重构，不留双轨，见 5.1）
 
+**投影单元（Projection，规划）**（对齐 dsh session-projection）：日志之上的派生状态统一为可注册的投影单元——
+`deriveMessages`（模型面）、`TaskState`（任务状态）是首批投影，stats / title 等按需注册，投影可缓存（dsh
+projection-cache）、可独立失效。当前 `TaskState` 直接挂载在 `Session.State` 上，演进为按需注册的投影后保持
+JSON 契约不变（见 11.4）。
+
 ### 3.3 循环层（`LoopDriver` + `RunContext`）
 
 一种智能体类型 = 一个 `LoopDriver` 实现。默认 `ReActDriver` 是现有 `run` 的搬移，行为不变。
@@ -215,7 +233,19 @@ type Event struct {
 }
 ```
 
-默认装配（行为与现状等价）：`compressHook` + `ragInjectHook` 注册在 pre-step，`policyHook` 在 tool/pre-execute，`truncateHook` + `auditHook` 在 tool/post-execute，`doomLoopHook` + `doneCheck` 在 turn-stopping。平台可追加/替换。
+默认装配（行为与现状等价）：`compressHook` + `ragInjectHook` 注册在 pre-step，`policyGuard` + `DoomLoopGuard`
+注册在 tool/pre-execute 守卫链，`truncateHook` + `auditHook` 在 tool/post-execute，`doneCheck` 在 turn-stopping。
+平台可追加/替换。
+
+**守卫家族化（已落地 DoomLoop）**：策略类判定（Doom Loop 检测、per-call 超时策略、重复调用提醒）统一以单调
+守卫注册进 `GuardBus`，而非硬编码在 driver 主循环（对齐 dsh guard/ 家族）。`DoomLoopGuard` 已实现
+（`agent/doomloop.go`）：相同工具连续相同参数调用达阈值时返回 `*DoomLoopError`（致命守卫错误，循环层终止任务并置
+状态 blocked），与 Policy 同级、不可被 hook 改写绕过。超时/重试保持 `tool/execute` 钩子链职责（around
+dispatch，见 §4.3），不迁入守卫。
+
+**截断 fail-closed（已落地，对齐 PI failToolCallsFromTruncatedMessage）**：模型输出被截断
+（`FinishReason` ∈ length / max_tokens）时，已产出的工具调用可能不完整——循环层不执行、逐个显式失败回填
+（`tool/result` 错误事件），模型下一轮看到失败原因后调整，杜绝"已声明调用但模型面无回填"的静默丢弃。
 
 **Approval（人工确认）one-shot 语义**（对齐 dsh `ctx.approval`）：确认是**一次性**的（allowed-once，同一确认不重复生效）；确认通道不可用或未回答时**默认拒绝**（fail-closed）。`approval/request` 发起 → `approval/resolve` 回填（one-shot 标记）→ 守卫放行一次。
 
@@ -294,19 +324,31 @@ func (h *AgentHandle) Dispose(ctx context.Context) error // 停循环 → 注销
 
 ### 3.9 并发执行语义（并行工具 / 日志串行化）
 
-整合后 LLMCompiler 并行分支、AgentTeam 多 Agent、批量工具执行要求并发工具调用。原"单 Session 单 Run 串行"需扩展：
+整合后 LLMCompiler 并行分支、AgentTeam 多 Agent、批量工具执行要求并发工具调用。原"单 Session 单 Run 串行"需扩展。
+执行语义对齐 PI `executeToolCallsParallel` 的三阶段模型：
+
+1. **prepare（preflight，串行）**：参数校验 + 守卫决策（beforeToolCall 语义：block/reason/terminate），
+   生成"允许执行"与"拦截（显式失败回填）"两个集合；
+2. **execute（并发）**：允许集合有界并发执行；任一工具声明 `sequential` 时整批回退串行
+   （per-tool 模式覆盖全局模式，对齐 PI `ToolExecutionMode`）；
+3. **finalize（回填）**：`tool/execution` 观测事件按完成顺序广播，`tool/result` 模型面消息按 assistant
+   source order 回填（日志串行化，Seq 连续）；批量早停规则 = 所有已终结结果均请求终止时才提前结束
+   （对齐 PI `shouldTerminateToolBatch`）。
 
 ```go
 type ConcurrentExecutor struct {
 	mu sync.Mutex // 串行化 Session 日志写入
 }
 
-// 并行执行一批工具调用：结果按模型顺序回填，事件按序落日志（对齐 dsh barriers + bounded pool）
+// RunBatch 并行执行一批工具调用：preflight 串行 → 允许集合并发 → 结果按模型顺序回填，事件按序落日志
+// （对齐 dsh barriers + bounded pool；三阶段语义见上）
 func (e *ConcurrentExecutor) RunBatch(ctx context.Context, calls []llm.ToolCall, maxParallel int) ([]BatchResult, error)
 ```
 
 语义约束：
 - **日志串行化**：并行工具的事件（`tool/call` / `tool/result`）经 Executor 串行追加，Seq 连续、顺序可重放
+- **截断显式失败**：响应被截断（length/max_tokens）时整批工具调用不执行、逐个失败回填（已落地单调用路径，
+  批量路径在 Executor 落地时保持同一语义）
 - **有界并发**：`maxParallel` 上限 + 取消传播（ctx 取消 → 并行批次整体取消）
 - **汇聚语义**：分支结果合并由 driver 负责（Map-Reduce 汇聚 / 摘要合并）
 - **模型顺序回填**：即使工具并行执行，`tool/result` 按模型调用顺序回填，保持模型可见序列稳定
@@ -321,13 +363,45 @@ func (e *ConcurrentExecutor) RunBatch(ctx context.Context, calls []llm.ToolCall,
 | **Agent 域**（live） | Agent 生命周期与编排观测/拦截 | `agent/created`、`agent/status`、`agent/error`、`subagent/start`、`agent/inbox` |
 | **能力域**（seam） | 能力提供者的策略/适配挂载 | `fs/*`、`approval/*`、`tools/*` 钩子 |
 
-**Inbox（输入队列/唤醒）**（对齐 dsh inbox）：Agent 持有一个输入队列——异步消息（inject 注入、SubAgent 回报、外部事件）先进队列，队列非空唤醒 driver 处理；`user/message` 事件记录每次 claim。这支撑 SaaS 异步交互与 AgentTeam 通信：
+**Inbox（输入队列/唤醒，三队列规划）**（对齐 dsh inbox + PI steer/followUp/nextRun）：Agent 持有多输入队列——
+异步消息先进队列，队列非空唤醒 driver 处理；`user/message` 事件记录每次 claim。这支撑 SaaS 异步交互与
+AgentTeam 通信：
 
 ```go
-type Inbox struct{ /* queue */ }
-func (b *Inbox) Push(m InternalMessage) error // 唤醒 driver（非阻塞）
-func (b *Inbox) Claim() (InternalMessage, bool)
+type Inbox struct{ /* 三队列 */ }
+func (b *Inbox) Steer(m InternalMessage) error     // 运行中转向消息（当前轮结束后注入）
+func (b *Inbox) FollowUp(m InternalMessage) error  // 结束后跟进消息（agent 空闲后处理）
+func (b *Inbox) NextRun(m InternalMessage) error   // 下次运行预置消息（prompt 前的初始输入）
+func (b *Inbox) Drain(mode QueueMode) []InternalMessage // all：全部排空 / one-at-a-time：每次一条
 ```
+
+队列语义（对齐 PI `QueueMode`）：`steer` 在当前轮工具执行完、下一轮开始前注入；`followUp` 在 agent 即将停止时
+注入续跑；`nextRun` 作为下次 Run 的初始输入。`one-at-a-time` 模式每次只注入最旧一条，其余留待后续排空点，
+避免大批量消息一次性冲垮上下文。
+
+### 3.11 Telemetry seam（规划，对齐 PI pi-telemetry）
+
+MoS 现有 `Observer`（单层回调）+ `EventBus` emit 只覆盖"应用内观测"；平台可观测性（SaaS 指标/追踪）需要
+**显式传递的 span 契约**（对齐 PI：无全局 current-span、无 exporter 依赖、适配器由平台注入）：
+
+```go
+// telemetry 包（规划）：契约 + no-op + 参考实现
+type TelemetryContext interface {
+	StartSpan(ctx context.Context, name string, attrs map[string]string) (TelemetrySpan, context.Context)
+}
+type TelemetrySpan interface {
+	SetAttribute(k, v string)
+	AddEvent(name string, attrs map[string]string)
+	End(err error)
+}
+
+var NoopTelemetry = ...
+```
+
+- `RunContext.Telemetry`（可选，nil 时内部降级 no-op）：llm 请求、工具执行、driver 回合自动打 span
+  （携带 provider / model / tool / turn 属性），`Observer`/会话事件投影为 span 事件
+- 平台提供适配器（OpenTelemetry / 自研），并复用"实现者 conformance 测试"模式验证适配正确性（对齐 PI）
+- 与"权威快照 vs transient 事件"原则配合：span 是诊断数据，不参与会话权威状态还原
 
 ## 4. 事件目录（草案）
 
@@ -360,7 +434,10 @@ func (b *Inbox) Claim() (InternalMessage, bool)
 | 钩子 | 模式 | 职责 |
 | --- | --- | --- |
 | `pre-step` | waterfall | 改写模型输入（压缩/RAG/inject） |
-| `request` | waterfall | 改写请求配置 |
+| `before_payload`（规划，对齐 PI before_request） | waterfall | 发请求前最终载荷改写（工具 schema 裁剪、动态凭据注入） |
+| `request` | waterfall | 改写请求配置（temperature/max_tokens/模型分级） |
+| `after_response`（规划，对齐 PI after_response） | waterfall | 响应落地前改写（截断检测、结果规范化） |
+| `before_compaction`（规划，对齐 PI before_compaction） | waterfall | 压缩前干预（跳过/自定义指令） |
 | `tool/pre-execute` | serial | 策略/审批（拒绝短路） |
 | `tool/execute` | waterfall | around dispatch（超时/重试/指标） |
 | `tool/post-execute` | waterfall | 改写结果/审计 |
@@ -389,14 +466,17 @@ func (b *Inbox) Claim() (InternalMessage, bool)
 
 按依赖顺序逐模块落地，每模块完成即测试全绿；**不存在新旧并存期**：
 
-1. **`EventBus`**（四模式调度 + 事件目录）
-2. **`Session.Events` 日志**（append-only + `deriveMessages` + 不变式测试）——删除 `History`
-3. **`HookBus`**（瀑布钩子 + `Event` 载荷）
-4. **`RunContext` + `LoopDriver` + `ReActDriver`**（重写循环，删除命令式 `run`）
-5. **`assistant` 组装层重写**（默认装配 = ReActDriver + 默认钩子注册；删除 `WithXxx` 选项）
-6. **`PlanExecuteDriver` + `ReflectionDriver` + `DriverRouter`**（新能力）
-7. **`SeamRegistry` + 声明式配置加载器**（新能力，平台装配入口）
-8. **`Scope` + 会话日志持久化后端接口**（新能力）
+1. **`EventBus`**（四模式调度 + 事件目录）——✅ 已落地
+2. **`Session.Events` 日志**（append-only + `deriveMessages` + 不变式测试）——删除 `History`——✅ 已落地
+3. **`HookBus`**（瀑布钩子 + `Event` 载荷）——✅ 已落地（含 GuardBus 单调守卫）
+4. **`RunContext` + `LoopDriver` + `ReActDriver`**（重写循环，删除命令式 `run`）——✅ 已落地
+   （含 P0 增强：截断工具调用 fail-closed + `DoomLoopGuard` 守卫化）
+5. **`assistant` 组装层重写**（默认装配 = ReActDriver + 默认钩子注册；删除 `WithXxx` 选项）——✅ 已落地
+6. **`ConcurrentExecutor`**（批量工具三阶段：preflight → 并发执行 → 按序回填，见 3.9）——规划中
+7. **`PlanExecuteDriver` + `ReflectionDriver` + `DriverRouter`**（新能力）——规划中
+8. **`SeamRegistry` + 声明式配置加载器**（新能力，平台装配入口）——规划中
+9. **`Scope` + 会话日志持久化后端接口**（新能力）——规划中
+10. **`telemetry` seam**（span 契约 + no-op + 适配器，见 3.11）——规划中（P0，平台集成前置）
 
 ### 5.3 验收
 
@@ -533,6 +613,26 @@ README 路线图中未实现的里程碑（M2.8 ~ M5）按三类归位：**v2 �
 
 经全面对照 DSH 子系统（session / persistence / compaction / scope / approval / attachment / storage / subagent / sandbox / token-meter / invariants 等），v2.1 设计已覆盖 DSH 对 MoS 有借鉴价值的能力面；剩余差距为运行期动态装配（不做）与产品层（平台负责）。
 
+### 10.6 PI 复核结论（v2.4）
+
+经对照 PI（@earendil-works/pi-agent-core / pi-telemetry / pi-protocol），补充以下运行时语义（已并入上述调整）：
+
+| PI 能力 | 并入位置 | 状态 |
+| --- | --- | --- |
+| 截断消息的 tool call 显式失败（failToolCallsFromTruncatedMessage） | 3.3 / 3.4 | ✅ 已落地 |
+| 批量工具三阶段执行 + per-tool sequential + 批量早停规则 | 3.9 | 规划 |
+| Guard 家族化（DoomLoop / 超时策略 / 重复提醒为独立守卫） | 3.4 | DoomLoop 已落地 |
+| 钩子时机补齐（before_payload / after_response / before_compaction） | 4.3 | 规划 |
+| Telemetry 显式 span 契约 + conformance tests | 3.11 | 规划 |
+| Inbox 三队列（steer/followUp/nextRun）+ QueueMode | 3.10 | 规划 |
+| 动态凭据解析（getApiKey，短期 OAuth 刷新） | 11.4 CredentialResolver | 规划 |
+| Deferred 人工介入（approval 异步化 + 挂起恢复资源校验） | 3.4 / 3.8 | 规划 |
+| 权威快照 vs transient 事件原则（协议/UI 渲染约束） | sdk-contracts | 规划 |
+| 手动驱动/步进执行（peekAction/executeAction） | 5.2 预留 | 可选 |
+
+不借鉴：PI 无内置权限系统（MoS Policy+GuardBus+Sandbox 已领先）、`pi-protocol` 传输层（SaaS 平台负责）、
+evals 体系（平台/测试基建，SDK 保留接口级 conformance 测试）。
+
 ## 11. 模块划分与实体定义
 
 ### 11.1 模块划分（包结构）
@@ -568,6 +668,7 @@ flowchart TD
         I5["agent/scope<br/>Scope 注册作用域"]
         I6["agent/inbox<br/>Inbox 输入队列"]
         I7["agent/executor<br/>ConcurrentExecutor"]
+        I8["agent/telemetry<br/>Telemetry span 契约（no-op + 适配器）"]
     end
 
     subgraph BASE["基础层（现有，不动）"]
@@ -649,6 +750,16 @@ flowchart LR
 | `DriverRouter` | 任务路由（规则 + LLM） | 按任务选 driver / 委派 SubAgent |
 | `ModelResolver` | 请求级模型解析 | 模型分级路由（简单→经济、复杂→强） |
 | `Approval` | 人工确认（one-shot） | 发起确认 → 异步回填 → 放行一次；默认拒绝 |
+| `Projection` | 日志派生投影（规划） | 模型消息 / TaskState / stats / title 多投影，可注册可缓存（对齐 dsh session-projection） |
+| `TelemetryContext/TelemetrySpan` | 显式遥测契约（规划） | 平台可观测性：span 树 + no-op + 适配器（对齐 PI pi-telemetry） |
+| `CredentialResolver` | 请求级凭据解析（规划） | 短期 OAuth token 按请求刷新（对齐 PI getApiKey） |
+
+### 11.4 投影单元与 CredentialResolver（规划，对齐 DSH/PI）
+
+- **Projection**（见 3.2）：日志之上可注册多个派生投影（模型消息 / TaskState / stats / title），投影可缓存、
+  可独立失效；`TaskState` 由 `Session.State` 演进为按需注册的投影，JSON 契约不变。
+- **CredentialResolver**：`llm` 层请求级凭据解析 seam——适配器构造时不再绑定固定凭据，按请求
+  `Resolve(ctx, provider) (apiKey, error)` 动态取用，支持短期 OAuth token 过期刷新（SaaS 平台集成前置）。
 
 ## 12. 概念与名词术语表
 
@@ -706,11 +817,17 @@ flowchart LR
 | `HookBus` | 瀑布钩子：可改写 / 委托 / 短路；环节可插拔 | agent | ✅ 已实现 |
 | `GuardBus` | 单调守卫：串行裁决、短路即拒，不可被 hook 改写绕过（Policy/权限/身份） | agent | ✅ 已实现 |
 | `Hook` / `HookKind` / `Next` | 瀑布钩子签名与环节枚举（pre-step / request / tool-* / turn-stopping） | agent | ✅ 已实现（request/turn-stopping 预留） |
+| `DoomLoopGuard` / `DoomLoopError` | Doom Loop 单调守卫：相同工具连续相同参数调用达阈值 → 致命守卫错误，循环层终止任务（状态 blocked） | agent | ✅ 已实现 |
+| `isTruncatedFinish` | 截断停止原因判定（length / max_tokens） | agent | ✅ 已实现 |
+| `llm.Response.FinishReason` | 模型停止原因透传（openai stop/length/tool_calls；anthropic end_turn/max_tokens/tool_use；gemini 小写化） | llm | ✅ 已实现 |
 | `Scope` | per-agent 注册作用域；agent 销毁时按注册逆序回滚（registrations are reversible） | agent/scope（规划） | 🧱 规划中 |
 | `Inbox` | 输入队列 / 唤醒：异步消息入队，队列非空唤醒 driver | agent/inbox（规划） | 🧱 规划中 |
 | `ConcurrentExecutor` | 并发工具执行器：并行分支 + 日志串行化 + 有界并发 + 模型顺序回填 | agent/executor（规划） | 🧱 规划中 |
 | `Observer` / `Event` / `EventType` | 观测回调与事件类型（现有事件流保留，挂到会话事件/钩子的 emit 投影） | agent | ✅ 现有（保留） |
 | `SeamRegistry` | 组件注册表：按名选提供者（driver/policy/sandbox/memory/model/subagent/mcp/attachment/persistence/compactor） | agent/seam（规划） | 🧱 规划中 |
+| `Projection` | 日志派生投影（模型消息 / TaskState / stats / title），可注册可缓存（对齐 dsh session-projection） | agent/session（规划） | 🧱 规划中 |
+| `TelemetryContext/TelemetrySpan` | 显式遥测契约：span 树 + no-op + 适配器（对齐 PI pi-telemetry） | agent/telemetry（规划） | 🧱 规划中 |
+| `CredentialResolver` | 请求级凭据解析（短期 OAuth 刷新，对齐 PI getApiKey） | llm（规划） | 🧱 规划中 |
 
 ### 12.5 基础层（现有包，不动）
 
@@ -784,6 +901,7 @@ flowchart LR
 | 会话域（durable） | `user/message`、`assistant/chunk`、`assistant/message` | 消息与流式增量 |
 | 会话域（durable） | `tool/call` / `tool/result` | 工具调用与结果 |
 | 会话域（durable） | `compaction/start` / `compaction/summary` / `compaction/end` | 压缩三段式（可回放） |
+| 会话域（durable） | 截断工具调用显式失败回填 | 输出截断（length/max_tokens）时 tool/call 以错误 tool/result 回填（fail-closed） |
 | Agent 域（live） | `agent/created` / `agent/disposed` / `agent/status` / `agent/error` / `agent/inbox` | 生命周期与输入观测 |
 | Agent 域（live） | `subagent/start` / `subagent/end` | SubAgent 生命周期观测 |
 | Agent 域（live） | `agent/request-error`（waterfall）、`approval/request` / `approval/resolve`（serial/emit） | 异常处理与人工确认 |

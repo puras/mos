@@ -473,6 +473,9 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 			continue
 		}
 		choice := chunk.Choices[0]
+		if fr := deref(choice.FinishReason); fr != "" {
+			acc.finish = fr
+		}
 		acc.content.WriteString(choice.Delta.Content)
 		acc.reasoning.WriteString(choice.Delta.ReasoningContent)
 		sc := llm.StreamChunk{Delta: choice.Delta.Content, FinishReason: deref(choice.FinishReason)}
@@ -499,6 +502,7 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 		msg.ToolCalls = calls
 	}
 	resp := &llm.Response{Message: msg}
+	resp.FinishReason = acc.finish
 	if acc.usage != nil {
 		resp.Usage = toLLMUsage(pkgusage.FromOpenAICompletion(acc.usage))
 	}
@@ -511,6 +515,7 @@ type streamAccumulator struct {
 	reasoning strings.Builder // reasoning_content 增量（DeepSeek/Qwen 扩展）
 	toolCalls map[int]*streamToolCall
 	usage     *pkgopenai.OpenAICompletionUsage
+	finish    string // 最后一次 finish_reason（last-wins，通常仅终止块携带）
 }
 
 type streamToolCall struct {

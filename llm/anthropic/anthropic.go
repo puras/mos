@@ -311,6 +311,7 @@ type anthropicError struct {
 type messagesResponse struct {
 	Content []pkganthropic.AnthropicContentBlockUnion `json:"content"`
 	Usage   *pkganthropic.AnthropicUsage              `json:"usage"`
+	Stop    *string                                   `json:"stop_reason"`
 	Error   *anthropicError                           `json:"error"`
 }
 
@@ -342,8 +343,9 @@ func (p *Chat) handleResponse(r io.Reader) (*llm.Response, error) {
 		}
 	}
 	return &llm.Response{
-		Message: msg,
-		Usage:   toLLMUsage(pkgusage.FromAnthropic(raw.Usage)),
+		Message:      msg,
+		Usage:        toLLMUsage(pkgusage.FromAnthropic(raw.Usage)),
+		FinishReason: anthropicStopReason(raw.Stop),
 	}, nil
 }
 
@@ -482,10 +484,20 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 			ToolCalls: toolCalls,
 		},
 	}
+	resp.FinishReason = finishReason
 	if usage != nil {
 		resp.Usage = toLLMUsage(usage)
 	}
 	return resp, nil
+}
+
+// anthropicStopReason 将 Anthropic stop_reason 映射为统一停止原因。
+// 协议原文为 end_turn / max_tokens / stop_sequence / tool_use，原样透传即可。
+func anthropicStopReason(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // streamToolBlock 记录流式内容块的工具调用增量。

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"hegq.net/mos/llm"
 	"hegq.net/mos/memory"
@@ -56,6 +57,11 @@ func NewReAct(rt *RunContext) LoopDriver {
 	rt.Hooks.On(HookToolPostExecute, auditHook(rt))
 	if rt.Policy != nil {
 		rt.Guards.Add(policyGuard(rt.Policy))
+	}
+	// Doom Loop 检测以单调守卫注册（tool/pre-execute 阶段、Policy 之后）：
+	// 相同工具连续相同参数调用达到阈值即中断任务（状态 blocked），见 agent/doomloop.go。
+	if rt.DoomLoopMaxRepeat > 0 {
+		rt.Guards.Add(NewDoomLoopGuard(rt.DoomLoopMaxRepeat).Guard)
 	}
 	return &ReActDriver{}
 }
@@ -123,9 +129,9 @@ func (d *ReActDriver) Run(ctx context.Context, rt *RunContext, input string) (st
 			return "", fmt.Errorf("agent: plan turn %d: %w", turn, err)
 		}
 
-		var calls []llm.ToolCall
-		if action.ToolCall != nil {
-			calls = []llm.ToolCall{*action.ToolCall}
+		calls := action.ToolCalls
+		if len(calls) == 0 && action.ToolCall != nil {
+			calls = []llm.ToolCall{*action.ToolCall} // 兼容仅填 ToolCall 的第三方规划器
 		}
 		if err := sess.appendAssistantMessage(turn, action.Content, action.ReasoningContent, calls, action.Usage); err != nil {
 			return "", fmt.Errorf("agent: append assistant/message: %w", err)
@@ -135,7 +141,7 @@ func (d *ReActDriver) Run(ctx context.Context, rt *RunContext, input string) (st
 			rt.notify(Event{Type: EventStep, SessionID: sess.ID, Turn: turn, Content: action.Content})
 		}
 
-		if action.ToolCall == nil {
+		if len(calls) == 0 {
 			// 直接作答，任务完成
 			sess.State.Status = StatusCompleted
 			_ = sess.Append(SessionEventStepEnd, StepData{Turn: turn, Step: step})
@@ -144,23 +150,30 @@ func (d *ReActDriver) Run(ctx context.Context, rt *RunContext, input string) (st
 			return action.Content, nil
 		}
 
+		// 截断检测（对齐 PI failToolCallsFromTruncatedMessage）：
+		// 输出被截断（finish_reason=length/max_tokens）时，已产出的工具调用可能不完整，
+		// fail-closed：不执行、逐个显式失败回填（模型下一轮看到失败原因后调整），
+		// 避免"已声明调用但模型面无回填"的静默丢弃。
+		if isTruncatedFinish(action.FinishReason) {
+			for i := range calls {
+				call := &calls[i]
+				err := fmt.Errorf("模型输出被截断（finish_reason=%s），工具调用未执行（fail-closed）", action.FinishReason)
+				_ = sess.appendToolResult(turn, call, nil, "", err)
+				rt.notify(Event{Type: EventToolResult, SessionID: sess.ID, Turn: turn, ToolCall: call})
+			}
+			_ = sess.Append(SessionEventStepEnd, StepData{Turn: turn, Step: step})
+			history = sess.Messages()
+			continue
+		}
+
 		// 工具调用
-		call := action.ToolCall
+		// 注：多工具批量执行（并发 + 按序回填）属 M3 规划（ConcurrentExecutor），
+		// 当前单调用路径执行第一个，其余由规划器在后续轮次继续产出。
+		call := &calls[0]
 		if err := sess.appendToolCall(turn, call); err != nil {
 			return "", fmt.Errorf("agent: append tool/call: %w", err)
 		}
 		rt.notify(Event{Type: EventToolCall, SessionID: sess.ID, Turn: turn, ToolCall: call})
-
-		// Doom Loop 检测：相同工具连续相同参数调用 → 中断
-		if rt.DoomLoopMaxRepeat > 0 {
-			if rt.doomLoop == nil {
-				rt.doomLoop = newDoomLoopDetector(rt.DoomLoopMaxRepeat)
-			}
-			if rt.doomLoop.observe(call) {
-				sess.State.Status = StatusBlocked
-				return "", fmt.Errorf("agent: doom loop detected: tool %q called %d times with identical args", call.Name, rt.DoomLoopMaxRepeat)
-			}
-		}
 
 		// 执行工具：守卫（单调）→ pre-execute → execute → post-execute
 		tev := &HookEvent{Kind: HookToolPreExecute, ToolCall: call, Turn: turn, Step: step}
@@ -173,6 +186,13 @@ func (d *ReActDriver) Run(ctx context.Context, rt *RunContext, input string) (st
 			_ = sess.appendToolResult(turn, call, nil, deniedErr.Error(), nil)
 			rt.notify(Event{Type: EventToolResult, SessionID: sess.ID, Turn: turn, ToolCall: call})
 		case execErr != nil:
+			// Doom Loop 是致命守卫错误：任务中断（状态 blocked），不回填工具结果
+			var doomErr *DoomLoopError
+			if errors.As(execErr, &doomErr) {
+				sess.State.Status = StatusBlocked
+				_ = sess.Append(SessionEventStepEnd, StepData{Turn: turn, Step: step})
+				return "", doomErr
+			}
 			_ = sess.appendToolResult(turn, call, nil, "", execErr)
 		default:
 			_ = sess.appendToolResult(turn, call, tev.Result, tev.ResultText, tev.Err)
@@ -225,6 +245,10 @@ func (rt *RunContext) monitorUsage(turn int, usage llm.Usage) {
 // 守卫拒绝返回 *ToolDeniedError（非致命，结果反馈给模型）；其余错误视为运行期失败。
 func executeToolChain(ctx context.Context, rt *RunContext, ev *HookEvent) (*HookEvent, error) {
 	if err := rt.Guards.Allow(ctx, ev); err != nil {
+		var doomErr *DoomLoopError
+		if errors.As(err, &doomErr) {
+			return nil, doomErr // 致命守卫错误：循环层终止任务（状态 blocked）
+		}
 		return nil, &ToolDeniedError{Reason: err.Error()}
 	}
 	ev, err := rt.Hooks.Waterfall(ctx, ev)
@@ -431,4 +455,15 @@ func retrieveAndInject(ctx context.Context, rt *RunContext, turn int, query stri
 		passed = passed[:maxChunks]
 	}
 	return []InternalMessage{CustomMsg("rag", renderRetrieved(passed))}, nil
+}
+
+// isTruncatedFinish 判断模型停止原因是否为"输出被截断"。
+// openai: length；anthropic: max_tokens；gemini: MAX_TOKENS（已转小写）。
+// 截断时已产出的工具调用可能不完整，循环层 fail-closed 处理（见 ReActDriver.Run）。
+func isTruncatedFinish(reason string) bool {
+	switch strings.ToLower(reason) {
+	case "length", "max_tokens":
+		return true
+	}
+	return false
 }

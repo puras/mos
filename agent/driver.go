@@ -51,8 +51,6 @@ type RunContext struct {
 	Hooks             *HookBus  // 瀑布钩子（可改写环节）
 	Guards            *GuardBus // 单调守卫（不可被改写绕过）
 	Bus               *EventBus // 事件总线（emit 观测，可选）
-
-	doomLoop *doomLoopDetector // 运行期状态：Doom Loop 检测器（跨 Run 保留）
 }
 
 // Agent 是智能体实例：RunContext + LoopDriver 的组合（架构 v2 §11.3）。

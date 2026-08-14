@@ -139,6 +139,10 @@ type Request struct {
 type Response struct {
 	Message Message `json:"message"`
 	Usage   Usage   `json:"usage"`
+	// FinishReason 是模型停止原因（openai: stop/length/tool_calls；anthropic: end_turn/max_tokens/tool_use；
+	// gemini: STOP/MAX_TOKENS/... 已转小写）。length/max_tokens 表示输出被截断，
+	// 循环层据此对未执行完的工具调用做 fail-closed 处理（见 agent.ReActDriver）。
+	FinishReason string `json:"finish_reason,omitempty"`
 }
 
 // StreamChunk 是流式输出的增量块。

@@ -310,8 +310,9 @@ func (p *Chat) handleResponse(r io.Reader) (*llm.Response, error) {
 		}
 	}
 	return &llm.Response{
-		Message: msg,
-		Usage:   toLLMUsage(pkggemini.ExtractGeminiUsage(raw.UsageMetadata)),
+		Message:      msg,
+		Usage:        toLLMUsage(pkggemini.ExtractGeminiUsage(raw.UsageMetadata)),
+		FinishReason: geminiFinishReason(raw.Candidates[0].FinishReason),
 	}, nil
 }
 
@@ -353,6 +354,7 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 			}
 		}
 		if cand.FinishReason != "" {
+			acc.finish = strings.ToLower(cand.FinishReason)
 			if emit != nil {
 				if err := emit(llm.StreamChunk{FinishReason: strings.ToLower(cand.FinishReason)}); err != nil {
 					return nil, err
@@ -369,10 +371,17 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 		msg.ToolCalls = calls
 	}
 	resp := &llm.Response{Message: msg}
+	resp.FinishReason = acc.finish
 	if acc.usage != nil {
 		resp.Usage = toLLMUsage(acc.usage)
 	}
 	return resp, nil
+}
+
+// geminiFinishReason 将 Gemini 停止原因（STOP / MAX_TOKENS / SAFETY / ...）转为小写统一形态，
+// 与流式路径一致（MAX_TOKENS → max_tokens，供截断检测识别）。
+func geminiFinishReason(r string) string {
+	return strings.ToLower(r)
 }
 
 // toLLMUsage 将 MoGO 统一用量映射为 MoS 统一结构（缓存命中 → CacheRead，思考 token → Reasoning）。
@@ -399,6 +408,7 @@ type streamAccumulator struct {
 	content strings.Builder
 	calls   map[string]*streamFunctionCall
 	usage   *pkgusage.Usage
+	finish  string // 最后一次 finishReason（last-wins）
 }
 
 type streamFunctionCall struct {

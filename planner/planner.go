@@ -15,8 +15,14 @@ type Action struct {
 	Content string
 	// ReasoningContent 是伴随的推理内容（思维链，thinking 模式多轮须回传）。
 	ReasoningContent string
-	// ToolCall 非空表示需要调用该工具，为空表示直接作答（任务结束）。
+	// ToolCalls 是模型请求调用的工具列表（完整保留；循环层负责执行与回填）。
+	// 兼容单工具实现：仅有 ToolCall 时，循环层自动补齐为单元素列表。
+	ToolCalls []llm.ToolCall
+	// ToolCall 是 ToolCalls 的第一个元素（单工具快捷访问，保持既有语义）。
 	ToolCall *llm.ToolCall
+	// FinishReason 是本次决策的模型停止原因（length/max_tokens 表示输出被截断，
+	// 循环层对截断产生的工具调用做 fail-closed 处理，不执行并显式失败回填）。
+	FinishReason string
 	// Usage 是本次决策的模型 token 用量（供上下文利用率监控等观测，M2.5）。
 	Usage llm.Usage
 }
@@ -93,9 +99,15 @@ func (p *ReAct) buildRequest(history []llm.Message, tools []llm.Tool) *llm.Reque
 
 // toAction 将模型响应转换为规划器决策。
 func toAction(resp *llm.Response) Action {
-	action := Action{Content: resp.Message.Content, ReasoningContent: resp.Message.ReasoningContent, Usage: resp.Usage}
-	if len(resp.Message.ToolCalls) > 0 {
-		action.ToolCall = &resp.Message.ToolCalls[0]
+	action := Action{
+		Content:          resp.Message.Content,
+		ReasoningContent: resp.Message.ReasoningContent,
+		Usage:            resp.Usage,
+		FinishReason:     resp.FinishReason,
+	}
+	if calls := resp.Message.ToolCalls; len(calls) > 0 {
+		action.ToolCalls = calls
+		action.ToolCall = &calls[0]
 	}
 	return action
 }

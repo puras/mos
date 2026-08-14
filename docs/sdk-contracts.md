@@ -110,6 +110,11 @@ type Observer func(Event)
 - `Usage` 字段承载 token 用量，是平台计费 / 成本核算的素材（走 MoGo 网关时计费在网关侧）
 - 平台集成建议：`Observer` 内只做"入队转发"，不阻塞 Run 循环
 
+**权威快照 vs transient 事件原则**（对齐 PI pi-protocol）：会话事件日志（§3）是**权威状态**，
+平台 UI / 前端只应从中还原渲染状态；`EventStream`（流式增量）、`EventStep`（思考过程）等 transient
+观测事件是**诊断/进度提示**，不得被前端或中间层 reduce 进权威状态（否则多端并发消费会出现状态分叉）。
+平台需落库的只有 §3 的事件日志快照；transient 事件按需投递、允许丢弃。
+
 ## 6. 人工介入（待完善）
 
 - 现状：`assistant.Confirmer` 为同步进程内接口（y/N），适用于 CLI 场景
