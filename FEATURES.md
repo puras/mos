@@ -50,10 +50,9 @@ MoS（Sapient）是基于 Go 的智能体基础框架（Agent Base），提供�
 - `Sandbox` 执行中隔离：工作目录 jail + 超时 + 输出上限 + 进程资源限制（CPU / 内存 / 单文件）+ 环境裁剪 + 网络控制
 - `Confirmer` 人工确认器（M2.8 轻量雏形）：CLI 纯文本 y/N 确认；TUI 模式 fail-closed
 
-### 2.8 组装层与示例（`assistant/` + `examples/assistant`）
+### 2.8 组装层（`assistant/`）
 - `assistant.New`：注入模型对象 + 工具集 + 运行配置，nil 时用框架默认（策略 / 规划器 / 审计器 / 记忆 / 观察）
-- 环境变量 / `.env` 配置（优先级：环境变量 > .env > 默认值）
-- 交互式 CLI：TUI（charmbracelet）流式输出 + 思考折叠卡片 + 焦点分区 + 主题 + 鼠标策略
+- `DefaultPolicy`：默认安全策略（shell 白名单 + WorkDir 限制 + Confirmer 人工确认）
 
 ## 3. 架构组成
 
@@ -65,9 +64,8 @@ MoS（Sapient）是基于 Go 的智能体基础框架（Agent Base），提供�
 | `agent/` | 核心循环、消息翻译、压缩、RAG、审计、状态、截断、Doom Loop |
 | `memory/` | 记忆接口、longterm（sqlite + FTS5 + 向量） |
 | `assistant/` | 组装层、默认策略、确认器 |
-| `examples/assistant/` | 独立示例工程（TUI CLI + 配置加载） |
 
-SDK 零第三方依赖（仅依赖本地 `hegq.net/mogo` 与 `modernc.org/sqlite`）；示例工程依赖 charmbracelet 系列。
+SDK 零第三方依赖（仅依赖本地 `hegq.net/mogo` 与 `modernc.org/sqlite`）。
 
 ## 4. 完整性评估
 
@@ -89,12 +87,5 @@ SDK 零第三方依赖（仅依赖本地 `hegq.net/mogo` 与 `modernc.org/sqlite
 ## 5. 快速验证
 
 ```bash
-# SDK 全量测试
 go test ./...
-
-# 示例工程测试
-cd examples/assistant && go test ./...
-
-# 运行交互式 CLI
-cd examples/assistant && go run .
 ```

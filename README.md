@@ -15,7 +15,7 @@ MoS 是一个基于 Go 的智能体基础框架（Agent Base），提供统一�
 - **Harness Engineering（工具安全防护）**：`agent.Policy` 在每次工具调用执行前拦截检查，内置默认策略可拦截危险 Shell 命令、路径越界与非 http 抓取
 - **Loop Engineering（循环可观测）**：每轮循环暴露思考/工具调用/工具结果/完成事件（含迭代序号），完整还原推理过程
 - **审计式任务状态（Audit Gate + Task State）**：工具结果经 `Auditor` 审计后，仅"环境可独立验证"的事实写入独立于消息历史的 `TaskState`（目标 / 已验证事实 / 状态机）；模型自述不算数——执行上下文可刷新，进度真相不过期
-- **开箱即用的智能体**：`assistant` 包组装好 Provider + 内置/扩展工具包 + 安全策略；交互式 CLI 见示例工程 `examples/assistant`
+- **开箱即用的智能体**：`assistant` 包组装好 Provider + 内置/扩展工具包 + 安全策略（`assistant.New` 一行装配）
 - **近零依赖**：SDK 仅依赖 `modernc.org/sqlite`（纯 Go，零 CGO）与本地协议库 `hegq.net/mogo`；示例工程 TUI 依赖 charmbracelet 系列（bubbles / bubbletea / glamour / lipgloss）
 
 ## 快速开始
@@ -88,7 +88,7 @@ sess := a.NewSession()
 reply, err := a.Run(ctx, sess, "帮我看看 workspace 里有什么文件")
 ```
 
-运行配置可通过环境变量加载；模型对象从环境变量构建（`examples/assistant/internal/config` 的应用层实现）：
+运行配置属应用层约定，可按如下键名约定实现（模型对象 / 工具集 / 安全策略由外部工程自行装配注入）：
 
 | 环境变量 | 说明 |
 | --- | --- |
@@ -115,28 +115,7 @@ reply, err := a.Run(ctx, sess, "帮我看看 workspace 里有什么文件")
 | `MOS_TOOL_OUTPUT_KB` | 工具结果截断：单次结果最大字节数 KB（默认 64，0 不限制） |
 | `MOS_TOOL_OUTPUT_LINES` | 工具结果截断：单次结果最大行数（默认 2000，0 不限制） |
 
-以上配置也可写入 **`.env` 文件**（默认 `examples/assistant/.env`，路径可用 `MOS_CONFIG` 覆盖）。键名与环境变量完全一致，读取优先级：**环境变量 > .env 文件 > 默认值**（`.env` 不覆盖已存在的环境变量）：
-
-```
-MOS_PROVIDER=openai
-OPENAI_API_KEY=sk-xxx
-MOS_BASE_URL=https://api.deepseek.com/v1
-MOS_MODEL=deepseek-chat
-MOS_SYSTEM_PROMPT=你是 MoS 智能体
-MOS_MAX_TURNS=10
-MOS_SHELL_ALLOW=ls, cat, pwd
-MOS_WORKDIR=./workspace
-```
-
-支持 `#` 注释、空行与可选的 `export` 前缀；`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` 对应所选协议的密钥。模板见 `examples/assistant/.env.example`。
-
 工具包分两类（均在 `tool/` 下随框架分发）：**内置工具包 `tool/builtin`**（纯标准库，`builtin.Default()` 一键装配）——`calculator`（表达式求值）、`current_time`（当前时间）、`web_fetch`（网页抓取转纯文本）、`read_file` / `write_file`（文件读写）、`find_files` / `grep`（文件搜索）；**扩展工具包 `tool/extension`**（需依赖注入）——`shell`（受限命令执行，支持沙箱隔离）、`web_search`（联网搜索，绑定搜索提供商，提供商实现见 `tool/extension/search`）。
-
-交互式 CLI 在示例工程 `examples/assistant` 中（支持环境变量配置）：
-
-```bash
-cd examples/assistant && go run .
-```
 
 ```
 你 > 计算 (1+2)*3
@@ -355,7 +334,7 @@ model, err := reg.Create("openai", llm.Config{
 
 ## 目录结构
 
-双模块布局：**仓库根是纯依赖 SDK（`hegq.net/mos`，包直接位于 module 根目录）**，作为库集成到外部工程；**示例应用独立成工程（`examples/assistant`，`hegq.net/mos/examples/assistant`）**，通过 `replace hegq.net/mos => ../..` 本地引用 SDK。SDK 不含任何应用层入口。
+单模块纯依赖 SDK（`hegq.net/mos`，包直接位于 module 根目录），作为库集成到外部工程。SDK 不含任何应用层入口。
 
 ```
 mos/
@@ -373,26 +352,18 @@ mos/
 ├── agent/                 # 智能体运行时：事件日志 Session / LoopDriver / HookBus / Policy / Observer
 ├── planner/               # 规划策略：Planner 接口 + ReAct 实现
 ├── assistant/             # 组装好的完整智能体：模型对象注入 / 默认策略 / 内置+扩展工具包
-├── .gitignore
-└── examples/
-    └── assistant/         # 示例应用（独立 Go module：hegq.net/mos/examples/assistant）
-        ├── go.mod         #   replace hegq.net/mos => ../.. 本地引用 SDK（mogo 为 SDK 传递依赖，需重复声明 replace，不跨模块传递）
-        ├── main.go        #   CLI 薄入口
-        ├── internal/
-        │   ├── config/    #     应用层：.env + 环境变量 → 模型对象 + 运行配置
-        │   └── cli/       #     应用层 CLI 交互逻辑（REPL / TUI）
-        └── .env.example   #   应用层配置模板（复制为 .env 使用，MOS_CONFIG 可指定路径）
+└── .gitignore
 ```
 
-### SDK 根目录包与示例应用 internal 的划分准则
+### SDK 根目录包的划分准则
 
-**SDK module 根目录的包放框架层面的能力，`examples/assistant/internal/` 放示例应用层面的能力。**
+**SDK module 根目录的包放框架层面的能力**（通用、可复用、有 API 契约）。
 
 Go 语言本身没有 `pkg/` 目录语义（只有 `internal/` 有编译器强制约束），纯依赖库的包直接放在 module 根目录即可，外部工程以 `hegq.net/mos/xxx` 导入。`internal/` 是 **Go 语言级约束**：其下包只能被父目录以内的代码 import，外部工程引用会直接编译报错（`use of internal package not allowed`）。判断归属时先问：
 
-1. **这是框架层面的能力，还是应用层面的能力？** 框架层（通用、可复用、有 API 契约）→ SDK 根目录包；应用层（绑定具体产品的入口、配置约定、交互形态）→ 示例工程的 `internal/`
-2. **外部工程集成 MoS 时需要直接 import 它吗？** 是 → SDK 根目录包；仅示例应用自己用 → 示例工程的 `internal/`
-3. **它是稳定、带契约的公开 API，还是可随意重构的实现细节？** 前者 → SDK 根目录包；后者 → 示例工程的 `internal/`
+1. **这是框架层面的能力，还是应用层面的能力？** 框架层（通用、可复用、有 API 契约）→ SDK 根目录包；应用层（绑定具体产品的入口、配置约定、交互形态）→ 外部工程自己的 `internal/`
+2. **外部工程集成 MoS 时需要直接 import 它吗？** 是 → SDK 根目录包；仅应用自己用 → 外部工程的 `internal/`
+3. **它是稳定、带契约的公开 API，还是可随意重构的实现细节？** 前者 → SDK 根目录包；后者 → 外部工程的 `internal/`
 
 当前划分示例：
 
@@ -403,21 +374,13 @@ Go 语言本身没有 `pkg/` 目录语义（只有 `internal/` 有编译器强�
 | SDK 根目录 | `tool/extension` | 框架层扩展工具包：shell（沙箱执行）/ web_search（搜索提供商，实现见 `extension/search`），需依赖注入 |
 | SDK 根目录 | `assistant` | 框架层组装智能体（模型对象注入，`Config` 仅含运行配置） |
 | SDK 根目录 | `llm/openai` `llm/anthropic` `llm/gemini` | 框架层协议适配器，外部按需选用 |
-| `examples/assistant/internal/` | `config` | 示例应用层：从 `.env` + `MOS_*` 环境变量构建模型对象与运行配置 |
-| `examples/assistant/internal/` | `cli` | 示例应用层：REPL/TUI 绑定终端交互，装配内置 + 扩展工具包 |
 
-注意：框架层 `assistant.Config` 只含系统引导、迭代次数与框架概念对象（`Policy` / `Planner` / `Auditor` / `Memory` / `Observer`，nil 时用框架默认实现）；**模型、工具与概念对象均由外部注入**（`llm.ChatModel` + `[]tool.Tool` + 概念实例）。"如何从环境变量/配置文件构建模型对象、装配哪些工具、构造安全策略"属于应用层约定（放示例工程 `examples/assistant/internal/config` / `internal/cli`）。外部工程可按自己的配置体系注入模型、工具与概念实现。
+注意：框架层 `assistant.Config` 只含系统引导、迭代次数与框架概念对象（`Policy` / `Planner` / `Auditor` / `Memory` / `Observer`，nil 时用框架默认实现）；**模型、工具与概念对象均由外部注入**（`llm.ChatModel` + `[]tool.Tool` + 概念实例）。"如何从环境变量/配置文件构建模型对象、装配哪些工具、构造安全策略"属于应用层约定，外部工程按自己的配置体系注入即可。
 
 ## 测试
 
-双模块分别测试：
-
 ```bash
-# SDK（仓库根）
 go test ./...
-
-# 示例应用
-cd examples/assistant && go test ./...
 ```
 
 适配器测试通过 `httptest` 模拟协议服务，验证请求构造与响应解析的正确性，不依赖真实网络。
