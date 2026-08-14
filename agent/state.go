@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -38,11 +39,11 @@ func (s TaskStatus) String() string {
 // Fact 是一条已验证事实：仅允许被环境独立验证过的工具输出写入任务状态。
 type Fact struct {
 	// Summary 是事实的简短摘要（工具名 + 关键结果），供审计报告阅读。
-	Summary string
+	Summary string `json:"summary"`
 	// Evidence 是佐证该事实的环境证据（工具原始输出）。
-	Evidence string
+	Evidence string `json:"evidence"`
 	// Tool 是产生该事实的工具名。
-	Tool string
+	Tool string `json:"tool"`
 }
 
 // TaskState 是外部可信任务状态（single source of truth），独立于消息历史存在。
@@ -51,15 +52,47 @@ type Fact struct {
 //   - 执行上下文（History）可以丢失、刷新、失败，但任务状态始终保留，进度可恢复。
 type TaskState struct {
 	// Goal 是任务的原始目标（会话首个输入）。
-	Goal string
+	Goal string `json:"goal"`
 	// Facts 是已验证事实列表（审计报告 = 跨轮次唯一记忆）。
-	Facts []Fact
+	Facts []Fact `json:"facts,omitempty"`
 	// Pending 是尚未解决的待办项（由后续 Manager 角色维护）。
-	Pending []string
+	Pending []string `json:"pending,omitempty"`
 	// Blocked 是阻塞项（由后续 Manager 角色维护）。
-	Blocked []string
+	Blocked []string `json:"blocked,omitempty"`
 	// Status 是任务状态机的当前状态。
-	Status TaskStatus
+	Status TaskStatus `json:"status"`
+}
+
+// MarshalJSON 将任务状态序列化为可读字符串（pending/running/blocked/completed），
+// 作为平台持久化契约的一部分（见 docs/sdk-contracts.md §3）。
+func (s TaskStatus) MarshalJSON() ([]byte, error) {
+	return json.Marshal(s.String())
+}
+
+// UnmarshalJSON 兼容字符串（pending/running/blocked/completed）与数字两种形态。
+func (s *TaskStatus) UnmarshalJSON(data []byte) error {
+	var name string
+	if err := json.Unmarshal(data, &name); err == nil {
+		switch name {
+		case "pending":
+			*s = StatusPending
+		case "running":
+			*s = StatusRunning
+		case "blocked":
+			*s = StatusBlocked
+		case "completed":
+			*s = StatusCompleted
+		default:
+			return fmt.Errorf("agent: unknown task status %q", name)
+		}
+		return nil
+	}
+	var n int
+	if err := json.Unmarshal(data, &n); err == nil {
+		*s = TaskStatus(n)
+		return nil
+	}
+	return fmt.Errorf("agent: invalid task status %s", data)
 }
 
 // AddFact 追加一条已验证事实；相同工具 + 相同证据的去重。

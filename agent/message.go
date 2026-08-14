@@ -10,9 +10,9 @@ import "hegq.net/mos/llm"
 //   - Source：消息来源标注（观测/调试），如 user / assistant / tool / system / summary / custom。
 type InternalMessage struct {
 	llm.Message
-	ExcludeFromContext bool
-	Summary            bool
-	Source             string
+	ExcludeFromContext bool   `json:"exclude_from_context,omitempty"`
+	Summary            bool   `json:"summary,omitempty"`
+	Source             string `json:"source,omitempty"`
 }
 
 // SystemMsg 构造系统引导消息。
