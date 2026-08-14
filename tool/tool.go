@@ -34,11 +34,18 @@ type Definition struct {
 type Registry struct {
 	mu    sync.RWMutex
 	tools map[string]Tool
+	// order 保持注册顺序：工具在 prompt 中的描述顺序稳定，利于输出稳定性与 prompt cache。
+	order []string
+	// schemas 是注册时生成的 JSON Schema 缓存：避免循环内每轮 List() 重复反射。
+	schemas map[string]map[string]any
 }
 
 // NewRegistry 创建一个空的工具注册表。
 func NewRegistry() *Registry {
-	return &Registry{tools: make(map[string]Tool)}
+	return &Registry{
+		tools:   make(map[string]Tool),
+		schemas: make(map[string]map[string]any),
+	}
 }
 
 // Register 注册一个工具，重名时返回错误。
@@ -52,6 +59,8 @@ func (r *Registry) Register(t Tool) error {
 		return fmt.Errorf("tool: duplicate tool %q", t.Name())
 	}
 	r.tools[t.Name()] = t
+	r.order = append(r.order, t.Name())
+	r.schemas[t.Name()] = generateSchema(t.Parameters())
 	return nil
 }
 
@@ -67,23 +76,23 @@ func (r *Registry) Get(name string) (Tool, bool) {
 func (r *Registry) Names() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	names := make([]string, 0, len(r.tools))
-	for n := range r.tools {
-		names = append(names, n)
-	}
+	names := make([]string, 0, len(r.order))
+	names = append(names, r.order...)
 	return names
 }
 
-// List 返回工具协议层定义，供 LLM 请求使用。
+// List 返回工具协议层定义（按注册顺序），供 LLM 请求使用。
+// Schema 取自注册时生成的缓存，不在每轮调用中重复反射。
 func (r *Registry) List() []llm.Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	out := make([]llm.Tool, 0, len(r.tools))
-	for _, t := range r.tools {
+	out := make([]llm.Tool, 0, len(r.order))
+	for _, name := range r.order {
+		t := r.tools[name]
 		out = append(out, llm.Tool{
 			Name:        t.Name(),
 			Description: t.Description(),
-			Parameters:  generateSchema(t.Parameters()),
+			Parameters:  r.schemas[name],
 		})
 	}
 	return out

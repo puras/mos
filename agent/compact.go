@@ -48,13 +48,13 @@ func (c *defaultCompactor) Compact(history []InternalMessage, state *TaskState) 
 		return history, false
 	}
 
-	// 从尾部保留 KeepRecent 条；孤儿 tool 结果（assistant 调用在切割点前）前移切割点
+	// 从尾部保留 KeepRecent 条；孤儿 tool 结果（assistant 调用在切割点前）前移切割点。
+	// 先移动 cut 指针、最后一次拷贝，避免循环内反复复制 kept 切片（O(n²)）。
 	cut := len(msgs) - c.cfg.KeepRecent
-	kept := append([]InternalMessage(nil), msgs[cut:]...)
-	for len(kept) > 0 && kept[0].Role == llm.RoleTool {
+	for cut > 0 && msgs[cut].Role == llm.RoleTool {
 		cut--
-		kept = append([]InternalMessage(nil), msgs[cut:]...)
 	}
+	kept := msgs[cut:]
 
 	// 摘要注入：采用审计写入的 TaskState（已验证事实），经翻译边界转 user 角色注入
 	summary := SummaryMsg(state.Snapshot())

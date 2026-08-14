@@ -16,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	pkgopenai "hegq.net/mogo/pkg/protocol/openai"
 	pkgusage "hegq.net/mogo/pkg/usage"
@@ -34,12 +35,22 @@ type Model struct {
 }
 
 // New 根据配置创建 Model，支持键：api_key / base_url / model / http_timeout。
+// http_timeout 为 Go duration 字符串（如 "60s"、"2m"），设置底层 http.Client 的
+// 单次请求超时；为空时不限制（依赖调用方 ctx 取消）。
 func New(cfg llm.Config) (llm.ChatModel, error) {
+	client := &http.Client{}
+	if v := strings.TrimSpace(cfg["http_timeout"]); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return nil, fmt.Errorf("openai: invalid http_timeout %q: %w", v, err)
+		}
+		client.Timeout = d
+	}
 	p := &Model{
 		apiKey:  cfg["api_key"],
 		baseURL: strings.TrimRight(cfg["base_url"], "/"),
 		model:   cfg["model"],
-		client:  &http.Client{},
+		client:  client,
 	}
 	if p.model == "" {
 		return nil, errors.New("openai: missing required config \"model\"")

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/google/uuid"
+
 	"hegq.net/mos/agent"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/memory/inmemory"
@@ -139,8 +141,9 @@ func (a *Assistant) Config() Config { return a.config }
 // Policy 返回当前安全策略。
 func (a *Assistant) Policy() agent.Policy { return a.policy }
 
-// NewSession 创建一个新会话。
-func (a *Assistant) NewSession() *agent.Session { return agent.NewSession("") }
+// NewSession 创建一个新会话（默认生成 UUID 作为会话 ID，供多会话持久化与恢复）。
+// 需要自定义 ID 时可直接 agent.NewSession(id)。
+func (a *Assistant) NewSession() *agent.Session { return agent.NewSession(uuid.NewString()) }
 
 // Run 在会话上执行一次任务。
 func (a *Assistant) Run(ctx context.Context, sess *agent.Session, input string) (string, error) {

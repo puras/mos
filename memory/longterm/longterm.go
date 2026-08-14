@@ -45,7 +45,7 @@ type Config struct {
 	// Dim 向量维度（配置了 Embedder 时须与 Embedder 输出一致）。
 	Dim int
 	// BM25Weight 与 VectorWeight 混合检索权重（默认 0.7 / 0.3）。
-	BM25Weight float64
+	BM25Weight   float64
 	VectorWeight float64
 	// TopK 混合检索向量阶段保留的候选数（默认 64）。
 	TopK int
@@ -53,8 +53,20 @@ type Config struct {
 
 // Store 是 SQLite 支撑的长期记忆检索器，实现 memory.Retriever。
 type Store struct {
-	db   *sql.DB
-	cfg  Config
+	db  *sql.DB
+	cfg Config
+}
+
+// execer 抽象 sql.DB 与 sql.Tx 的统一执行接口，供事务内/直连两种路径复用。
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// chunkRecord 是准备就绪的分块（向量已计算并序列化，可安全放入事务执行）。
+type chunkRecord struct {
+	c       Chunk
+	source  string
+	embJSON string
 }
 
 // New 打开（或创建）SQLite 数据库文件并初始化表结构。
@@ -124,8 +136,9 @@ func (s *Store) init() error {
 	return nil
 }
 
-// AddChunk 写入一个知识分块（自动计算向量并维护 FTS 索引）。
-func (s *Store) AddChunk(ctx context.Context, c Chunk) error {
+// prepareChunk 计算分块向量并序列化。向量编码是网络调用，必须在事务外完成，
+// 避免长时间持有数据库事务。
+func (s *Store) prepareChunk(ctx context.Context, c Chunk) (chunkRecord, error) {
 	source := c.Source
 	if source == "" {
 		source = c.DocID
@@ -134,7 +147,7 @@ func (s *Store) AddChunk(ctx context.Context, c Chunk) error {
 	if emb == nil && s.cfg.Embedder != nil {
 		v, err := s.cfg.Embedder.Embed(ctx, c.Content)
 		if err != nil {
-			return fmt.Errorf("longterm: embed: %w", err)
+			return chunkRecord{}, fmt.Errorf("longterm: embed: %w", err)
 		}
 		emb = v
 	}
@@ -142,36 +155,74 @@ func (s *Store) AddChunk(ctx context.Context, c Chunk) error {
 	if emb != nil {
 		b, err := json.Marshal(emb)
 		if err != nil {
-			return fmt.Errorf("longterm: marshal embedding: %w", err)
+			return chunkRecord{}, fmt.Errorf("longterm: marshal embedding: %w", err)
 		}
 		embJSON = string(b)
 	}
-	_, err := s.db.ExecContext(ctx,
+	return chunkRecord{c: c, source: source, embJSON: embJSON}, nil
+}
+
+// insertChunk 执行单条分块写入（直连或事务内）。
+func (s *Store) insertChunk(ctx context.Context, q execer, rec chunkRecord) error {
+	_, err := q.ExecContext(ctx,
 		`INSERT INTO chunks(doc_id, source, content, search_text, embedding) VALUES (?, ?, ?, ?, ?)`,
-		c.DocID, source, c.Content, cjkSpace(c.Content), embJSON)
+		rec.c.DocID, rec.source, rec.c.Content, cjkSpace(rec.c.Content), rec.embJSON)
 	if err != nil {
 		return fmt.Errorf("longterm: add chunk: %w", err)
 	}
 	return nil
 }
 
-// AddDocument 将一份文档按 chunker 分块后批量写入（同一 DocID 先删旧再写，实现文档级更新）。
-func (s *Store) AddDocument(ctx context.Context, docID, content string, chunker *Chunker) error {
-	if err := s.DeleteDoc(ctx, docID); err != nil {
+// AddChunk 写入一个知识分块（自动计算向量并维护 FTS 索引）。
+func (s *Store) AddChunk(ctx context.Context, c Chunk) error {
+	rec, err := s.prepareChunk(ctx, c)
+	if err != nil {
 		return err
 	}
-	for _, c := range chunker.Chunk(docID, content) {
-		if err := s.AddChunk(ctx, c); err != nil {
-			return err
-		}
-	}
-	return nil
+	return s.insertChunk(ctx, s.db, rec)
 }
 
 // DeleteDoc 删除某来源文档的全部分块。
 func (s *Store) DeleteDoc(ctx context.Context, docID string) error {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM chunks WHERE doc_id = ?`, docID); err != nil {
+	return s.deleteDoc(ctx, s.db, docID)
+}
+
+// deleteDoc 执行按 doc_id 删除（直连或事务内）。
+func (s *Store) deleteDoc(ctx context.Context, q execer, docID string) error {
+	if _, err := q.ExecContext(ctx, `DELETE FROM chunks WHERE doc_id = ?`, docID); err != nil {
 		return fmt.Errorf("longterm: delete doc: %w", err)
+	}
+	return nil
+}
+
+// AddDocument 将一份文档按 chunker 分块后批量写入（同一 DocID 先删旧再写，实现文档级更新）。
+// 整体在一个事务内完成：中途失败自动回滚，不会留下"旧文档已删、新文档半写"的脏状态。
+// 向量编码（网络调用）在事务外预计算，事务内只执行 SQL。
+func (s *Store) AddDocument(ctx context.Context, docID, content string, chunker *Chunker) error {
+	chunks := chunker.Chunk(docID, content)
+	prepared := make([]chunkRecord, 0, len(chunks))
+	for _, c := range chunks {
+		rec, err := s.prepareChunk(ctx, c)
+		if err != nil {
+			return err
+		}
+		prepared = append(prepared, rec)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("longterm: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	if err := s.deleteDoc(ctx, tx, docID); err != nil {
+		return err
+	}
+	for _, rec := range prepared {
+		if err := s.insertChunk(ctx, tx, rec); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("longterm: commit: %w", err)
 	}
 	return nil
 }

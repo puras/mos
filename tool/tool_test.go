@@ -92,3 +92,40 @@ func TestRegistry(t *testing.T) {
 		t.Fatal("calling unknown tool should fail")
 	}
 }
+
+type calcA struct{ calculator }
+
+func (calcA) Name() string { return "calcA" }
+
+type calcB struct{ calculator }
+
+func (calcB) Name() string { return "calcB" }
+
+// TestRegistryListOrder 验证 List/Names 按注册顺序稳定返回（而非 map 随机遍历），
+// 且 Schema 来自注册时缓存（多次 List 结果一致）。
+func TestRegistryListOrder(t *testing.T) {
+	r := NewRegistry()
+	for _, tt := range []Tool{calcA{}, calcB{}} {
+		if err := r.Register(tt); err != nil {
+			t.Fatalf("register: %v", err)
+		}
+	}
+
+	want := []string{"calcA", "calcB"}
+	if got := r.Names(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Names = %v, want %v", got, want)
+	}
+	first := r.List()
+	second := r.List()
+	if len(first) != 2 {
+		t.Fatalf("List len = %d, want 2", len(first))
+	}
+	for i, name := range want {
+		if first[i].Name != name {
+			t.Errorf("List[%d].Name = %s, want %s", i, first[i].Name, name)
+		}
+		if !reflect.DeepEqual(first[i].Parameters, second[i].Parameters) {
+			t.Errorf("schema unstable between List calls for %s", name)
+		}
+	}
+}
