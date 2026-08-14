@@ -1,4 +1,4 @@
-// Package openai 提供 OpenAI 兼容协议的 Model 适配器。
+// Package openai 提供 OpenAI 兼容协议的 Chat 适配器。
 // 该协议被 DeepSeek、通义千问、GLM、Ollama 等主流服务广泛支持。
 //
 // wire 层（请求结构体、union、SSE 解析、用量转换）复用 MoGO 的
@@ -26,15 +26,15 @@ import (
 
 const defaultBaseURL = "https://api.openai.com/v1"
 
-// Model 是 OpenAI 兼容协议的实现。
-type Model struct {
+// Chat 是 OpenAI 兼容协议（llm.ChatModel）的实现。
+type Chat struct {
 	apiKey  string
 	baseURL string
 	model   string
 	client  *http.Client
 }
 
-// New 根据配置创建 Model，支持键：api_key / base_url / model / http_timeout。
+// New 根据配置创建 Chat，支持键：api_key / base_url / model / http_timeout。
 // http_timeout 为 Go duration 字符串（如 "60s"、"2m"），设置底层 http.Client 的
 // 单次请求超时；为空时不限制（依赖调用方 ctx 取消）。
 func New(cfg llm.Config) (llm.ChatModel, error) {
@@ -46,7 +46,7 @@ func New(cfg llm.Config) (llm.ChatModel, error) {
 		}
 		client.Timeout = d
 	}
-	p := &Model{
+	p := &Chat{
 		apiKey:  cfg["api_key"],
 		baseURL: strings.TrimRight(cfg["base_url"], "/"),
 		model:   cfg["model"],
@@ -62,22 +62,22 @@ func New(cfg llm.Config) (llm.ChatModel, error) {
 }
 
 // Capabilities 实现 llm.ChatModel。
-func (p *Model) Capabilities() llm.Capability {
+func (p *Chat) Capabilities() llm.Capability {
 	return llm.CapFunctionCalling | llm.CapStreaming |
 		llm.CapStructuredOutput | llm.CapMultimodal | llm.CapReasoning
 }
 
 // Chat 实现 llm.ChatModel。
-func (p *Model) Chat(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+func (p *Chat) Chat(ctx context.Context, req *llm.Request) (*llm.Response, error) {
 	return p.doChat(ctx, req, false, nil)
 }
 
 // ChatStream 实现 llm.ChatModel。
-func (p *Model) ChatStream(ctx context.Context, req *llm.Request, emit func(llm.StreamChunk) error) (*llm.Response, error) {
+func (p *Chat) ChatStream(ctx context.Context, req *llm.Request, emit func(llm.StreamChunk) error) (*llm.Response, error) {
 	return p.doChat(ctx, req, true, emit)
 }
 
-func (p *Model) doChat(ctx context.Context, req *llm.Request, stream bool, emit func(llm.StreamChunk) error) (*llm.Response, error) {
+func (p *Chat) doChat(ctx context.Context, req *llm.Request, stream bool, emit func(llm.StreamChunk) error) (*llm.Response, error) {
 	body, err := json.Marshal(p.buildRequest(req, stream))
 	if err != nil {
 		return nil, fmt.Errorf("openai: marshal request: %w", err)
@@ -117,7 +117,7 @@ func (p *Model) doChat(ctx context.Context, req *llm.Request, stream bool, emit 
 	return p.handleResponse(resp.Body)
 }
 
-func (p *Model) buildRequest(req *llm.Request, stream bool) *pkgopenai.OpenAIChatCompletionParams {
+func (p *Chat) buildRequest(req *llm.Request, stream bool) *pkgopenai.OpenAIChatCompletionParams {
 	cr := &pkgopenai.OpenAIChatCompletionParams{
 		Model:       p.model,
 		Temperature: req.Temperature,
@@ -396,7 +396,7 @@ type chatResponse struct {
 	Error *pkgopenai.OpenAIError           `json:"error"`
 }
 
-func (p *Model) handleResponse(r io.Reader) (*llm.Response, error) {
+func (p *Chat) handleResponse(r io.Reader) (*llm.Response, error) {
 	var raw chatResponse
 	if err := json.NewDecoder(r).Decode(&raw); err != nil {
 		return nil, fmt.Errorf("openai: decode response: %w", err)
@@ -441,7 +441,7 @@ func toLLMUsage(u *pkgusage.Usage) llm.Usage {
 }
 
 // handleStream 逐行解析 SSE 数据，聚合内容与工具调用增量。
-func (p *Model) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm.Response, error) {
+func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm.Response, error) {
 	acc := newStreamAccumulator()
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)

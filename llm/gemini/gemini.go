@@ -1,4 +1,4 @@
-// Package gemini 提供 Google Gemini Generative Language API 的 Model 适配器。
+// Package gemini 提供 Google Gemini Generative Language API 的 Chat 适配器。
 //
 // 覆盖 ChatCompletion（generateContent + streamGenerateContent?alt=sse），
 // 含工具调用、多模态输入（inlineData/FileData）、结构化输出（responseSchema）
@@ -29,17 +29,17 @@ import (
 
 const defaultBaseURL = "https://generativelanguage.googleapis.com/v1beta"
 
-// Model 是 Gemini 协议的实现。
-type Model struct {
+// Chat 是 Gemini 协议（llm.ChatModel）的实现。
+type Chat struct {
 	apiKey  string
 	baseURL string
 	model   string
 	client  *http.Client
 }
 
-// New 根据配置创建 Model，支持键：api_key / base_url / model。
+// New 根据配置创建 Chat，支持键：api_key / base_url / model。
 func New(cfg llm.Config) (llm.ChatModel, error) {
-	p := &Model{
+	p := &Chat{
 		apiKey:  cfg["api_key"],
 		baseURL: strings.TrimRight(cfg["base_url"], "/"),
 		model:   cfg["model"],
@@ -58,22 +58,22 @@ func New(cfg llm.Config) (llm.ChatModel, error) {
 }
 
 // Capabilities 实现 llm.ChatModel。
-func (p *Model) Capabilities() llm.Capability {
+func (p *Chat) Capabilities() llm.Capability {
 	return llm.CapFunctionCalling | llm.CapStreaming |
 		llm.CapStructuredOutput | llm.CapMultimodal | llm.CapReasoning
 }
 
 // Chat 实现 llm.ChatModel。
-func (p *Model) Chat(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+func (p *Chat) Chat(ctx context.Context, req *llm.Request) (*llm.Response, error) {
 	return p.doChat(ctx, req, false, nil)
 }
 
 // ChatStream 实现 llm.ChatModel。
-func (p *Model) ChatStream(ctx context.Context, req *llm.Request, emit func(llm.StreamChunk) error) (*llm.Response, error) {
+func (p *Chat) ChatStream(ctx context.Context, req *llm.Request, emit func(llm.StreamChunk) error) (*llm.Response, error) {
 	return p.doChat(ctx, req, true, emit)
 }
 
-func (p *Model) doChat(ctx context.Context, req *llm.Request, stream bool, emit func(llm.StreamChunk) error) (*llm.Response, error) {
+func (p *Chat) doChat(ctx context.Context, req *llm.Request, stream bool, emit func(llm.StreamChunk) error) (*llm.Response, error) {
 	body, err := json.Marshal(p.buildRequest(req))
 	if err != nil {
 		return nil, fmt.Errorf("gemini: marshal request: %w", err)
@@ -107,7 +107,7 @@ func (p *Model) doChat(ctx context.Context, req *llm.Request, stream bool, emit 
 }
 
 // endpoint 返回模型端点：模型名位于 URL path（Gemini 协议约定）。
-func (p *Model) endpoint(stream bool) string {
+func (p *Chat) endpoint(stream bool) string {
 	action := "generateContent"
 	if stream {
 		action = "streamGenerateContent?alt=sse"
@@ -115,7 +115,7 @@ func (p *Model) endpoint(stream bool) string {
 	return p.baseURL + "/models/" + p.model + ":" + action
 }
 
-func (p *Model) buildRequest(req *llm.Request) *pkggemini.GeminiGenerateContentRequest {
+func (p *Chat) buildRequest(req *llm.Request) *pkggemini.GeminiGenerateContentRequest {
 	gr := &pkggemini.GeminiGenerateContentRequest{
 		Contents: make([]*pkggemini.GeminiContent, 0, len(req.Messages)),
 	}
@@ -284,7 +284,7 @@ func candidateParts(c *pkggemini.GeminiCandidate) []*pkggemini.GeminiPart {
 	return c.Content.Parts
 }
 
-func (p *Model) handleResponse(r io.Reader) (*llm.Response, error) {
+func (p *Chat) handleResponse(r io.Reader) (*llm.Response, error) {
 	var raw pkggemini.GeminiGenerateContentResponse
 	if err := json.NewDecoder(r).Decode(&raw); err != nil {
 		return nil, fmt.Errorf("gemini: decode response: %w", err)
@@ -317,7 +317,7 @@ func (p *Model) handleResponse(r io.Reader) (*llm.Response, error) {
 
 // handleStream 解析 Gemini SSE 流。Gemini 协议特殊：每个 `data:` 帧都是一个
 // 完整的 GenerateContentResponse（非事件 union），文本与工具调用均为增量累积。
-func (p *Model) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm.Response, error) {
+func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm.Response, error) {
 	acc := newStreamAccumulator()
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)

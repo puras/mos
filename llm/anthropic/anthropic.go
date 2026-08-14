@@ -1,4 +1,4 @@
-// Package anthropic 提供 Anthropic Claude 原生协议的 Model 适配器。
+// Package anthropic 提供 Anthropic Claude 原生协议的 Chat 适配器。
 //
 // wire 层（请求结构体、content block union、SSE 事件解析、用量转换）复用 MoGO 的
 // hegq.net/mogo/pkg/protocol/anthropic 与 hegq.net/mogo/pkg/usage，
@@ -28,17 +28,17 @@ const (
 	defaultMaxTokens = 1024
 )
 
-// Model 是 Anthropic 协议的实现。
-type Model struct {
+// Chat 是 Anthropic 协议（llm.ChatModel）的实现。
+type Chat struct {
 	apiKey  string
 	baseURL string
 	model   string
 	client  *http.Client
 }
 
-// New 根据配置创建 Model，支持键：api_key / base_url / model。
+// New 根据配置创建 Chat，支持键：api_key / base_url / model。
 func New(cfg llm.Config) (llm.ChatModel, error) {
-	p := &Model{
+	p := &Chat{
 		apiKey:  cfg["api_key"],
 		baseURL: strings.TrimRight(cfg["base_url"], "/"),
 		model:   cfg["model"],
@@ -57,21 +57,21 @@ func New(cfg llm.Config) (llm.ChatModel, error) {
 }
 
 // Capabilities 实现 llm.ChatModel。
-func (p *Model) Capabilities() llm.Capability {
+func (p *Chat) Capabilities() llm.Capability {
 	return llm.CapFunctionCalling | llm.CapStreaming | llm.CapMultimodal
 }
 
 // Chat 实现 llm.ChatModel。
-func (p *Model) Chat(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+func (p *Chat) Chat(ctx context.Context, req *llm.Request) (*llm.Response, error) {
 	return p.doChat(ctx, req, false, nil)
 }
 
 // ChatStream 实现 llm.ChatModel。
-func (p *Model) ChatStream(ctx context.Context, req *llm.Request, emit func(llm.StreamChunk) error) (*llm.Response, error) {
+func (p *Chat) ChatStream(ctx context.Context, req *llm.Request, emit func(llm.StreamChunk) error) (*llm.Response, error) {
 	return p.doChat(ctx, req, true, emit)
 }
 
-func (p *Model) doChat(ctx context.Context, req *llm.Request, stream bool, emit func(llm.StreamChunk) error) (*llm.Response, error) {
+func (p *Chat) doChat(ctx context.Context, req *llm.Request, stream bool, emit func(llm.StreamChunk) error) (*llm.Response, error) {
 	body, err := json.Marshal(p.buildRequest(req, stream))
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: marshal request: %w", err)
@@ -111,14 +111,14 @@ func (p *Model) doChat(ctx context.Context, req *llm.Request, stream bool, emit 
 	return p.handleResponse(resp.Body)
 }
 
-func (p *Model) endpoint() string {
+func (p *Chat) endpoint() string {
 	if strings.HasSuffix(p.baseURL, "/v1") {
 		return p.baseURL + "/messages"
 	}
 	return p.baseURL + "/v1/messages"
 }
 
-func (p *Model) buildRequest(req *llm.Request, stream bool) *pkganthropic.AnthropicRequest {
+func (p *Chat) buildRequest(req *llm.Request, stream bool) *pkganthropic.AnthropicRequest {
 	ar := &pkganthropic.AnthropicRequest{
 		Model:       p.model,
 		MaxTokens:   defaultMaxTokens,
@@ -314,7 +314,7 @@ type messagesResponse struct {
 	Error   *anthropicError                           `json:"error"`
 }
 
-func (p *Model) handleResponse(r io.Reader) (*llm.Response, error) {
+func (p *Chat) handleResponse(r io.Reader) (*llm.Response, error) {
 	var raw messagesResponse
 	if err := json.NewDecoder(r).Decode(&raw); err != nil {
 		return nil, fmt.Errorf("anthropic: decode response: %w", err)
@@ -367,7 +367,7 @@ func toLLMUsage(u *pkgusage.Usage) llm.Usage {
 }
 
 // handleStream 解析 Anthropic SSE 事件流，聚合文本与工具调用。
-func (p *Model) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm.Response, error) {
+func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm.Response, error) {
 	var (
 		content      strings.Builder
 		toolCalls    []llm.ToolCall

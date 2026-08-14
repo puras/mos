@@ -191,7 +191,7 @@ func (r *Registry) Create(name string, cfg Config) (ChatModel, error) {
 	f, ok := r.factories[name]
 	r.mu.RUnlock()
 	if !ok {
-		return nil, fmt.Errorf("llm: unknown model %q, registered: %v", name, r.Names())
+		return nil, fmt.Errorf("llm: unknown provider %q, registered: %v", name, r.Names())
 	}
 	return f(cfg)
 }

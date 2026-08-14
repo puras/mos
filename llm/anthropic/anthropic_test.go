@@ -12,7 +12,7 @@ import (
 	"hegq.net/mos/llm"
 )
 
-func newTestModel(t *testing.T, handler http.HandlerFunc) (*Model, *httptest.Server) {
+func newTestModel(t *testing.T, handler http.HandlerFunc) (*Chat, *httptest.Server) {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	p, err := New(llm.Config{
@@ -23,7 +23,7 @@ func newTestModel(t *testing.T, handler http.HandlerFunc) (*Model, *httptest.Ser
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	return p.(*Model), srv
+	return p.(*Chat), srv
 }
 
 func TestChatWithToolUse(t *testing.T) {
