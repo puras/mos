@@ -30,12 +30,14 @@ flowchart TD
     end
 
     subgraph T["③ 工具执行链路（守卫 → 钩子链）"]
-        K9 -->|"否：调用工具"| T1["tool/call 事件 + EventToolCall"]
-        T1 --> T2{"Doom Loop 检测<br/>同工具+同参数连续≥阈值"}
-        T2 -->|"命中"| T3["Status=Blocked<br/>返回错误"]
-        T2 -->|"未命中"| T4["GuardBus.Allow<br/>Policy 单调守卫（不可绕过）"]
-        T4 -->|"拒绝"| T5["tool/result 事件=拒绝说明<br/>EventToolResult（不执行）"]
+        K9 -->|"否：调用工具"| K10{"FinishReason 截断?<br/>length / max_tokens"}
+        K10 -->|"是：fail-closed"| K11["不执行，逐个 tool/result<br/>显式失败回填，进入下一轮"]
+        K10 -->|"否"| T1["tool/call 事件 + EventToolCall"]
+        T1 --> T4["GuardBus.Allow（单调守卫，不可绕过）<br/>policyGuard（策略）→ DoomLoopGuard（同工具同参≥阈值）"]
+        T4 -->|"DoomLoop 命中"| T3["Status=Blocked<br/>返回错误"]
+        T4 -->|"策略拒绝"| T5["tool/result 事件=拒绝说明<br/>EventToolResult（不执行）"]
         T4 -->|"放行"| T6["tool/pre-execute 钩子<br/>审批/改写（平台可注册）"]
+        K11 --> R
         T6 --> T7["tool/execute 钩子链<br/>默认 executeHook 执行 → EventToolResult"]
         T7 --> T8["tool/post-execute 钩子链"]
         T8 --> T9a["truncateHook<br/>模型可见文本截断（审计用原始）"]
@@ -71,8 +73,11 @@ flowchart TD
 
 ### ③ 工具执行链路（守卫 → 钩子链）
 
-- Doom Loop 检测：相同工具 + 相同参数连续 ≥阈值 → 中断置 blocked
-- `GuardBus.Allow`（Policy 单调守卫）执行前拦截：拒绝则 `tool/result` 回填拒绝说明（不执行、不审计）
+- **截断 fail-closed**（输出被截断 length/max_tokens 时）：已产出的工具调用可能不完整，**不执行**、
+  逐个以错误 `tool/result` 显式失败回填，模型下一轮看到失败原因后调整（杜绝静默丢弃）
+- `GuardBus.Allow`（单调守卫，不可被 hook 绕过）执行前拦截，按注册顺序：
+  1. `policyGuard`（Policy 安全策略）：拒绝则 `tool/result` 回填拒绝说明（不执行、不审计）
+  2. `DoomLoopGuard`（相同工具 + 相同参数连续 ≥阈值）：命中为**致命守卫错误**，中断任务置 blocked
 - `tool/pre-execute`：审批/改写钩子（平台可注册，默认无）
 - `tool/execute`：around dispatch 钩子链，默认 `executeHook` 实际调用 `tools.Call`（沙箱内执行）；执行后广播 `EventToolResult`
 - `tool/post-execute` 钩子链：

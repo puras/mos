@@ -20,7 +20,7 @@ MoS 是一个基于 Go 的智能体基础框架（Agent Base），提供统一�
 
 ## 快速开始
 
-MoS 是纯依赖库：外部工程 `go get hegq.net/mos` 后按需 import 各包（如 `hegq.net/mos/agent`、`hegq.net/mos/tool`、`hegq.net/mos/llm/openai`），SDK 仅依赖 `modernc.org/sqlite`（纯 Go，零 CGO）与本地协议库 `hegq.net/mogo`：
+MoS 是纯依赖库：外部工程 `go get hegq.net/mos` 后按需 import 各包（如 `hegq.net/mos/agent`、`hegq.net/mos/tool`、`hegq.net/mos/planner`、`hegq.net/mos/llm/openai`），SDK 仅依赖 `modernc.org/sqlite`（纯 Go，零 CGO）与本地协议库 `hegq.net/mogo`：
 
 ```go
 // 0. 创建模型对象（实现 llm.ChatModel 即可，见下方"LLM 接入"）
@@ -48,11 +48,14 @@ func (calculator) Execute(_ context.Context, args json.RawMessage) (any, error) 
 reg := tool.NewRegistry()
 reg.Register(calculator{})
 
-// 2. 创建 Agent（ReAct 循环 + 事件观测）
-a := agent.New(model, reg,
-	agent.WithSystemPrompt("你是助手"),
-	agent.WithObserver(func(ev agent.Event) { /* 观测工具调用/完成 */ }),
-)
+// 2. 创建 Agent（v2：装配 RunContext + ReActDriver，框架概念注入/默认）
+a := agent.New(&agent.RunContext{
+	Tools:        reg,
+	Planner:      planner.NewReAct(model), // 决策器（ReAct）
+	SystemPrompt: "你是助手",
+	Observer:     func(ev agent.Event) { /* 观测工具调用/完成 */ },
+	MaxTurns:     10,
+})
 
 // 3. 执行任务（多轮对话自动保留历史）
 sess := agent.NewSession("demo")
@@ -155,7 +158,7 @@ type Policy interface {
 }
 ```
 
-默认策略 `assistant.NewDefaultPolicy(shellAllowed []string, workDir string)` 提供分级防护（**fail-closed**：不在放行名单的未知工具一律拒绝，新增工具须在 `Allow` 中显式声明放行）：
+默认策略 `assistant.NewDefaultPolicy(shellAllowed []string, workDir string)` 提供分级防护（**fail-closed**：未注册检查器的未知工具一律拒绝；内置 9 个工具已注册检查器，平台自定义工具策略 = `DefaultPolicy.Register(name, checker)` 一行注入，契合 v2 守卫可组合）：
 
 - **绝对危险命令**（shutdown / reboot / halt / poweroff / mkfs / dd / 写块设备 / fork 炸弹）：无条件拒绝，不提供确认放行
 - **受限危险命令**（rm / sudo / chmod / chown / mv / kill / 管道 shell / **解释器执行入口** `bash -c`、`python3 -c`、`perl -e`、`node -e`、`ruby -e`、`php -r` 等 / **find -delete / -exec**）：路径必须落在 `WorkDir` 内，且须经 `Confirmer` 人工确认后才执行；未配置确认器、确认拒绝、或未配置 `WorkDir` 时一律拒绝——"范围有限 + 操作前确认"（如创建文件后删除临时文件，限定在 `WorkDir` 内的 `rm` 经确认后可用）。覆盖解释器执行入口是为了防止模型绕过黑名单：`rm` 被拒后改用 `python3 -c "os.remove(...)"` / `bash -c "rm -rf ..."` / `find . -delete` 达成删除意图
@@ -213,12 +216,14 @@ MoS 现架构已内嵌图概念，Graph Engineering 是显式化而非重构：
 对应长程 Agent 的"审计式状态迁移"：`agent.Auditor` 在每次工具调用后独立审查结果，只有**被环境验证过的事实**才能写入 `Session.State`（`agent.TaskState`），模型的自我声明一律不算数。默认审计器 `agent.NewDefaultAuditor()` 采用只读白名单——`calculator` / `current_time` / `web_fetch` / `web_search` / `read_file` / `find_files` / `grep` 的输出本身就是环境的回答，视为已验证事实；`shell` / `write_file` 等变更类工具的输出属于"未核实声明"，不写入任务状态，需后续通过只读工具二次取证。可自定义 `Auditor` 或经 `Trust` 扩展白名单：
 
 ```go
-a := agent.New(model, reg,
-	agent.WithAuditor(agent.NewDefaultAuditor()),
-)
 // 自定义只读工具也产出可验证事实
 aud := agent.NewDefaultAuditor()
 aud.Trust("my_inspect")
+a := agent.New(&agent.RunContext{
+	Tools:   reg,
+	Planner: planner.NewReAct(model),
+	Auditor: aud,
+})
 ```
 
 任务状态独立于消息历史存在：历史可丢失、可压缩、可刷新，但"任务做到哪了"这个真相始终可恢复（跨轮次唯一记忆 = 审计报告）。

@@ -637,6 +637,10 @@ evals 体系（平台/测试基建，SDK 保留接口级 conformance 测试）�
 
 ### 11.1 模块划分（包结构）
 
+> 以下为**目标包结构**（v2 演进方向，按模块落地时逐步拆分）；当前实现为 `agent` / `assistant` / `llm` /
+> `planner` / `tool` / `memory` 单包（具体状态见第 12 章术语表标注）。包拆分不改变公开语义，
+> 仅作物理组织调整。
+
 ```mermaid
 flowchart TD
     subgraph ASM["装配层"]

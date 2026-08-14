@@ -3,6 +3,11 @@
 > 生成日期：2026-08-13 ｜ 对应提交：`4dc8b6f`（M2.7 长期记忆）
 > 状态：**M1 ~ M2.7 已完成**；M2.8 部分落地（Confirmer）；M2.9 / M2.10 / M3 / M4 / M5 待开发
 
+> ⚠️ **本文件内容基于 v2 重构前（`4dc8b6f`）生成**：其中 API 描述（`WithRetriever` / `WithContextBudget` /
+> `agent.New(model, reg, ...)` 等）已被 v2 架构（`docs/architecture-v2.md`，RunContext + LoopDriver + HookBus）
+> 取代，仅作历史功能清单参考。当前功能与 API 以 `README.md`、`docs/architecture-v2.md`、
+> `docs/sdk-contracts.md` 为准。待按 v2 重生成本文件。
+
 ## 1. 项目定位
 
 MoS（Sapient）是基于 Go 的智能体基础框架（Agent Base），提供统一 LLM 接入、声明式工具系统、会话记忆与可插拔规划，帮助快速构建智能体应用。设计理念：**状态写文件不写上下文、只接受环境独立验证过的事实、上下文越少越好**（Harness Engineering / Audit Gate / Loop Engineering）。
