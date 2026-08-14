@@ -6,9 +6,15 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"hegq.net/mos/llm"
 )
+
+// Checker 是单个工具的策略检查器：返回 error 表示拒绝该次调用。
+// 工具名 → Checker 的注册表替代硬编码 switch：新增工具策略 = 注册一行，
+// 平台自定义工具可通过 DefaultPolicy.Register 注入策略（扩展点，契合 v2 守卫可组合）。
+type Checker func(ctx context.Context, args string) error
 
 // DefaultPolicy 是默认的工具调用安全策略（Harness Engineering）。
 // 设计要点：
@@ -19,42 +25,75 @@ import (
 //     ② 受限危险命令（rm/sudo/chmod/mv/kill/管道 shell）：路径受限在 WorkDir 内，
 //     且须经 Confirmer 人工确认后才可执行；
 //     ③ 普通命令：可配置命令前缀白名单（ShellAllowed）。
-//   - 未知工具默认拒绝（fail-closed）：新增工具须在 Allow 中显式声明放行。
+//   - 未知工具默认拒绝（fail-closed）：未注册检查器的工具一律拒绝。
 type DefaultPolicy struct {
 	ShellAllowed []string  // 命令前缀白名单；空表示仅基础防御
 	WorkDir      string    // 文件/受限危险命令的操作根目录；空表示受限危险命令一律拒绝
 	Confirm      Confirmer // 危险操作确认器；nil 表示无法确认，受限危险命令拒绝
+
+	mu       sync.RWMutex
+	checkers map[string]Checker // 工具名 → 检查器；未注册默认拒绝（fail-closed）
 }
 
-// NewDefaultPolicy 创建默认安全策略。
+// NewDefaultPolicy 创建默认安全策略（注册内置工具检查器）。
 func NewDefaultPolicy(shellAllowed []string, workDir string) *DefaultPolicy {
-	return &DefaultPolicy{ShellAllowed: shellAllowed, WorkDir: workDir}
+	p := &DefaultPolicy{ShellAllowed: shellAllowed, WorkDir: workDir}
+	p.checkers = map[string]Checker{
+		"shell":        p.checkShell,
+		"read_file":    p.checkFileField("path"),
+		"write_file":   p.checkWrite,
+		"find_files":   p.checkFileField("root"),
+		"grep":         p.checkFileField("root"),
+		"web_fetch":    p.checkWebFetch,
+		"web_search":   p.checkWebSearch,
+		"calculator":   allow,
+		"current_time": allow,
+	}
+	return p
 }
 
-// Allow 实现 agent.Policy。
+// Allow 实现 agent.Policy：按工具名查表分发；未注册工具默认拒绝（fail-closed）。
 func (p *DefaultPolicy) Allow(ctx context.Context, call *llm.ToolCall) error {
-	switch call.Name {
-	case "shell":
-		return p.checkShell(ctx, call.Args)
-	case "read_file":
-		return p.checkFile(call.Args, "path")
-	case "write_file":
-		if err := p.checkFile(call.Args, "path"); err != nil {
-			return err
-		}
-		// 路径已限制在 WorkDir 内，破坏面可控；配置了确认器时写入前再人工确认一次。
-		return p.confirmWrite(ctx, call.Args)
-	case "find_files", "grep":
-		return p.checkFile(call.Args, "root")
-	case "web_fetch":
-		return p.checkWebFetch(call.Args)
-	case "web_search":
-		return p.checkWebSearch(call.Args)
-	case "calculator", "current_time":
-		return nil // 纯计算/只读自证，无副作用
-	default:
-		// fail-closed：不在放行名单的未知工具默认拒绝
+	p.mu.RLock()
+	chk, ok := p.checkers[call.Name]
+	p.mu.RUnlock()
+	if !ok {
 		return fmt.Errorf("未知工具 %q 不在安全策略放行名单，已拒绝", call.Name)
+	}
+	return chk(ctx, call.Args)
+}
+
+// Register 为自定义工具注册策略检查器（平台扩展点）。
+// 未注册的工具保持 fail-closed；已注册名称返回错误。须在装配期（首次 Run 前）调用。
+func (p *DefaultPolicy) Register(name string, chk Checker) error {
+	if name == "" || chk == nil {
+		return fmt.Errorf("policy: 注册检查器需要非空工具名与检查器")
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, exists := p.checkers[name]; exists {
+		return fmt.Errorf("policy: 工具 %q 已注册策略检查器", name)
+	}
+	p.checkers[name] = chk
+	return nil
+}
+
+// allow 是只读/自证工具的放行检查器（纯计算、无副作用）。
+func allow(context.Context, string) error { return nil }
+
+// checkWrite 是 write_file 的组合检查器：路径校验（限定 WorkDir 内）+ 写入前人工确认。
+func (p *DefaultPolicy) checkWrite(ctx context.Context, argsJSON string) error {
+	if err := p.checkFile(argsJSON, "path"); err != nil {
+		return err
+	}
+	// 路径已限制在 WorkDir 内，破坏面可控；配置了确认器时写入前再人工确认一次。
+	return p.confirmWrite(ctx, argsJSON)
+}
+
+// checkFileField 返回按指定参数字段做路径校验的检查器（read_file: path / find_files|grep: root）。
+func (p *DefaultPolicy) checkFileField(field string) Checker {
+	return func(_ context.Context, argsJSON string) error {
+		return p.checkFile(argsJSON, field)
 	}
 }
 
@@ -133,7 +172,7 @@ func (p *DefaultPolicy) confirmWrite(ctx context.Context, argsJSON string) error
 }
 
 // checkWebFetch 校验抓取协议：仅 http/https。
-func (p *DefaultPolicy) checkWebFetch(argsJSON string) error {
+func (p *DefaultPolicy) checkWebFetch(_ context.Context, argsJSON string) error {
 	var args struct {
 		URL string `json:"url"`
 	}
@@ -146,7 +185,7 @@ func (p *DefaultPolicy) checkWebFetch(argsJSON string) error {
 }
 
 // checkWebSearch 校验搜索参数（fail-closed 下显式声明放行 + 参数约束）。
-func (p *DefaultPolicy) checkWebSearch(argsJSON string) error {
+func (p *DefaultPolicy) checkWebSearch(_ context.Context, argsJSON string) error {
 	var args struct {
 		Query string `json:"query"`
 	}

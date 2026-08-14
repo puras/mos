@@ -2,6 +2,7 @@ package assistant
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -289,6 +290,39 @@ func TestDefaultPolicyFailClosed(t *testing.T) {
 	p := NewDefaultPolicy(nil, "")
 	if err := p.Allow(context.Background(), toolCall("unknown_tool", `{}`)); err == nil {
 		t.Fatal("unknown tool should be rejected (fail-closed)")
+	}
+}
+
+// Register 扩展点：自定义工具注册检查器后按策略放行/拒绝；重复注册报错。
+func TestDefaultPolicyRegister(t *testing.T) {
+	p := NewDefaultPolicy(nil, "")
+	chk := func(_ context.Context, args string) error {
+		if strings.Contains(args, "blocked") {
+			return fmt.Errorf("blocked by custom checker")
+		}
+		return nil
+	}
+	if err := p.Register("custom_tool", chk); err != nil {
+		t.Fatalf("register should succeed: %v", err)
+	}
+	if err := p.Allow(context.Background(), toolCall("custom_tool", `{"q":"ok"}`)); err != nil {
+		t.Fatalf("registered tool should pass: %v", err)
+	}
+	if err := p.Allow(context.Background(), toolCall("custom_tool", `{"q":"blocked"}`)); err == nil {
+		t.Fatal("custom checker rejection should be enforced")
+	}
+	if err := p.Register("custom_tool", chk); err == nil {
+		t.Fatal("duplicate register should be rejected")
+	}
+	if err := p.Register("", chk); err == nil {
+		t.Fatal("empty name register should be rejected")
+	}
+	if err := p.Register("nil_chk", nil); err == nil {
+		t.Fatal("nil checker register should be rejected")
+	}
+	// 未注册工具仍然 fail-closed
+	if err := p.Allow(context.Background(), toolCall("still_unknown", `{}`)); err == nil {
+		t.Fatal("unregistered tool should remain fail-closed")
 	}
 }
 
