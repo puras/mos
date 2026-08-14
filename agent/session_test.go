@@ -8,33 +8,24 @@ import (
 	"hegq.net/mos/llm"
 )
 
-// TestSessionSaveRestoreRoundTrip 覆盖全部消息类型与任务状态的序列化往返：
-// system / user / assistant（含工具调用与推理内容）/ tool / summary / custom，
-// 以及运行期元数据（ExcludeFromContext）的保留。
+// TestSessionSaveRestoreRoundTrip 覆盖事件日志与任务状态的序列化往返：
+// 消息事件（user/assistant/tool）、压缩事件、会话元数据与 TaskState。
 func TestSessionSaveRestoreRoundTrip(t *testing.T) {
-	excluded := UserMsg("不进上下文的内部消息")
-	excluded.ExcludeFromContext = true
-
-	sess := &Session{
-		ID: "sess-001",
-		History: []InternalMessage{
-			SystemMsg("你是助手"),
-			UserMsg("请计算 1+2 并汇报"),
-			AssistantToolMsg("让我计算", "先调用计算器", []llm.ToolCall{
-				{ID: "call_1", Name: "calculator", Args: `{"expr":"1+2"}`},
-			}),
-			ToolMsg("call_1", "calculator", "3"),
-			AssistantMsg("结果是 3", "推理：1+2=3"),
-			SummaryMsg("已确认计算结果为 3"),
-			CustomMsg("rag", "[来源: doc#1] (score 0.95): 1+2=3"),
-			excluded,
-		},
-		State: TaskState{
-			Goal:    "请计算 1+2 并汇报",
-			Facts:   []Fact{{Summary: "1+2=3", Evidence: "3", Tool: "calculator"}},
-			Pending: []string{"汇报结果"},
-			Status:  StatusRunning,
-		},
+	sess := NewSession("sess-001")
+	_ = sess.appendUserMessage("请计算 1+2 并汇报", "user")
+	_ = sess.appendAssistantMessage(1, "让我计算", "先调用计算器", []llm.ToolCall{
+		{ID: "call_1", Name: "calculator", Args: `{"expr":"1+2"}`},
+	}, llm.Usage{})
+	_ = sess.appendToolCall(1, &llm.ToolCall{ID: "call_1", Name: "calculator", Args: `{"expr":"1+2"}`})
+	_ = sess.appendToolResult(1, &llm.ToolCall{ID: "call_1", Name: "calculator"}, 3, "3", nil)
+	_ = sess.appendAssistantMessage(2, "结果是 3", "推理：1+2=3", nil, llm.Usage{PromptTokens: 10})
+	_ = sess.Append(SessionEventCompactionSummary, CompactionSummaryData{Summary: "已确认计算结果为 3", ShadowedFrom: 2, ShadowedTo: 3})
+	sess.Header.CWD = "/tmp/work"
+	sess.State = TaskState{
+		Goal:    "请计算 1+2 并汇报",
+		Facts:   []Fact{{Summary: "1+2=3", Evidence: "3", Tool: "calculator"}},
+		Pending: []string{"汇报结果"},
+		Status:  StatusRunning,
 	}
 
 	data, err := sess.Save()
@@ -48,11 +39,18 @@ func TestSessionSaveRestoreRoundTrip(t *testing.T) {
 	if got.ID != sess.ID {
 		t.Errorf("ID mismatch: got %q want %q", got.ID, sess.ID)
 	}
-	if !reflect.DeepEqual(got.History, sess.History) {
-		t.Errorf("History mismatch after round-trip:\ngot  %+v\nwant %+v", got.History, sess.History)
+	if !reflect.DeepEqual(got.Events, sess.Events) {
+		t.Errorf("Events mismatch after round-trip:\ngot  %+v\nwant %+v", got.Events, sess.Events)
 	}
 	if !reflect.DeepEqual(got.State, sess.State) {
 		t.Errorf("State mismatch after round-trip:\ngot  %+v\nwant %+v", got.State, sess.State)
+	}
+	if got.Header.CWD != "/tmp/work" || got.Header.Version != sessionFormatVersion {
+		t.Errorf("Header mismatch: %+v", got.Header)
+	}
+	// 事件日志往返后消息投影一致
+	if !reflect.DeepEqual(got.Messages(), sess.Messages()) {
+		t.Errorf("Messages projection mismatch after round-trip")
 	}
 }
 
@@ -67,7 +65,7 @@ func TestSessionSaveRestore_EmptySession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RestoreSession error: %v", err)
 	}
-	if got.ID != "empty-001" || len(got.History) != 0 {
+	if got.ID != "empty-001" || len(got.Events) != 0 {
 		t.Errorf("unexpected restored session: %+v", got)
 	}
 }
@@ -79,6 +77,84 @@ func TestRestoreSession_Invalid(t *testing.T) {
 	}
 	if _, err := RestoreSession(nil); err == nil {
 		t.Fatal("expected error for nil data")
+	}
+}
+
+// TestSessionEventSeqContinuous Seq 必须从 1 开始连续递增（不变式）。
+func TestSessionEventSeqContinuous(t *testing.T) {
+	sess := NewSession("s1")
+	_ = sess.appendUserMessage("hi", "user")
+	_ = sess.appendAssistantMessage(1, "hello", "", nil, llm.Usage{})
+	if len(sess.Events) != 2 {
+		t.Fatalf("events = %d, want 2", len(sess.Events))
+	}
+	for i, ev := range sess.Events {
+		if want := int64(i + 1); ev.Seq != want {
+			t.Fatalf("events[%d].Seq = %d, want %d", i, ev.Seq, want)
+		}
+	}
+}
+
+// TestDeriveMessages 投影规则：消息事件重建、chunk 聚合、摘要替换语义。
+func TestDeriveMessages(t *testing.T) {
+	sess := NewSession("s1")
+	_ = sess.appendUserMessage("用户输入", "user")
+	_ = sess.appendAssistantMessage(1, "回答一", "思考一", nil, llm.Usage{})
+	_ = sess.Append(SessionEventAssistantChunk, AssistantChunkData{Turn: 2, Delta: "部"})
+	_ = sess.Append(SessionEventAssistantChunk, AssistantChunkData{Turn: 2, Delta: "分"})
+	_ = sess.appendAssistantMessage(2, "调用工具", "思考二", []llm.ToolCall{{ID: "c1", Name: "calculator", Args: `{"a":1}`}}, llm.Usage{})
+	_ = sess.appendToolResult(2, &llm.ToolCall{ID: "c1", Name: "calculator"}, 1, "1", nil)
+
+	msgs := sess.Messages()
+	if len(msgs) != 4 {
+		t.Fatalf("messages = %d, want 4: %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != llm.RoleUser || msgs[0].Content != "用户输入" {
+		t.Fatalf("msgs[0] = %+v", msgs[0])
+	}
+	if msgs[1].Role != llm.RoleAssistant || msgs[1].ReasoningContent != "思考一" {
+		t.Fatalf("msgs[1] = %+v", msgs[1])
+	}
+	if msgs[2].Role != llm.RoleAssistant || len(msgs[2].ToolCalls) != 1 || msgs[2].ReasoningContent != "思考二" {
+		t.Fatalf("msgs[2] = %+v", msgs[2])
+	}
+	if msgs[3].Role != llm.RoleTool || msgs[3].Content != "1" {
+		t.Fatalf("msgs[3] = %+v", msgs[3])
+	}
+}
+
+// TestDeriveMessagesChunkOnly 仅 chunk 无完整消息（异常中断）时聚合为一条消息。
+func TestDeriveMessagesChunkOnly(t *testing.T) {
+	sess := NewSession("s1")
+	_ = sess.Append(SessionEventAssistantChunk, AssistantChunkData{Turn: 1, Delta: "你"})
+	_ = sess.Append(SessionEventAssistantChunk, AssistantChunkData{Turn: 1, Delta: "好"})
+	msgs := sess.Messages()
+	if len(msgs) != 1 || msgs[0].Content != "你好" {
+		t.Fatalf("chunk aggregation failed: %+v", msgs)
+	}
+}
+
+// TestDeriveMessagesCompactionSummary 压缩摘要替换阴影范围内的旧消息。
+func TestDeriveMessagesCompactionSummary(t *testing.T) {
+	sess := NewSession("s1")
+	_ = sess.appendUserMessage("问题一", "user")
+	_ = sess.appendAssistantMessage(1, "回答一", "", nil, llm.Usage{})
+	_ = sess.appendUserMessage("问题二", "user")
+	_ = sess.appendAssistantMessage(2, "回答二", "", nil, llm.Usage{})
+	// 压缩：摘要替换前 2 条消息事件（seq 1-2）
+	_ = sess.Append(SessionEventCompactionSummary, CompactionSummaryData{
+		Summary: "历史摘要", ShadowedFrom: 1, ShadowedTo: 2,
+	})
+
+	msgs := sess.Messages()
+	if len(msgs) != 3 {
+		t.Fatalf("messages = %d, want 3 (summary + 2 kept): %+v", len(msgs), msgs)
+	}
+	if msgs[0].Summary != true || msgs[0].Content != "历史摘要" {
+		t.Fatalf("msgs[0] = %+v, want summary message", msgs[0])
+	}
+	if msgs[1].Content != "问题二" || msgs[2].Content != "回答二" {
+		t.Fatalf("kept messages wrong: %+v", msgs)
 	}
 }
 

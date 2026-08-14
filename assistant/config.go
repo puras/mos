@@ -41,7 +41,8 @@ type Config struct {
 	Planner planner.Planner
 	// Auditor 工具结果审计器（默认 agent.NewDefaultAuditor()）。
 	Auditor agent.Auditor
-	// Memory 会话记忆存储（默认 inmemory.New()，进程内实现）。
+	// Memory 会话记忆存储（v2 预留：会话历史以 Session 事件日志为唯一事实来源，
+	// Memory 作为可选外部记忆后端，将在 SeamRegistry 迭代接入；当前配置不生效）。
 	Memory memory.Memory
 	// Retriever 长期记忆检索器（M2.7 RAG 注入）：每轮按任务目标检索相关知识，
 	// 经知识守门后注入上下文（携带来源引用）。为 nil 时不注入。
@@ -62,4 +63,11 @@ type Config struct {
 	// 将旧消息压缩为摘要（TaskState 已验证事实）注入并保留最近消息，防跨轮上下文腐化。
 	// 为 nil 时启用框架默认实现（保留最近 12 条，见 agent.NewDefaultCompactor）。
 	Compactor agent.Compactor
+	// ContextBudget 模型上下文窗口 token 预算（M2.5 上下文利用率监控）：
+	// 每次模型调用后统计 PromptTokens/预算 利用率并广播 EventContextUsage 事件。
+	// 为 0 时不监控。
+	ContextBudget int
+	// DoomLoopMaxRepeat Doom Loop 检测（M2.5）：相同工具连续 maxRepeat 次相同参数
+	// 调用时判定为循环，任务中断（状态 blocked）。为 0 时不检测。
+	DoomLoopMaxRepeat int
 }

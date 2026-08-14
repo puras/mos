@@ -58,7 +58,7 @@ MoS（Sapient）是基于 Go 的智能体基础框架（Agent Base），提供�
 | `tool/` | 工具注册与执行、内置 / 扩展工具包、沙箱 |
 | `planner/` | ReAct 规划器接口与默认实现 |
 | `agent/` | 核心循环、消息翻译、压缩、RAG、审计、状态、截断、Doom Loop |
-| `memory/` | 记忆接口、inmemory、longterm（sqlite + FTS5 + 向量） |
+| `memory/` | 记忆接口、longterm（sqlite + FTS5 + 向量） |
 | `assistant/` | 组装层、默认策略、确认器 |
 | `examples/assistant/` | 独立示例工程（TUI CLI + 配置加载） |
 

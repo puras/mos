@@ -86,13 +86,3 @@ func (m *InternalMessage) translate() llm.Message {
 	}
 	return llm.Message{Role: llm.RoleUser, Content: "[" + source + "]\n" + m.Content}
 }
-
-// fromLlm 将 LLM 标准消息包装为内部消息（无附加元数据）。
-// 用于从外部来源（如 memory.Load 返回的持久化历史）接入翻译边界。
-func fromLlm(msgs []llm.Message) []InternalMessage {
-	out := make([]InternalMessage, 0, len(msgs))
-	for _, m := range msgs {
-		out = append(out, InternalMessage{Message: m, Source: string(m.Role)})
-	}
-	return out
-}

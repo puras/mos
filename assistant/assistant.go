@@ -8,7 +8,6 @@ import (
 
 	"hegq.net/mos/agent"
 	"hegq.net/mos/llm"
-	"hegq.net/mos/memory/inmemory"
 	"hegq.net/mos/planner"
 	"hegq.net/mos/tool"
 )
@@ -60,7 +59,7 @@ const DefaultSystemPrompt = `你是 MoS 智能体，一个通过调用工具解�
 1. 多轮对话中复用已有上下文，避免重复提问与重复计算。
 2. 回答使用与用户相同的语言，保持简洁、准确、可执行。`
 
-// New 使用模型对象、工具集与运行配置构建智能体。
+// New 使用模型对象、工具集与运行配置构建智能体（v2：默认装配 = ReActDriver + 默认钩子）。
 // model、tools 与 Config 中的框架概念均由调用方注入（nil 时使用框架默认实现），
 // 本函数不关心模型接入配置与具体工具实现。
 func New(model llm.ChatModel, tools []tool.Tool, cfg Config) (*Assistant, error) {
@@ -78,57 +77,43 @@ func New(model llm.ChatModel, tools []tool.Tool, cfg Config) (*Assistant, error)
 	if cfg.Planner == nil {
 		cfg.Planner = planner.NewReAct(model)
 	}
-	if cfg.Auditor == nil {
-		cfg.Auditor = agent.NewDefaultAuditor()
-	}
-	if cfg.Memory == nil {
-		cfg.Memory = inmemory.New()
-	}
 	if cfg.SystemPrompt == "" {
 		cfg.SystemPrompt = DefaultSystemPrompt
 	}
-	if cfg.Truncator == nil {
-		cfg.Truncator = agent.NewDefaultTruncator(agent.TruncatorConfig{})
-	}
-	if cfg.Compactor == nil {
-		cfg.Compactor = agent.NewDefaultCompactor(agent.CompactorConfig{})
-	}
+	// Auditor / Truncator / Compactor 由 agent.NewReAct 默认装配（nil 时使用默认实现）。
 
-	opts := []agent.Option{
-		agent.WithPolicy(cfg.Policy),
-		agent.WithPlanner(cfg.Planner),
-		agent.WithAuditor(cfg.Auditor),
-		agent.WithMemory(cfg.Memory),
-		agent.WithObserver(cfg.Observer),
-		agent.WithSandbox(cfg.Sandbox),
-		agent.WithResultTruncator(cfg.Truncator),
-		agent.WithCompactor(cfg.Compactor),
+	rt := &agent.RunContext{
+		Tools:             reg,
+		Planner:           cfg.Planner,
+		Memory:            cfg.Memory,
+		Sandbox:           cfg.Sandbox,
+		Policy:            cfg.Policy,
+		Auditor:           cfg.Auditor,
+		Observer:          cfg.Observer,
+		Retriever:         cfg.Retriever,
+		RetrieverCfg:      agent.RetrieverConfig{MinScore: cfg.RetrieverMinScore},
+		Truncator:         cfg.Truncator,
+		Compactor:         cfg.Compactor,
+		MaxTurns:          cfg.MaxTurns,
+		ContextBudget:     cfg.ContextBudget,
+		DoomLoopMaxRepeat: cfg.DoomLoopMaxRepeat,
 	}
 	// M2.6 系统提示词：显式组装器优先；配置了项目指令/技能目录时自动构建默认组装器；
 	// 否则回退到 SystemPrompt 静态引导（既有行为不变）。
 	switch {
 	case cfg.Assembler != nil:
-		opts = append(opts, agent.WithSystemAssembler(cfg.Assembler))
+		rt.Assembler = cfg.Assembler
 	case cfg.ProjectDocDir != "" || cfg.SkillsDir != "":
-		opts = append(opts, agent.WithSystemAssembler(agent.NewDefaultSystemAssembler(
-			agent.SystemAssemblerConfig{
-				Constraints:   cfg.SystemPrompt,
-				ProjectDocDir: cfg.ProjectDocDir,
-				SkillsDir:     cfg.SkillsDir,
-			})))
+		rt.Assembler = agent.NewDefaultSystemAssembler(agent.SystemAssemblerConfig{
+			Constraints:   cfg.SystemPrompt,
+			ProjectDocDir: cfg.ProjectDocDir,
+			SkillsDir:     cfg.SkillsDir,
+		})
 	default:
-		opts = append(opts, agent.WithSystemPrompt(cfg.SystemPrompt))
+		rt.SystemPrompt = cfg.SystemPrompt
 	}
-	if cfg.MaxTurns > 0 {
-		opts = append(opts, agent.WithMaxTurns(cfg.MaxTurns))
-	}
-	// M2.7 RAG 检索注入：配置了 Retriever 时每轮按任务目标检索注入（知识守门）
-	if cfg.Retriever != nil {
-		opts = append(opts, agent.WithRetriever(cfg.Retriever, agent.RetrieverConfig{
-			MinScore: cfg.RetrieverMinScore,
-		}))
-	}
-	ag := agent.New(model, reg, opts...)
+
+	ag := agent.New(rt)
 	return &Assistant{agent: ag, config: cfg, tools: reg, policy: cfg.Policy}, nil
 }
 

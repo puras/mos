@@ -12,6 +12,7 @@ import (
 
 	"hegq.net/mos/llm"
 	"hegq.net/mos/llm/openai"
+	"hegq.net/mos/planner"
 	"hegq.net/mos/tool"
 )
 
@@ -56,6 +57,15 @@ func (calculator) Execute(_ context.Context, args json.RawMessage) (any, error) 
 	return p.A + p.B, nil
 }
 
+// newReAct 便捷装配：默认 ReActDriver + 可选 RunContext 定制。
+func newReAct(model llm.ChatModel, reg *tool.Registry, cfg func(*RunContext)) *Agent {
+	rt := &RunContext{Tools: reg, Planner: planner.NewReAct(model)}
+	if cfg != nil {
+		cfg(rt)
+	}
+	return New(rt)
+}
+
 func TestAgentReActLoop(t *testing.T) {
 	reg := tool.NewRegistry()
 	if err := reg.Register(calculator{}); err != nil {
@@ -63,10 +73,10 @@ func TestAgentReActLoop(t *testing.T) {
 	}
 
 	var events []Event
-	a := New(mockModel{}, reg,
-		WithObserver(func(ev Event) { events = append(events, ev) }),
-		WithSystemPrompt("你是助手"),
-	)
+	a := newReAct(mockModel{}, reg, func(rt *RunContext) {
+		rt.Observer = func(ev Event) { events = append(events, ev) }
+		rt.SystemPrompt = "你是助手"
+	})
 
 	sess := NewSession("s1")
 	reply, err := a.Run(context.Background(), sess, "1+2=3?")
@@ -77,19 +87,20 @@ func TestAgentReActLoop(t *testing.T) {
 		t.Fatalf("reply = %q", reply)
 	}
 
-	// 历史应为：user, assistant(工具调用), tool(结果), assistant(最终)
-	if len(sess.History) != 4 {
-		t.Fatalf("history len = %d, want 4: %+v", len(sess.History), sess.History)
+	// 消息历史应为：user, assistant(工具调用), tool(结果), assistant(最终)
+	msgs := sess.Messages()
+	if len(msgs) != 4 {
+		t.Fatalf("messages len = %d, want 4: %+v", len(msgs), msgs)
 	}
-	if sess.History[1].Role != llm.RoleAssistant || len(sess.History[1].ToolCalls) != 1 {
-		t.Fatalf("history[1] = %+v", sess.History[1])
+	if msgs[1].Role != llm.RoleAssistant || len(msgs[1].ToolCalls) != 1 {
+		t.Fatalf("msgs[1] = %+v", msgs[1])
 	}
 	// 工具调用轮的推理内容必须保留（thinking 模式多轮须回传）
-	if sess.History[1].ReasoningContent != "先思考再行动" {
-		t.Fatalf("history[1].ReasoningContent = %q, want 先思考再行动", sess.History[1].ReasoningContent)
+	if msgs[1].ReasoningContent != "先思考再行动" {
+		t.Fatalf("msgs[1].ReasoningContent = %q, want 先思考再行动", msgs[1].ReasoningContent)
 	}
-	if sess.History[2].Role != llm.RoleTool || sess.History[2].Content != "3" {
-		t.Fatalf("history[2] = %+v", sess.History[2])
+	if msgs[2].Role != llm.RoleTool || msgs[2].Content != "3" {
+		t.Fatalf("msgs[2] = %+v", msgs[2])
 	}
 
 	// 事件序列：思考 → 工具调用 → 工具结果 → 审计事实 → 思考 → 完成
@@ -150,7 +161,9 @@ func TestAgentRunStream(t *testing.T) {
 		t.Fatalf("register tool: %v", err)
 	}
 	var events []Event
-	a := New(streamingModel{}, reg, WithObserver(func(ev Event) { events = append(events, ev) }))
+	a := newReAct(streamingModel{}, reg, func(rt *RunContext) {
+		rt.Observer = func(ev Event) { events = append(events, ev) }
+	})
 	sess := NewSession("s1")
 	reply, err := a.RunStream(context.Background(), sess, "1+2=3?")
 	if err != nil {
@@ -196,7 +209,9 @@ func TestAgentRunStreamFallback(t *testing.T) {
 		t.Fatalf("register tool: %v", err)
 	}
 	var events []Event
-	a := New(mockModel{}, reg, WithObserver(func(ev Event) { events = append(events, ev) }))
+	a := newReAct(mockModel{}, reg, func(rt *RunContext) {
+		rt.Observer = func(ev Event) { events = append(events, ev) }
+	})
 	sess := NewSession("s1")
 	reply, err := a.RunStream(context.Background(), sess, "1+2=3?")
 	if err != nil {
@@ -235,7 +250,9 @@ func TestAgentPolicyDenial(t *testing.T) {
 	if err := reg.Register(calculator{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
-	a := New(mockModel{}, reg, WithPolicy(denyPolicy{}))
+	a := newReAct(mockModel{}, reg, func(rt *RunContext) {
+		rt.Policy = denyPolicy{}
+	})
 
 	sess := NewSession("s1")
 	reply, err := a.Run(context.Background(), sess, "1+2")
@@ -246,12 +263,13 @@ func TestAgentPolicyDenial(t *testing.T) {
 	if !strings.Contains(reply, "未授权") {
 		t.Fatalf("reply = %q, want policy denial", reply)
 	}
-	// 工具未实际执行：history[2] 是拒绝反馈
-	if len(sess.History) != 4 {
-		t.Fatalf("history len = %d", len(sess.History))
+	// 工具未实际执行：msgs[2] 是拒绝反馈
+	msgs := sess.Messages()
+	if len(msgs) != 4 {
+		t.Fatalf("messages len = %d", len(msgs))
 	}
-	if !strings.Contains(sess.History[2].Content, "未授权") {
-		t.Fatalf("history[2] = %+v", sess.History[2])
+	if !strings.Contains(msgs[2].Content, "未授权") {
+		t.Fatalf("msgs[2] = %+v", msgs[2])
 	}
 }
 
@@ -286,7 +304,7 @@ func TestEndToEndReasoningRoundTrip(t *testing.T) {
 	if err := reg.Register(calculator{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
-	a := New(model, reg)
+	a := newReAct(model, reg, nil)
 
 	sess := NewSession("s1")
 	reply, err := a.Run(context.Background(), sess, "1+2")
@@ -302,13 +320,15 @@ func TestEndToEndReasoningRoundTrip(t *testing.T) {
 	}
 }
 
-// 多轮对话应保留历史，且 system 引导不进入会话历史。
+// 多轮对话应保留历史，且 system 引导不进入会话事件日志。
 func TestAgentMultiTurn(t *testing.T) {
 	reg := tool.NewRegistry()
 	if err := reg.Register(calculator{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
-	a := New(mockModel{}, reg, WithSystemPrompt("你是助手"))
+	a := newReAct(mockModel{}, reg, func(rt *RunContext) {
+		rt.SystemPrompt = "你是助手"
+	})
 	sess := NewSession("s1")
 
 	if _, err := a.Run(context.Background(), sess, "第一轮"); err != nil {
@@ -318,12 +338,50 @@ func TestAgentMultiTurn(t *testing.T) {
 		t.Fatalf("run 2: %v", err)
 	}
 
-	for _, m := range sess.History {
+	for _, m := range sess.Messages() {
 		if m.Role == llm.RoleSystem {
-			t.Fatal("system message should not persist in session history")
+			t.Fatal("system message should not persist in session log")
 		}
 	}
-	if len(sess.History) != 8 {
-		t.Fatalf("history len = %d, want 8 (两轮各 4 条)", len(sess.History))
+	if len(sess.Messages()) != 8 {
+		t.Fatalf("messages len = %d, want 8 (两轮各 4 条)", len(sess.Messages()))
+	}
+}
+
+// 平台断点续跑契约：Save → Restore → 继续 Run，消息与状态正确累积。
+func TestSessionRestoreResume(t *testing.T) {
+	reg := tool.NewRegistry()
+	if err := reg.Register(calculator{}); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+	a := newReAct(mockModel{}, reg, nil)
+
+	sess := NewSession("s1")
+	if _, err := a.Run(context.Background(), sess, "第一轮"); err != nil {
+		t.Fatalf("run 1: %v", err)
+	}
+	if len(sess.Messages()) != 4 {
+		t.Fatalf("messages after run 1 = %d, want 4", len(sess.Messages()))
+	}
+
+	data, err := sess.Save()
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	restored, err := RestoreSession(data)
+	if err != nil {
+		t.Fatalf("RestoreSession: %v", err)
+	}
+	if _, err := a.Run(context.Background(), restored, "第二轮"); err != nil {
+		t.Fatalf("run 2: %v", err)
+	}
+	if len(restored.Messages()) != 8 {
+		t.Fatalf("messages after resume = %d, want 8", len(restored.Messages()))
+	}
+	if restored.State.Goal != "第一轮" {
+		t.Fatalf("goal after resume = %q, want 第一轮（首轮目标保留）", restored.State.Goal)
+	}
+	if restored.State.Status != StatusCompleted {
+		t.Fatalf("status after resume = %v, want completed", restored.State.Status)
 	}
 }

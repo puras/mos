@@ -37,8 +37,7 @@ type StreamingPlanner interface {
 // ReAct 是默认的 ReAct（Reason + Act）策略：
 // 调用模型获取回复，若模型请求调用工具则返回 ToolCall，否则返回最终作答。
 type ReAct struct {
-	model       llm.ChatModel
-	instruction string // 可选的思考引导语，注入为 system 消息
+	model llm.ChatModel
 }
 
 // NewReAct 创建 ReAct 规划器。
@@ -50,13 +49,8 @@ func NewReAct(model llm.ChatModel, opts ...ReActOption) *ReAct {
 	return p
 }
 
-// ReActOption 是 ReAct 的配置项。
+// ReActOption 是 ReAct 的配置项（扩展点，当前无内置选项）。
 type ReActOption func(*ReAct)
-
-// WithInstruction 设置思考引导语（如 ReAct 提示词），不污染用户历史。
-func WithInstruction(s string) ReActOption {
-	return func(p *ReAct) { p.instruction = s }
-}
 
 // NextAction 实现 planner.Planner。
 func (p *ReAct) NextAction(ctx context.Context, history []llm.Message, tools []llm.Tool) (Action, error) {
@@ -92,15 +86,9 @@ func (p *ReAct) NextActionStream(ctx context.Context, history []llm.Message, too
 	return toAction(resp), nil
 }
 
-// buildRequest 组装模型请求：注入可选的思考引导语（system 消息，不污染用户历史）。
+// buildRequest 组装模型请求。
 func (p *ReAct) buildRequest(history []llm.Message, tools []llm.Tool) *llm.Request {
-	req := &llm.Request{Messages: history, Tools: tools}
-	if p.instruction != "" {
-		msgs := make([]llm.Message, 0, len(history)+1)
-		msgs = append(msgs, llm.Message{Role: llm.RoleSystem, Content: p.instruction})
-		req.Messages = append(msgs, history...)
-	}
-	return req
+	return &llm.Request{Messages: history, Tools: tools}
 }
 
 // toAction 将模型响应转换为规划器决策。

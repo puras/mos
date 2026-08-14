@@ -364,9 +364,8 @@ mos/
 │   ├── builtin/           #   内置工具包：计算/时间/文件读写检索/网页抓取（纯标准库）
 │   └── extension/         #   扩展工具包：shell（沙箱执行）/ web_search（搜索提供商）
 │       └── search/        #     搜索提供商：duckduckgo / tavily / serper / brave / searxng
-├── memory/                # 会话记忆抽象
-│   └── inmemory/          #   内存实现
-├── agent/                 # 智能体运行时：任务循环 / Policy / Session / TaskState / Auditor / Observer
+├── memory/                # 记忆抽象：Retriever 接口 + longterm（sqlite + FTS5 + 向量）
+├── agent/                 # 智能体运行时：事件日志 Session / LoopDriver / HookBus / Policy / Observer
 ├── planner/               # 规划策略：Planner 接口 + ReAct 实现
 ├── assistant/             # 组装好的完整智能体：模型对象注入 / 默认策略 / 内置+扩展工具包
 ├── .gitignore

@@ -72,30 +72,6 @@ func TestConvertToLlmSummaryInjection(t *testing.T) {
 		t.Fatalf("摘要未转 user 角色: %+v", got[2])
 	}
 }
-
-func TestFromLlm(t *testing.T) {
-	in := []llm.Message{
-		{Role: llm.RoleUser, Content: "hi"},
-		{Role: llm.RoleTool, Content: "3", ToolCallID: "c1", Name: "calculator"},
-	}
-	out := fromLlm(in)
-	if len(out) != 2 {
-		t.Fatalf("fromLlm len=%d", len(out))
-	}
-	if out[0].Source != "user" || out[0].Content != "hi" {
-		t.Fatalf("fromLlm 包装异常: %+v", out[0])
-	}
-	if out[1].Message.ToolCallID != "c1" || out[1].Message.Name != "calculator" {
-		t.Fatalf("fromLlm 丢失 tool 关联: %+v", out[1])
-	}
-	// 往返一致性：fromLlm → convertToLlm 应与原始消息等价
-	round := convertToLlm(out)
-	if len(round) != 2 || round[1].ToolCallID != "c1" || round[1].Role != llm.RoleTool {
-		t.Fatalf("fromLlm→convertToLlm 往返不一致: %+v", round)
-	}
-}
-
-// 工具调用消息保留推理内容（thinking 模式回传依赖），翻译边界不得丢字段。
 func TestConvertToLlmKeepsToolCallFields(t *testing.T) {
 	msgs := []InternalMessage{
 		AssistantToolMsg("算一下", "先思考", []llm.ToolCall{{ID: "c1", Name: "calculator", Args: `{}`}}),

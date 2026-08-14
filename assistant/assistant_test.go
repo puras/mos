@@ -209,9 +209,9 @@ func TestAssistantRetrieverInjection(t *testing.T) {
 			t.Fatalf("injected content missing %q:\n%s", want, last.Content)
 		}
 	}
-	for _, msg := range sess.History {
+	for _, msg := range sess.Messages() {
 		if strings.Contains(msg.Content, "检索到的相关记忆") {
-			t.Fatalf("rag injection leaked into session history: %+v", sess.History)
+			t.Fatalf("rag injection leaked into session history: %+v", sess.Messages())
 		}
 	}
 }
@@ -275,8 +275,8 @@ func TestAssistantMockEndToEnd(t *testing.T) {
 		t.Fatalf("reply = %q, want contains 9", reply)
 	}
 	// 两轮工具调用后：user + 2×(assistant+tool) + assistant 最终回复
-	if len(sess.History) != 6 {
-		t.Fatalf("history len = %d, want 6: %+v", len(sess.History), sess.History)
+	if len(sess.Messages()) != 6 {
+		t.Fatalf("history len = %d, want 6: %+v", len(sess.Messages()), sess.Messages())
 	}
 }
 
@@ -494,10 +494,10 @@ func TestTUIModeRestrictedShellRejected(t *testing.T) {
 		t.Fatalf("reply = %q, want policy denial feedback", reply)
 	}
 	// history: user + assistant(工具调用) + tool(拒绝反馈) + assistant(最终回复)
-	if len(sess.History) != 4 {
-		t.Fatalf("history len = %d, want 4", len(sess.History))
+	if len(sess.Messages()) != 4 {
+		t.Fatalf("history len = %d, want 4", len(sess.Messages()))
 	}
-	toolMsg := sess.History[2]
+	toolMsg := sess.Messages()[2]
 	if toolMsg.Role != llm.RoleTool {
 		t.Fatalf("history[2] = %+v, want tool message", toolMsg)
 	}

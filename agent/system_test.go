@@ -124,12 +124,12 @@ func TestAgentSystemAssemblerPerTurn(t *testing.T) {
 	}
 
 	rec := &recordingModel{}
-	a := New(rec, reg,
-		WithSystemAssembler(NewDefaultSystemAssembler(SystemAssemblerConfig{
+	a := newReAct(rec, reg, func(rt *RunContext) {
+		rt.Assembler = NewDefaultSystemAssembler(SystemAssemblerConfig{
 			Constraints: "你是助手",
 			EnableSlots: []SystemSlot{SlotConstraints, SlotTask, SlotState, SlotTools},
-		})),
-	)
+		})
+	})
 
 	sess := NewSession("s1")
 	if _, err := a.Run(context.Background(), sess, "1+2=3?"); err != nil {

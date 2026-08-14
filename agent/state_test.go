@@ -18,11 +18,13 @@ func TestTaskStateVerifiedFact(t *testing.T) {
 	}
 
 	var facts []Event
-	a := New(mockModel{}, reg, WithObserver(func(ev Event) {
-		if ev.Type == EventFact {
-			facts = append(facts, ev)
+	a := newReAct(mockModel{}, reg, func(rt *RunContext) {
+		rt.Observer = func(ev Event) {
+			if ev.Type == EventFact {
+				facts = append(facts, ev)
+			}
 		}
-	}))
+	})
 
 	sess := NewSession("s1")
 	if _, err := a.Run(context.Background(), sess, "1+2=3?"); err != nil {
@@ -58,7 +60,7 @@ func TestTaskStateIgnoresUnverified(t *testing.T) {
 		t.Fatalf("register tool: %v", err)
 	}
 
-	a := New(mutatingModel{}, reg)
+	a := newReAct(mutatingModel{}, reg, nil)
 	sess := NewSession("s1")
 	if _, err := a.Run(context.Background(), sess, "写文件 B"); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -74,7 +76,7 @@ func TestTaskStateAcrossRuns(t *testing.T) {
 	if err := reg.Register(calculator{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
-	a := New(varyingModel{}, reg)
+	a := newReAct(varyingModel{}, reg, nil)
 	sess := NewSession("s1")
 
 	if _, err := a.Run(context.Background(), sess, "第一题"); err != nil {
@@ -104,7 +106,7 @@ func TestTaskStateDedup(t *testing.T) {
 	if err := reg.Register(calculator{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
-	a := New(mockModel{}, reg)
+	a := newReAct(mockModel{}, reg, nil)
 	sess := NewSession("s1")
 
 	if _, err := a.Run(context.Background(), sess, "一"); err != nil {
@@ -125,7 +127,7 @@ func TestTaskStateBlockedOnMaxTurns(t *testing.T) {
 	if err := reg.Register(patcher{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
-	a := New(alwaysCallModel{}, reg, WithMaxTurns(2))
+	a := newReAct(alwaysCallModel{}, reg, func(rt *RunContext) { rt.MaxTurns = 2 })
 
 	sess := NewSession("s1")
 	_, err := a.Run(context.Background(), sess, "永远不完成的任务")

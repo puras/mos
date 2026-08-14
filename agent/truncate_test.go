@@ -180,22 +180,23 @@ func TestTruncatorInAgentKeepsAuditRaw(t *testing.T) {
 	}
 	aud := &captureAuditor{}
 	tr, _ := newTestTruncator(t, 0, 10)
-	a := New(bigOutputModel{}, reg,
-		WithSystemPrompt("你是助手"),
-		WithAuditor(aud),
-		WithResultTruncator(tr),
-	)
+	a := newReAct(bigOutputModel{}, reg, func(rt *RunContext) {
+		rt.SystemPrompt = "你是助手"
+		rt.Auditor = aud
+		rt.Truncator = tr
+	})
 
 	sess := NewSession("s1")
 	if _, err := a.Run(context.Background(), sess, "读文件"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
-	// 历史中的 tool 消息应被截断（含逃生通道提示）
+	// 模型可见消息中的 tool 消息应被截断（含逃生通道提示）
+	msgs := sess.Messages()
 	var toolMsg *InternalMessage
-	for i := range sess.History {
-		if sess.History[i].Role == llm.RoleTool {
-			toolMsg = &sess.History[i]
+	for i := range msgs {
+		if msgs[i].Role == llm.RoleTool {
+			toolMsg = &msgs[i]
 		}
 	}
 	if toolMsg == nil {

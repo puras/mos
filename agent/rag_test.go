@@ -7,6 +7,7 @@ import (
 
 	"hegq.net/mos/llm"
 	"hegq.net/mos/memory"
+	"hegq.net/mos/planner"
 	"hegq.net/mos/tool"
 )
 
@@ -37,16 +38,26 @@ func (m *directModel) ChatStream(context.Context, *llm.Request, func(llm.StreamC
 	return nil, llm.ErrUnsupported
 }
 
+func newReActRT(model llm.ChatModel, reg *tool.Registry, cfg *RunContext) *RunContext {
+	rt := &RunContext{Tools: reg, Planner: planner.NewReAct(model), SystemPrompt: "你是助手"}
+	if cfg != nil {
+		rt.Retriever = cfg.Retriever
+		rt.RetrieverCfg = cfg.RetrieverCfg
+		rt.Observer = cfg.Observer
+	}
+	return rt
+}
+
 func TestAgentRetrieverInjection(t *testing.T) {
 	ret := &mockRetriever{docs: []memory.Document{
 		{Source: "doc-a", Content: "Go 并发模型基于 goroutine。", Score: 0.8},
 		{Source: "doc-b", Content: "SQLite 支持 FTS5 全文检索。", Score: 0.6},
 	}}
 	m := &directModel{}
-	a := New(m, tool.NewRegistry(),
-		WithRetriever(ret, RetrieverConfig{MaxChunks: 3, Limit: 8}),
-		WithSystemPrompt("你是助手"),
-	)
+	a := New(newReActRT(m, tool.NewRegistry(), &RunContext{
+		Retriever:    ret,
+		RetrieverCfg: RetrieverConfig{MaxChunks: 3, Limit: 8},
+	}))
 
 	sess := NewSession("s1")
 	reply, err := a.Run(context.Background(), sess, "讲解 Go 并发")
@@ -76,14 +87,14 @@ func TestAgentRetrieverInjection(t *testing.T) {
 		}
 	}
 
-	// 注入消息不写入会话历史（每轮重检，不留痕）
-	for _, msg := range sess.History {
+	// 注入消息不写入会话日志（每轮重检，不留痕）
+	for _, msg := range sess.Messages() {
 		if strings.Contains(msg.Content, "检索到的相关记忆") || msg.Source == "rag" {
-			t.Fatalf("rag injection leaked into session history: %+v", sess.History)
+			t.Fatalf("rag injection leaked into session log: %+v", sess.Messages())
 		}
 	}
-	if len(sess.History) != 2 {
-		t.Fatalf("history len = %d, want 2 (user + assistant)", len(sess.History))
+	if len(sess.Messages()) != 2 {
+		t.Fatalf("messages len = %d, want 2 (user + assistant)", len(sess.Messages()))
 	}
 }
 
@@ -94,10 +105,11 @@ func TestKnowledgeGapEvent(t *testing.T) {
 	}}
 	m := &directModel{}
 	var events []Event
-	a := New(m, tool.NewRegistry(),
-		WithRetriever(ret, RetrieverConfig{MaxChunks: 3, Limit: 8, MinScore: 0.5}),
-		WithObserver(func(ev Event) { events = append(events, ev) }),
-	)
+	a := New(newReActRT(m, tool.NewRegistry(), &RunContext{
+		Retriever:    ret,
+		RetrieverCfg: RetrieverConfig{MaxChunks: 3, Limit: 8, MinScore: 0.5},
+		Observer:     func(ev Event) { events = append(events, ev) },
+	}))
 
 	sess := NewSession("s1")
 	reply, err := a.Run(context.Background(), sess, "数据库事务隔离级别")
@@ -141,10 +153,9 @@ func TestAgentRetrieverConflictResolution(t *testing.T) {
 		{Source: "doc-c", Content: "丙版本-高分", Score: 0.85},
 		{Source: "doc-d", Content: "丁版本-高分", Score: 0.95},
 	}}
-	a := New(&directModel{}, tool.NewRegistry(),
-		WithRetriever(ret, RetrieverConfig{MaxChunks: 3, Limit: 8}))
+	rt := &RunContext{Retriever: ret, RetrieverCfg: RetrieverConfig{MaxChunks: 3, Limit: 8}, Session: NewSession("s1")}
 
-	extras, err := a.retrieveAndInject(context.Background(), NewSession("s1"), 1, "查询")
+	extras, err := retrieveAndInject(context.Background(), rt, 1, "查询")
 	if err != nil {
 		t.Fatalf("retrieveAndInject: %v", err)
 	}
@@ -152,15 +163,12 @@ func TestAgentRetrieverConflictResolution(t *testing.T) {
 		t.Fatalf("extras = %d, want 1", len(extras))
 	}
 	content := extras[0].Content
-	if extras[0].Source != "rag" {
-		t.Fatalf("extras[0].Source = %q, want rag", extras[0].Source)
-	}
-	// 同源低分块被裁决掉，只保留高分块
+	// 同源冲突：只保留高分版本（doc-a 高分），低分版本被丢弃
 	if strings.Contains(content, "甲版本-低分") {
-		t.Fatalf("conflict resolution failed: low-score chunk kept:\n%s", content)
+		t.Fatalf("low-score chunk should be dropped:\n%s", content)
 	}
 	if !strings.Contains(content, "甲版本-高分") {
-		t.Fatalf("high-score chunk dropped:\n%s", content)
+		t.Fatalf("high-score chunk missing:\n%s", content)
 	}
 	// 注入条数 = 同源合并后（4 源）截断到 MaxChunks=3
 	if strings.Count(content, "- [来源:") != 3 {
@@ -171,7 +179,7 @@ func TestAgentRetrieverConflictResolution(t *testing.T) {
 func TestAgentRetrieverNotConfigured(t *testing.T) {
 	// 未配置检索器时行为与既往一致：不注入、不检索
 	m := &directModel{}
-	a := New(m, tool.NewRegistry(), WithSystemPrompt("你是助手"))
+	a := New(newReActRT(m, tool.NewRegistry(), nil))
 	sess := NewSession("s1")
 	if _, err := a.Run(context.Background(), sess, "你好"); err != nil {
 		t.Fatalf("Run: %v", err)

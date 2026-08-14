@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"hegq.net/mos/llm"
+	"hegq.net/mos/planner"
 	"hegq.net/mos/tool"
 )
 
@@ -67,7 +68,12 @@ func TestDoomLoopInAgent(t *testing.T) {
 	if err := reg.Register(calculator{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
-	a := New(&doomModel{}, reg, WithDoomLoopDetection(3), WithMaxTurns(10))
+	a := New(&RunContext{
+		Tools:             reg,
+		Planner:           planner.NewReAct(&doomModel{}),
+		DoomLoopMaxRepeat: 3,
+		MaxTurns:          10,
+	})
 
 	sess := NewSession("s1")
 	_, err := a.Run(context.Background(), sess, "反复执行")
@@ -104,14 +110,16 @@ func TestContextUsageMonitoring(t *testing.T) {
 		t.Fatalf("register tool: %v", err)
 	}
 	var usageEvents []Event
-	a := New(usageModel{}, reg,
-		WithContextBudget(10000),
-		WithObserver(func(ev Event) {
+	a := New(&RunContext{
+		Tools:         reg,
+		Planner:       planner.NewReAct(usageModel{}),
+		ContextBudget: 10000,
+		Observer: func(ev Event) {
 			if ev.Type == EventContextUsage {
 				usageEvents = append(usageEvents, ev)
 			}
-		}),
-	)
+		},
+	})
 
 	sess := NewSession("s1")
 	if _, err := a.Run(context.Background(), sess, "统计用量"); err != nil {

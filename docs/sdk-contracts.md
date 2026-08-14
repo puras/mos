@@ -16,7 +16,7 @@
 
 | 契约 | 状态 | 说明 |
 | --- | --- | --- |
-| 状态可恢复（Session/TaskState 序列化 + Restore） | ✅ 已实现 | `Session.Save()` / `agent.RestoreSession()`，JSON 契约见 §3 |
+| 状态可恢复（Session 事件日志 + Restore） | ✅ 已实现（v2） | `Session.Save()` / `agent.RestoreSession()`，事件日志 JSON 契约见 §3 |
 | 并发模型 | 📖 文档约定 | 一个 `Session` 同一时刻只允许一个 `Run`；`Agent` 无状态可并发复用（见 §4） |
 | 事件契约 | 📖 文档约定 | `Observer` 事件流可 JSON 序列化，是平台观测对接的稳定契约（见 §5） |
 | 人工介入 | 🔧 待完善 | `Confirmer` 当前为同步接口；异步确认（webhook/轮询）抽象待扩展（见 §6） |
@@ -26,6 +26,10 @@
 | 流式输出 | ✅ 已具备 | `RunStream` 事件流，平台可直接转 SSE |
 
 ## 3. 状态序列化契约（Session / TaskState）
+
+> v2 起：会话采用 **append-only 事件日志**（`Session.Events`）作为唯一事实来源，
+> 消息历史经 `deriveMessages` 投影派生（不再单独存储 `history` 快照）。
+> 契约以事件日志为准，平台可原样落库做轨迹回放。
 
 ### 序列化入口
 
@@ -42,18 +46,26 @@ sess, err := agent.RestoreSession(data)
 ```jsonc
 {
   "id": "session-001",
-  "history": [
+  "events": [
     {
-      "role": "user",                 // system | user | assistant | tool | ""
-      "content": "请计算 1+2",
-      "content_parts": [],            // 多模态内容块，可选
-      "tool_calls": [{"id": "", "name": "calculator", "args": "{\"expr\":\"1+2\"}"}],
-      "tool_call_id": "",             // 仅 tool 消息
-      "name": "",                     // 仅 tool 消息
-      "reasoning_content": "",        // 思维链，须原样回传
-      "exclude_from_context": false,  // MoS 运行期元数据
-      "summary": false,               // M2.5 压缩摘要标记
-      "source": "user"                // user/assistant/tool/system/summary/custom
+      "seq": 1,                        // 从 1 起连续递增（不变式）
+      "type": "user/message",          // turn/* | step/* | user/message | assistant/* | tool/* | compaction/*
+      "data": {"message": "请计算 1+2", "source": "user"}
+    },
+    {
+      "seq": 2,
+      "type": "assistant/message",
+      "data": {"turn": 1, "content": "我来计算", "reasoning": "", "tool_calls": [], "usage": {}}
+    },
+    {
+      "seq": 3,
+      "type": "tool/call",
+      "data": {"turn": 1, "call_id": "c1", "name": "calculator", "args": "{\"expr\":\"1+2\"}"}
+    },
+    {
+      "seq": 4,
+      "type": "tool/result",
+      "data": {"turn": 1, "call_id": "c1", "name": "calculator", "result": 3, "text": "3"}
     }
   ],
   "state": {
@@ -61,7 +73,13 @@ sess, err := agent.RestoreSession(data)
     "facts": [{"summary": "", "evidence": "", "tool": "calculator"}],
     "pending": [],
     "blocked": [],
-    "status": "running"               // pending | running | blocked | completed
+    "status": "completed"             // pending | running | blocked | completed
+  },
+  "header": {
+    "version": 2,                     // 日志格式版本
+    "cwd": "",                        // 工作目录（可选）
+    "parent_id": "",                  // fork lineage：父会话 ID（可选）
+    "seed_seq": 0                     // fork 时复制的日志序号（可选）
   }
 }
 ```
@@ -69,9 +87,10 @@ sess, err := agent.RestoreSession(data)
 ### 契约要点
 
 - `status` 序列化为可读字符串（`pending/running/blocked/completed`），反序列化兼容字符串与数字
-- `history` 完整保留两层消息（含 `ExcludeFromContext` / `Summary` / `Source` 元数据），恢复后可无缝续跑
+- `events` 是 append-only 事件日志：`seq` 从 1 连续递增；`data` 为各事件类型的 typed payload（见架构 v2 §4.1）；恢复后经 `deriveMessages` 投影出模型消息历史，可无缝续跑
+- 压缩以 `compaction/start → compaction/summary → compaction/end` 三段式写入日志，`summary` 携带阴影范围（`shadowed_from/to`），可回放
 - `Save()` 只序列化数据；**Agent 配置（模型对象/工具集/策略）不序列化**——平台自行持有配置并在恢复时重建 Agent
-- 恢复后续跑：`a.Run(ctx, restoredSess, input)`，`run` 自动将非 running 状态置为 running 并追加新输入
+- 恢复后续跑：`a.Run(ctx, restoredSess, input)`，Driver 自动将非 running 状态置为 running 并追加新输入
 
 ## 4. 并发契约
 
