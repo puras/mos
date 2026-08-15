@@ -389,6 +389,11 @@ go test ./...
 
 方向参考 LongHorizon-Harness 的"审计式状态迁移"（状态外置、只接受被环境独立验证过的事实、执行上下文可刷新）、Pi-Agent 的"上下文工程"（工具输出截断、结构化压缩、两层消息翻译边界）、Agentic Design Patterns 的"路由 / 异常处理 / 人机协同"、Harness Engineering 的铁律（上下文越少越好、专才 > 通才、状态写文件不写上下文、能写成 Linter 的约束别写成文档）与九种编排模式谱系（ReAct → Plan&Solve → REWOO → Storm → LLMCompiler → Basic Reflection → Reflexion → LATS → Self-Discover）、Loop Engineering 的九杠杆（确定性传感器 / 显式停止条件 / 跨迭代上下文管理 / 清晰工具设计 / Doom Loop 检测 / 上下文利用率 40% Dumb Zone 阈值 / 补偿面理论——harness 随模型变强主动拆组件，Anthropic 已拆 Context Reset）、Graph Engineering 的图编排四原语（节点 / 边 / 状态 schema + reducers / checkpointer 中断恢复，LangGraph 参考）与使用判据（分支 / 并行 / 持久 / 可审计——不满足判据不引入显式图）、Agent Plugins 1.0.0 的插件打包规范（plugin.json + skills/ + mcp.json + 客户端命名空间，组件独立校验）。
 
+> 注：以下 **M1~M2.7 里程碑条目为历史实现记录**，其中引用的旧 Option API（`WithSystemPrompt` / `WithPolicy` /
+> `WithRetriever` / `WithContextBudget` / `WithDoomLoopDetection` 等）在 v2 架构（`docs/architecture-v2.md`：
+> RunContext + LoopDriver + HookBus + GuardBus）中已废弃，改由 `agent.RunContext` 装配与钩子/守卫注册替代；
+> 当前 API 以"快速开始"与 `docs/architecture-v2.md` / `docs/sdk-contracts.md` 为准。
+
 - [x] **M1**：Agent 任务循环、多协议 LLM 接入、工具系统、工作记忆、事件观测
 - [x] **M1.5**：组装智能体（assistant 包 + 示例工程 CLI）、Harness Engineering 工具安全防护、Loop Engineering 循环可观测
 - [x] **M1.6**：执行沙箱（隔离层）——`tool.Sandbox`：Policy 管"该不该调用"、沙箱管"放行后能造成多大破坏"；本地轻量实现 = 工作目录 jail + 单次调用超时（进程组终止）+ 输出上限（丢弃式截断）+ 进程资源限制（CPU / 虚拟内存 / 单文件，`ulimit` 预置）+ 环境裁剪（白名单）+ 网络控制（NoNet 剥离代理，尽力而为），纯 Go 标准库零依赖；ctx 注入 `WithSandbox` / `SandboxFrom`，agent runtime 统一注入，shell 工具优先沙箱执行；远程强隔离（M4）可换 Docker / containerd 后端，对外 API 不变
