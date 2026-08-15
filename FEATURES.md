@@ -75,7 +75,7 @@ SDK 零第三方依赖（仅依赖本地 `hegq.net/mogo` 与 `modernc.org/sqlite
 - ❌ **未开始（5 项）**：M2.9 经验记忆、M2.10 工具规模化、M3 多智能体编排、M4 生产化、M5 自我进化
 
 ### 4.2 质量现状
-- 测试：SDK + 示例共 169 个测试函数、30 个测试文件，**全部通过**（含 llm 适配器 httptest 协议模拟）
+- 测试：SDK 176+ 个测试函数、30 个测试文件，**全部通过**（含 llm 适配器 httptest 协议模拟；数字随提交演进）
 - 修复：`llm/gemini` 编译错误（`mogo` 依赖 `ParseGeminiStreamChunk` 签名新增 `rawFrame` 参数，mos 未同步导致 build 失败，已适配修复）
 
 ### 4.3 已知问题与风险

@@ -12,11 +12,17 @@ type fakeModel struct {
 	calls  int
 	err    error
 	resp   *Response
+	cap    Capability
 	slow   time.Duration // >0 时 Chat 阻塞该时长（可取消）
 	stream func(ctx context.Context, req *Request, emit func(StreamChunk) error) (*Response, error)
 }
 
-func (m *fakeModel) Capabilities() Capability { return CapFunctionCalling }
+func (m *fakeModel) Capabilities() Capability {
+	if m.cap != 0 {
+		return m.cap
+	}
+	return CapFunctionCalling
+}
 
 func (m *fakeModel) Chat(ctx context.Context, _ *Request) (*Response, error) {
 	m.calls++
@@ -139,5 +145,96 @@ func TestWithCache(t *testing.T) {
 	}
 	if base.calls != 2 {
 		t.Fatalf("calls = %d, want 2", base.calls)
+	}
+}
+
+// TestWrappersCapabilitiesPassthrough：装饰器能力位透传/合并正确（组合链可被路由层识别）。
+func TestWrappersCapabilitiesPassthrough(t *testing.T) {
+	base := &fakeModel{cap: CapStreaming | CapFunctionCalling}
+
+	if got := WithLogging(base, nil).Capabilities(); got != CapStreaming|CapFunctionCalling {
+		t.Fatalf("logging caps = %v", got)
+	}
+	if got := WithRetry(base, 1, 0).Capabilities(); got != CapStreaming|CapFunctionCalling {
+		t.Fatalf("retry caps = %v", got)
+	}
+	if got := WithTimeout(base, time.Second).Capabilities(); got != CapStreaming|CapFunctionCalling {
+		t.Fatalf("timeout caps = %v", got)
+	}
+	if got := WithCache(base, time.Minute).Capabilities(); got != CapStreaming|CapFunctionCalling {
+		t.Fatalf("cache caps = %v", got)
+	}
+	// fallback 合并主备能力
+	backup := &fakeModel{cap: CapStructuredOutput}
+	if got := WithFallback(base, backup).Capabilities(); got != CapStreaming|CapFunctionCalling|CapStructuredOutput {
+		t.Fatalf("fallback caps = %v", got)
+	}
+}
+
+func TestWithTimeoutStream(t *testing.T) {
+	base := &fakeModel{
+		slow: 50 * time.Millisecond,
+		stream: func(ctx context.Context, _ *Request, _ func(StreamChunk) error) (*Response, error) {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(50 * time.Millisecond):
+				return &Response{}, nil
+			}
+		},
+	}
+	m := WithTimeout(base, time.Millisecond)
+	if _, err := m.ChatStream(context.Background(), &Request{}, nil); err == nil {
+		t.Fatal("ChatStream should exceed timeout")
+	}
+}
+
+func TestWithFallbackStream(t *testing.T) {
+	primary := &fakeModel{
+		err: errors.New("down"),
+		stream: func(context.Context, *Request, func(StreamChunk) error) (*Response, error) {
+			return nil, errors.New("stream down")
+		},
+	}
+	backup := &fakeModel{resp: &Response{Message: Message{Role: RoleAssistant, Content: "backup"}}}
+	m := WithFallback(primary, backup)
+	resp, err := m.ChatStream(context.Background(), &Request{}, nil)
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	if resp.Message.Content != "backup" {
+		t.Fatalf("content = %q, want backup", resp.Message.Content)
+	}
+}
+
+func TestWithCacheStreamPassthrough(t *testing.T) {
+	base := &fakeModel{resp: &Response{Message: Message{Content: "ok"}}}
+	m := WithCache(base, time.Minute)
+	req := &Request{Messages: []Message{{Role: RoleUser, Content: "q"}}}
+	if _, err := m.ChatStream(context.Background(), req, nil); err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	if _, err := m.ChatStream(context.Background(), req, nil); err != nil {
+		t.Fatalf("ChatStream (2nd): %v", err)
+	}
+	// ChatStream 不缓存：两次都落到底层
+	if base.calls != 2 {
+		t.Fatalf("calls = %d, want 2 (stream not cached)", base.calls)
+	}
+}
+
+func TestCacheTTLExpiry(t *testing.T) {
+	base := &fakeModel{resp: &Response{Message: Message{Content: "v1"}}}
+	m := WithCache(base, 5*time.Millisecond)
+	req := &Request{Messages: []Message{{Role: RoleUser, Content: "q"}}}
+	if _, err := m.Chat(context.Background(), req); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if _, err := m.Chat(context.Background(), req); err != nil {
+		t.Fatalf("Chat (after expiry): %v", err)
+	}
+	if base.calls != 2 {
+		t.Fatalf("calls = %d, want 2 (cache expired)", base.calls)
 	}
 }
