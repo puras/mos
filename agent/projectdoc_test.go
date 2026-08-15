@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"hegq.net/mos/agent/session"
 )
 
 func TestLoadProjectDocsUpwardRecursion(t *testing.T) {
@@ -62,7 +64,7 @@ func TestSystemAssemblerProjectDoc(t *testing.T) {
 		Constraints:   "你是助手",
 		ProjectDocDir: root,
 	})
-	sections, err := asm.Assemble(t.Context(), NewSession("s1"), nil)
+	sections, err := asm.Assemble(t.Context(), session.NewSession("s1"), nil)
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
 	}

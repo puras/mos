@@ -7,7 +7,10 @@
 package assistant
 
 import (
+	"context"
+
 	"hegq.net/mos/agent"
+	"hegq.net/mos/agent/session"
 	"hegq.net/mos/memory"
 	"hegq.net/mos/planner"
 	"hegq.net/mos/tool"
@@ -21,8 +24,13 @@ type Config struct {
 	// SystemPrompt 系统引导词（系统约束槽位内容）。
 	// 设置了 Assembler 时，本字段作为默认组装器的约束槽位（可被组装器配置覆盖）。
 	SystemPrompt string
-	// MaxTurns 一次任务循环的最大 Turn 数（0 表示使用框架默认）。
+	// MaxTurns 可选保险丝：一次任务循环的最大 Turn 数，>0 时达到上限仍未完成则阻塞；
+	// 0 表示不限制（默认，对齐 DSH/PI 无轮次上限，循环以模型直接作答 /
+	// ShouldStopAfterTurn 终止）。
 	MaxTurns int
+	// ShouldStopAfterTurn 每轮结束后的外部停止裁决（对齐 PI shouldStopAfterTurn）：
+	// 返回 true 时任务以 completed 收尾；nil 时按默认行为（模型直接作答即完成）。
+	ShouldStopAfterTurn func(ctx context.Context, sess *session.Session, turn int, action *planner.Action) (bool, error)
 	// Assembler 槽位式系统提示词组装器（M2.6 动态组装）。
 	// 设置后按槽位（系统约束/任务定义/当前状态/工具签名/项目指令/技能清单）每轮动态
 	// 组装系统提示词；为 nil 时使用 SystemPrompt 静态引导。
@@ -44,10 +52,10 @@ type Config struct {
 	// Memory 会话记忆存储（v2 预留：会话历史以 Session 事件日志为唯一事实来源，
 	// Memory 作为可选外部记忆后端，将在 SeamRegistry 迭代接入；当前配置不生效）。
 	Memory memory.Memory
-	// Retriever 长期记忆检索器（M2.7 RAG 注入）：每轮按任务目标检索相关知识，
+	// Retriever 长期记忆检索器（RAG 扩展点）：每轮按任务目标检索相关知识，
 	// 经知识守门后注入上下文（携带来源引用）。为 nil 时不注入。
 	Retriever memory.Retriever
-	// RetrieverMinScore 知识守门最低分（M2.7 Agentic RAG）：>0 时低于该阈值的
+	// RetrieverMinScore 知识守门最低分（Agentic RAG）：>0 时低于该阈值的
 	// 检索分块不注入，全部低于阈值则判定知识差距（模型经外部工具补齐）。
 	RetrieverMinScore float64
 	// Observer 任务循环事件回调（可观测工具调用与思考过程）。

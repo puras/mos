@@ -26,13 +26,14 @@ type Document struct {
 	Source string
 	// Content 是分块内容。
 	Content string
-	// Score 是混合检索得分（BM25 与向量相似度加权融合，越高越相关）。
+	// Score 是检索相关度得分（尺度由检索后端定义，越高越相关）。
 	Score float64
 }
 
-// Retriever 是长期记忆检索器抽象（M2.7 RAG 基础设施）：
+// Retriever 是长期记忆检索器抽象（RAG 扩展点）：
 // 按查询返回最相关的知识分块，供智能体注入上下文前做知识守门（源验证 / 冲突裁决）。
-// 实现如 memory/longterm（sqlite FTS5 BM25 + 向量余弦混合检索）。
+// 当前仅保留接口与 agent 注入钩子（每轮按任务目标检索注入），
+// 具体实现（如 sqlite/FTS/向量混合检索）由使用方按需提供，未注入时行为不变。
 type Retriever interface {
 	// Retrieve 按查询检索，返回至多 limit 条相关分块（按相关度降序）。
 	Retrieve(ctx context.Context, query string, limit int) ([]Document, error)

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"hegq.net/mos/agent/event"
+	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/memory"
 	"hegq.net/mos/planner"
@@ -85,22 +86,31 @@ func (d *ReActDriver) Run(ctx context.Context, rt *RunContext, input string) (st
 	if sess.State.Goal == "" {
 		sess.State.Goal = input
 	}
-	if sess.State.Status != StatusRunning {
-		sess.State.Status = StatusRunning
+	if sess.State.Status != session.StatusRunning {
+		sess.State.Status = session.StatusRunning
 	}
 
 	if err := sess.Append(event.SessionEventTurnStart, event.TurnData{Turn: 1, Reason: "user"}); err != nil {
 		return "", fmt.Errorf("agent: append turn/start: %w", err)
 	}
-	if err := sess.appendUserMessage(input, "user"); err != nil {
+	if err := sess.AppendUserMessage(input, "user"); err != nil {
 		return "", fmt.Errorf("agent: append user/message: %w", err)
 	}
 
 	history := sess.Messages() // 不含 system（system 每轮注入，不写日志）
 
-	for i := 0; i < rt.MaxTurns; i++ {
-		turn := i + 1
+	for turn := 1; ; turn++ {
 		const step = 1
+
+		// 可选保险丝（默认关闭，对齐 DSH/PI 无轮次上限）：显式设置 >0 时兜底防失控。
+		if rt.MaxTurns > 0 && turn > rt.MaxTurns {
+			sess.State.Status = session.StatusBlocked
+			_ = sess.Append(event.SessionEventTurnEnd, event.TurnData{Turn: rt.MaxTurns, Reason: "max_turns"})
+			return "", fmt.Errorf("agent: max turns %d exceeded", rt.MaxTurns)
+		}
+		if err := ctx.Err(); err != nil {
+			return "", fmt.Errorf("agent: run canceled: %w", err)
+		}
 
 		// 每轮刷新系统提示词：状态槽位随 TaskState 进度更新（M2.6 动态组装）
 		sysText, err := rt.assembleSystem(ctx)
@@ -108,9 +118,9 @@ func (d *ReActDriver) Run(ctx context.Context, rt *RunContext, input string) (st
 			return "", fmt.Errorf("agent: assemble system: %w", err)
 		}
 
-		msgs := make([]InternalMessage, 0, len(history)+1)
+		msgs := make([]session.InternalMessage, 0, len(history)+1)
 		if sysText != "" {
-			msgs = append(msgs, SystemMsg(sysText))
+			msgs = append(msgs, session.SystemMsg(sysText))
 		}
 		msgs = append(msgs, history...)
 
@@ -134,7 +144,7 @@ func (d *ReActDriver) Run(ctx context.Context, rt *RunContext, input string) (st
 		if len(calls) == 0 && action.ToolCall != nil {
 			calls = []llm.ToolCall{*action.ToolCall} // 兼容仅填 ToolCall 的第三方规划器
 		}
-		if err := sess.appendAssistantMessage(turn, action.Content, action.ReasoningContent, calls, action.Usage); err != nil {
+		if err := sess.AppendAssistantMessage(turn, action.Content, action.ReasoningContent, calls, action.Usage); err != nil {
 			return "", fmt.Errorf("agent: append assistant/message: %w", err)
 		}
 		rt.monitorUsage(turn, action.Usage)
@@ -144,7 +154,7 @@ func (d *ReActDriver) Run(ctx context.Context, rt *RunContext, input string) (st
 
 		if len(calls) == 0 {
 			// 直接作答，任务完成
-			sess.State.Status = StatusCompleted
+			sess.State.Status = session.StatusCompleted
 			_ = sess.Append(event.SessionEventStepEnd, event.StepData{Turn: turn, Step: step})
 			_ = sess.Append(event.SessionEventTurnEnd, event.TurnData{Turn: turn, Reason: "done"})
 			rt.notify(Event{Type: EventDone, SessionID: sess.ID, Turn: turn, Content: action.Content})
@@ -159,7 +169,7 @@ func (d *ReActDriver) Run(ctx context.Context, rt *RunContext, input string) (st
 			for i := range calls {
 				call := &calls[i]
 				err := fmt.Errorf("模型输出被截断（finish_reason=%s），工具调用未执行（fail-closed）", action.FinishReason)
-				_ = sess.appendToolResult(turn, call, nil, "", err)
+				_ = sess.AppendToolResult(turn, call, nil, "", err)
 				rt.notify(Event{Type: EventToolResult, SessionID: sess.ID, Turn: turn, ToolCall: call})
 			}
 			_ = sess.Append(event.SessionEventStepEnd, event.StepData{Turn: turn, Step: step})
@@ -171,7 +181,7 @@ func (d *ReActDriver) Run(ctx context.Context, rt *RunContext, input string) (st
 		// 注：多工具批量执行（并发 + 按序回填）属 M3 规划（ConcurrentExecutor），
 		// 当前单调用路径执行第一个，其余由规划器在后续轮次继续产出。
 		call := &calls[0]
-		if err := sess.appendToolCall(turn, call); err != nil {
+		if err := sess.AppendToolCall(turn, call); err != nil {
 			return "", fmt.Errorf("agent: append tool/call: %w", err)
 		}
 		rt.notify(Event{Type: EventToolCall, SessionID: sess.ID, Turn: turn, ToolCall: call})
@@ -184,34 +194,45 @@ func (d *ReActDriver) Run(ctx context.Context, rt *RunContext, input string) (st
 		denied := errors.As(execErr, &deniedErr)
 		switch {
 		case denied:
-			_ = sess.appendToolResult(turn, call, nil, deniedErr.Error(), nil)
+			_ = sess.AppendToolResult(turn, call, nil, deniedErr.Error(), nil)
 			rt.notify(Event{Type: EventToolResult, SessionID: sess.ID, Turn: turn, ToolCall: call})
 		case execErr != nil:
 			// Doom Loop 是致命守卫错误：任务中断（状态 blocked），不回填工具结果
 			var doomErr *DoomLoopError
 			if errors.As(execErr, &doomErr) {
-				sess.State.Status = StatusBlocked
+				sess.State.Status = session.StatusBlocked
 				_ = sess.Append(event.SessionEventStepEnd, event.StepData{Turn: turn, Step: step})
 				return "", doomErr
 			}
-			_ = sess.appendToolResult(turn, call, nil, "", execErr)
+			_ = sess.AppendToolResult(turn, call, nil, "", execErr)
 		default:
-			_ = sess.appendToolResult(turn, call, tev.Result, tev.ResultText, tev.Err)
+			_ = sess.AppendToolResult(turn, call, tev.Result, tev.ResultText, tev.Err)
 		}
 
 		_ = sess.Append(event.SessionEventStepEnd, event.StepData{Turn: turn, Step: step})
 		history = sess.Messages()
-	}
 
-	sess.State.Status = StatusBlocked
-	_ = sess.Append(event.SessionEventTurnEnd, event.TurnData{Turn: rt.MaxTurns, Reason: "max_turns"})
-	return "", fmt.Errorf("agent: max turns %d exceeded", rt.MaxTurns)
+		// 外部停止裁决（对齐 PI shouldStopAfterTurn）：每轮工具执行后调用，
+		// 返回 true 时任务以 completed 收尾（reason "stopped"）。
+		if rt.ShouldStopAfterTurn != nil {
+			stop, err := rt.ShouldStopAfterTurn(ctx, sess, turn, &action)
+			if err != nil {
+				return "", fmt.Errorf("agent: shouldStopAfterTurn turn %d: %w", turn, err)
+			}
+			if stop {
+				sess.State.Status = session.StatusCompleted
+				_ = sess.Append(event.SessionEventTurnEnd, event.TurnData{Turn: turn, Reason: "stopped"})
+				rt.notify(Event{Type: EventDone, SessionID: sess.ID, Turn: turn, Content: action.Content})
+				return action.Content, nil
+			}
+		}
+	}
 }
 
 // nextAction 执行单轮规划。流式路径下转发模型文本增量（EventStream + assistant/chunk）；
 // 规划器不支持流式接口时回退非流式 NextAction。
-func (d *ReActDriver) nextAction(ctx context.Context, rt *RunContext, sess *Session, turn int, msgs []InternalMessage) (planner.Action, error) {
-	llmMsgs := convertToLlm(msgs)
+func (d *ReActDriver) nextAction(ctx context.Context, rt *RunContext, sess *session.Session, turn int, msgs []session.InternalMessage) (planner.Action, error) {
+	llmMsgs := session.ConvertToLlm(msgs)
 	tools := rt.Tools.List()
 	if !rt.Stream {
 		return rt.Planner.NextAction(ctx, llmMsgs, tools)
@@ -302,7 +323,7 @@ func truncateHook(rt *RunContext) Hook {
 		if ev.ToolCall == nil || rt.Truncator == nil {
 			return next(ctx, ev)
 		}
-		text := formatToolResult(ev.Result)
+		text := session.FormatToolResult(ev.Result)
 		if s, truncated := rt.Truncator.Truncate(ev.ToolCall.Name, text); truncated {
 			ev.ResultText = s
 		} else {
@@ -342,7 +363,7 @@ func compressHook(rt *RunContext) Hook {
 		}
 		sess := rt.Session
 		msgs := ev.Messages
-		var system []InternalMessage
+		var system []session.InternalMessage
 		hist := msgs
 		if msgs[0].Role == llm.RoleSystem {
 			system = msgs[:1]
@@ -356,7 +377,7 @@ func compressHook(rt *RunContext) Hook {
 			return next(ctx, ev)
 		}
 		// 推导被压缩消息的事件序号范围（压缩 = 丢弃历史头部，after = [summary] + kept）
-		seqs := messageEventSeqs(sess.Events)
+		seqs := session.MessageEventSeqs(sess.Events)
 		shadowed := len(hist) - (len(after) - 1)
 		var from, to int64
 		if shadowed > 0 && shadowed <= len(seqs) {
@@ -405,7 +426,7 @@ func ragInjectHook(rt *RunContext) Hook {
 
 // retrieveAndInject 执行 RAG 检索 + 知识守门，返回待发送给模型的注入消息列表。
 // 返回的扩展消息不写入会话事件日志（每轮按最新知识重新检索）。
-func retrieveAndInject(ctx context.Context, rt *RunContext, turn int, query string) ([]InternalMessage, error) {
+func retrieveAndInject(ctx context.Context, rt *RunContext, turn int, query string) ([]session.InternalMessage, error) {
 	limit := rt.RetrieverCfg.Limit
 	if limit <= 0 {
 		limit = 8
@@ -455,7 +476,7 @@ func retrieveAndInject(ctx context.Context, rt *RunContext, turn int, query stri
 	if len(passed) > maxChunks {
 		passed = passed[:maxChunks]
 	}
-	return []InternalMessage{CustomMsg("rag", renderRetrieved(passed))}, nil
+	return []session.InternalMessage{session.CustomMsg("rag", renderRetrieved(passed))}, nil
 }
 
 // isTruncatedFinish 判断模型停止原因是否为"输出被截断"。

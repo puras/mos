@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/memory"
 	"hegq.net/mos/planner"
@@ -59,7 +60,7 @@ func TestAgentRetrieverInjection(t *testing.T) {
 		RetrieverCfg: RetrieverConfig{MaxChunks: 3, Limit: 8},
 	}))
 
-	sess := NewSession("s1")
+	sess := session.NewSession("s1")
 	reply, err := a.Run(context.Background(), sess, "讲解 Go 并发")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -111,7 +112,7 @@ func TestKnowledgeGapEvent(t *testing.T) {
 		Observer:     func(ev Event) { events = append(events, ev) },
 	}))
 
-	sess := NewSession("s1")
+	sess := session.NewSession("s1")
 	reply, err := a.Run(context.Background(), sess, "数据库事务隔离级别")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -153,7 +154,7 @@ func TestAgentRetrieverConflictResolution(t *testing.T) {
 		{Source: "doc-c", Content: "丙版本-高分", Score: 0.85},
 		{Source: "doc-d", Content: "丁版本-高分", Score: 0.95},
 	}}
-	rt := &RunContext{Retriever: ret, RetrieverCfg: RetrieverConfig{MaxChunks: 3, Limit: 8}, Session: NewSession("s1")}
+	rt := &RunContext{Retriever: ret, RetrieverCfg: RetrieverConfig{MaxChunks: 3, Limit: 8}, Session: session.NewSession("s1")}
 
 	extras, err := retrieveAndInject(context.Background(), rt, 1, "查询")
 	if err != nil {
@@ -180,7 +181,7 @@ func TestAgentRetrieverNotConfigured(t *testing.T) {
 	// 未配置检索器时行为与既往一致：不注入、不检索
 	m := &directModel{}
 	a := New(newReActRT(m, tool.NewRegistry(), nil))
-	sess := NewSession("s1")
+	sess := session.NewSession("s1")
 	if _, err := a.Run(context.Background(), sess, "你好"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}

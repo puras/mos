@@ -7,6 +7,7 @@
 
 | 日期 | 版本 | 更新内容 |
 | --- | --- | --- |
+| 2026-08-15 | v2.6 | 实施：Step 2 落地 `agent/session`（Session 日志 + TaskState + InternalMessage + deriveMessages，含 ConvertToLlm/FormatToolResult/MessageEventSeqs 导出）；根 agent 改为 `session.*` 前缀引用；integration 型 state 测试保留在根包 |
 | 2026-08-15 | v2.5 | 实施：按 §11.1 拆分 agent 包，Step 1 落地 `agent/event`（EventBus 四模式 + 会话事件目录/载荷 + MarshalData）；根包引用改为 `event.*` 前缀；§11.1 声明不设公开语义红线（开发阶段，依赖方向强制优于 API 稳定） |
 | 2026-08-14 | v2.4 | 引入 PI（@earendil-works/pi-agent-core）对照：§1.3 补 PI 借鉴表；P0 落地——llm.Response.FinishReason 三协议透传、ReActDriver 截断工具调用 fail-closed（对齐 PI failToolCallsFromTruncatedMessage）、DoomLoop 迁为单调守卫（DoomLoopGuard）；§3.9 补批量执行三阶段语义、§3.10 Inbox 拆三队列、新增 §3.11 Telemetry seam（规划） |
 | 2026-08-14 | v2.3 | 实施进度：MVP 核心（实施顺序 1-5）落地——EventBus 四模式、Session 事件日志（deriveMessages + 不变式）、HookBus+GuardBus、RunContext+LoopDriver+ReActDriver、assistant 默认装配；废弃命令式 run 与 WithXxx 选项；SDK 契约文档 §3 同步为事件日志格式 |
@@ -175,7 +176,8 @@ type RunContext struct {
 	Registry  *SeamRegistry // 组件注册表（Seam 解析）
 	Scope     *Scope       // 本 Agent 的注册作用域（生命周期绑定）
 	Executor  *ConcurrentExecutor // 并发工具执行器（并行分支/批量调用）
-	MaxTurns  int
+	MaxTurns  int                 // 可选保险丝（>0 生效）；0 表示不限制
+	ShouldStopAfterTurn func(...) // 每轮外部停止裁决（对齐 PI shouldStopAfterTurn）
 }
 
 // ModelResolver 按请求解析模型（对齐 llm 装饰器链 + Seam 按名选模型）。
@@ -546,7 +548,7 @@ README 路线图中未实现的里程碑（M2.8 ~ M5）按三类归位：**v2 �
 
 | 路线图项 | 说明 |
 | --- | --- |
-| M2.9 经验记忆 | 复用 `memory/longterm`，作为 `Retriever` 实现或 `pre-step` 注入钩子，不依赖本规划 |
+| M2.9 经验记忆 | 提供 `Retriever` 实现（原 `memory/longterm` 已移除），经 `pre-step` 注入钩子复用，不依赖本规划 |
 | M2.10 工具规模化（schema 压缩/懒加载/保 cache） | `tool` 与 `SystemAssembler` 的优化，schema 缓存已落地；与循环架构正交 |
 
 ### 9.3 平台层（SaaS 平台负责，SDK 仅提供原语）
@@ -681,7 +683,7 @@ flowchart TD
         B1["llm<br/>ChatModel 抽象 + 适配器"]
         B2["tool<br/>工具注册 + 内置/扩展工具"]
         B3["planner<br/>Planner 决策器"]
-        B4["memory<br/>记忆接口 + longterm"]
+        B4["memory<br/>记忆接口 + Retriever 扩展点"]
     end
 
     ASM --> LOOP --> ORCH --> INFRA --> BASE
@@ -813,13 +815,13 @@ flowchart LR
 | --- | --- | --- | --- |
 | `EventBus` | 事件分发器：emit/waterfall/parallel/serial 四模式；事件是扩展点，模式是公开契约 | agent/event | ✅ 已实现 |
 | `DispatchMode` | 调度模式枚举：观察 / 包装 / 扇出 / 裁决 | agent/event | ✅ 已实现 |
-| `Session` | append-only 事件日志 + `TaskState` 投影 + `SessionHeader`；唯一事实来源，消息经 `deriveMessages` 派生 | agent | ✅ 已实现 |
-| `SessionEvent` | 不可变事件（Seq 连续，Type + Data）；持久化 / 回放 / 恢复的最小单元 | agent | ✅ 已实现 |
-| `SessionHeader` | 存储元数据：version / cwd / lineage / seed；不进模型面 | agent | ✅ 已实现 |
-| `deriveMessages()` | 从事件日志投影模型消息历史的纯函数（含压缩阴影替换语义） | agent | ✅ 已实现 |
-| `TaskState` | 任务状态投影：目标 / 已验证事实 / 状态机；从事件重建 | agent | ✅ 现有（保留） |
-| `TaskStatus` | 任务状态机：pending / running / blocked / completed | agent | ✅ 现有（保留） |
-| `Fact` | 已验证事实（summary + evidence + tool） | agent | ✅ 现有（保留） |
+| `Session` | append-only 事件日志 + `TaskState` 投影 + `SessionHeader`；唯一事实来源，消息经 `deriveMessages` 派生 | agent/session | ✅ 已实现 |
+| `SessionEvent` | 不可变事件（Seq 连续，Type + Data）；持久化 / 回放 / 恢复的最小单元 | agent/session | ✅ 已实现 |
+| `SessionHeader` | 存储元数据：version / cwd / lineage / seed；不进模型面 | agent/session | ✅ 已实现 |
+| `deriveMessages()` | 从事件日志投影模型消息历史的纯函数（含压缩阴影替换语义） | agent/session | ✅ 已实现 |
+| `TaskState` | 任务状态投影：目标 / 已验证事实 / 状态机；从事件重建 | agent/session | ✅ 现有（保留） |
+| `TaskStatus` | 任务状态机：pending / running / blocked / completed | agent/session | ✅ 现有（保留） |
+| `Fact` | 已验证事实（summary + evidence + tool） | agent/session | ✅ 现有（保留） |
 | `HookBus` | 瀑布钩子：可改写 / 委托 / 短路；环节可插拔 | agent | ✅ 已实现 |
 | `GuardBus` | 单调守卫：串行裁决、短路即拒，不可被 hook 改写绕过（Policy/权限/身份） | agent | ✅ 已实现 |
 | `Hook` / `HookKind` / `Next` | 瀑布钩子签名与环节枚举（pre-step / request / tool-* / turn-stopping） | agent | ✅ 已实现（request/turn-stopping 预留） |
@@ -880,7 +882,7 @@ flowchart LR
 | `Memory` | 记忆存取接口 | memory | ✅ 现有 |
 | `Retriever` | 检索接口（RAG 注入） | memory | ✅ 现有 |
 | `Document` | 记忆文档（id / content / score） | memory | ✅ 现有 |
-| `Chunk` / `Chunker`（longterm） | 长时记忆文档分块 | memory/longterm | ✅ 现有 |
+| `Chunk` / `Chunker` | 长时记忆文档分块（原 `memory/longterm` 实现已移除，按需重写） | memory | 待定 |
 
 **agent 现有核心（保留 / 语义演进）**
 
@@ -890,7 +892,7 @@ flowchart LR
 | `Auditor` / `DefaultAuditor` | 审计门：校验工具结果 → 生成 `Fact` | agent | ✅ 现有（保留） |
 | `Compactor` / `CompactorConfig` | 上下文压缩器（v2 中作为 compaction 三段式事件的执行者） | agent | ✅ 现有（语义演进） |
 | `ResultTruncator` | 工具结果截断（超限溢出到文件） | agent | ✅ 现有（保留） |
-| `InternalMessage` | MoS 内部消息模型（基于 `llm.Message` + 运行期元数据） | agent | ✅ 现有（保留） |
+| `InternalMessage` | MoS 内部消息模型（基于 `llm.Message` + 运行期元数据） | agent/session | ✅ 现有（保留） |
 | `ProjectDoc` / `Skill` | 项目文档（CLAUDE.md）/ 技能（SKILL.md）加载 | agent | ✅ 现有（保留） |
 
 **assistant**

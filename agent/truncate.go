@@ -41,7 +41,6 @@ var headTools = map[string]bool{
 	"web_search":   true,
 	"grep":         true,
 	"find_files":   true,
-	"calculator":   true,
 	"current_time": true,
 }
 

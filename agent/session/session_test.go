@@ -1,4 +1,4 @@
-package agent
+package session
 
 import (
 	"encoding/json"
@@ -13,13 +13,13 @@ import (
 // 消息事件（user/assistant/tool）、压缩事件、会话元数据与 TaskState。
 func TestSessionSaveRestoreRoundTrip(t *testing.T) {
 	sess := NewSession("sess-001")
-	_ = sess.appendUserMessage("请计算 1+2 并汇报", "user")
-	_ = sess.appendAssistantMessage(1, "让我计算", "先调用计算器", []llm.ToolCall{
+	_ = sess.AppendUserMessage("请计算 1+2 并汇报", "user")
+	_ = sess.AppendAssistantMessage(1, "让我计算", "先调用计算器", []llm.ToolCall{
 		{ID: "call_1", Name: "read_file", Args: `{"expr":"1+2"}`},
 	}, llm.Usage{})
-	_ = sess.appendToolCall(1, &llm.ToolCall{ID: "call_1", Name: "read_file", Args: `{"expr":"1+2"}`})
-	_ = sess.appendToolResult(1, &llm.ToolCall{ID: "call_1", Name: "read_file"}, 3, "3", nil)
-	_ = sess.appendAssistantMessage(2, "结果是 3", "推理：1+2=3", nil, llm.Usage{PromptTokens: 10})
+	_ = sess.AppendToolCall(1, &llm.ToolCall{ID: "call_1", Name: "read_file", Args: `{"expr":"1+2"}`})
+	_ = sess.AppendToolResult(1, &llm.ToolCall{ID: "call_1", Name: "read_file"}, 3, "3", nil)
+	_ = sess.AppendAssistantMessage(2, "结果是 3", "推理：1+2=3", nil, llm.Usage{PromptTokens: 10})
 	_ = sess.Append(event.SessionEventCompactionSummary, event.CompactionSummaryData{Summary: "已确认计算结果为 3", ShadowedFrom: 2, ShadowedTo: 3})
 	sess.Header.CWD = "/tmp/work"
 	sess.State = TaskState{
@@ -84,8 +84,8 @@ func TestRestoreSession_Invalid(t *testing.T) {
 // TestSessionEventSeqContinuous Seq 必须从 1 开始连续递增（不变式）。
 func TestSessionEventSeqContinuous(t *testing.T) {
 	sess := NewSession("s1")
-	_ = sess.appendUserMessage("hi", "user")
-	_ = sess.appendAssistantMessage(1, "hello", "", nil, llm.Usage{})
+	_ = sess.AppendUserMessage("hi", "user")
+	_ = sess.AppendAssistantMessage(1, "hello", "", nil, llm.Usage{})
 	if len(sess.Events) != 2 {
 		t.Fatalf("events = %d, want 2", len(sess.Events))
 	}
@@ -99,12 +99,12 @@ func TestSessionEventSeqContinuous(t *testing.T) {
 // TestDeriveMessages 投影规则：消息事件重建、chunk 聚合、摘要替换语义。
 func TestDeriveMessages(t *testing.T) {
 	sess := NewSession("s1")
-	_ = sess.appendUserMessage("用户输入", "user")
-	_ = sess.appendAssistantMessage(1, "回答一", "思考一", nil, llm.Usage{})
+	_ = sess.AppendUserMessage("用户输入", "user")
+	_ = sess.AppendAssistantMessage(1, "回答一", "思考一", nil, llm.Usage{})
 	_ = sess.Append(event.SessionEventAssistantChunk, event.AssistantChunkData{Turn: 2, Delta: "部"})
 	_ = sess.Append(event.SessionEventAssistantChunk, event.AssistantChunkData{Turn: 2, Delta: "分"})
-	_ = sess.appendAssistantMessage(2, "调用工具", "思考二", []llm.ToolCall{{ID: "c1", Name: "read_file", Args: `{"a":1}`}}, llm.Usage{})
-	_ = sess.appendToolResult(2, &llm.ToolCall{ID: "c1", Name: "read_file"}, 1, "1", nil)
+	_ = sess.AppendAssistantMessage(2, "调用工具", "思考二", []llm.ToolCall{{ID: "c1", Name: "read_file", Args: `{"a":1}`}}, llm.Usage{})
+	_ = sess.AppendToolResult(2, &llm.ToolCall{ID: "c1", Name: "read_file"}, 1, "1", nil)
 
 	msgs := sess.Messages()
 	if len(msgs) != 4 {
@@ -138,10 +138,10 @@ func TestDeriveMessagesChunkOnly(t *testing.T) {
 // TestDeriveMessagesCompactionSummary 压缩摘要替换阴影范围内的旧消息。
 func TestDeriveMessagesCompactionSummary(t *testing.T) {
 	sess := NewSession("s1")
-	_ = sess.appendUserMessage("问题一", "user")
-	_ = sess.appendAssistantMessage(1, "回答一", "", nil, llm.Usage{})
-	_ = sess.appendUserMessage("问题二", "user")
-	_ = sess.appendAssistantMessage(2, "回答二", "", nil, llm.Usage{})
+	_ = sess.AppendUserMessage("问题一", "user")
+	_ = sess.AppendAssistantMessage(1, "回答一", "", nil, llm.Usage{})
+	_ = sess.AppendUserMessage("问题二", "user")
+	_ = sess.AppendAssistantMessage(2, "回答二", "", nil, llm.Usage{})
 	// 压缩：摘要替换前 2 条消息事件（seq 1-2）
 	_ = sess.Append(event.SessionEventCompactionSummary, event.CompactionSummaryData{
 		Summary: "历史摘要", ShadowedFrom: 1, ShadowedTo: 2,

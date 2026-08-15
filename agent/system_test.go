@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/tool"
 )
@@ -31,9 +32,9 @@ func TestRenderSystem(t *testing.T) {
 }
 
 func TestDefaultSystemAssemblerSections(t *testing.T) {
-	sess := NewSession("s1")
+	sess := session.NewSession("s1")
 	sess.State.Goal = "统计日志错误"
-	sess.State.AddFact(Fact{Tool: "grep", Summary: "找到 3 处 ERROR", Evidence: "log"})
+	sess.State.AddFact(session.Fact{Tool: "grep", Summary: "找到 3 处 ERROR", Evidence: "log"})
 
 	asm := NewDefaultSystemAssembler(SystemAssemblerConfig{
 		Constraints: "你是 MoS 智能体",
@@ -58,7 +59,7 @@ func TestDefaultSystemAssemblerSections(t *testing.T) {
 	if sections[1].Content != "统计日志错误" {
 		t.Fatalf("task = %q", sections[1].Content)
 	}
-	// 当前状态槽位 = TaskState 快照（仅已验证事实）
+	// 当前状态槽位 = session.TaskState 快照（仅已验证事实）
 	if !strings.Contains(sections[2].Content, "找到 3 处 ERROR") {
 		t.Fatalf("state = %q", sections[2].Content)
 	}
@@ -75,7 +76,7 @@ func TestDefaultSystemAssemblerSections(t *testing.T) {
 func TestSystemAssemblerStateRefresh(t *testing.T) {
 	asm := NewDefaultSystemAssembler(SystemAssemblerConfig{Constraints: "约束"})
 
-	sess := NewSession("s1")
+	sess := session.NewSession("s1")
 	sess.State.Goal = "x"
 	before, err := asm.Assemble(context.Background(), sess, nil)
 	if err != nil {
@@ -83,7 +84,7 @@ func TestSystemAssemblerStateRefresh(t *testing.T) {
 	}
 	beforeState := RenderSystem(before)
 
-	sess.State.AddFact(Fact{Tool: "grep", Summary: "找到 2 处", Evidence: "e"})
+	sess.State.AddFact(session.Fact{Tool: "grep", Summary: "找到 2 处", Evidence: "e"})
 	after, err := asm.Assemble(context.Background(), sess, nil)
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
@@ -104,7 +105,7 @@ func TestSystemAssemblerCustomSlots(t *testing.T) {
 		Constraints: "约束",
 		EnableSlots: []SystemSlot{SlotTask},
 	})
-	sess := NewSession("s1")
+	sess := session.NewSession("s1")
 	sess.State.Goal = "目标"
 	sections, err := asm.Assemble(context.Background(), sess, []llm.Tool{{Name: "x"}})
 	if err != nil {
@@ -115,11 +116,11 @@ func TestSystemAssemblerCustomSlots(t *testing.T) {
 	}
 }
 
-// 运行时集成：每轮模型调用前系统提示词随 TaskState 进度动态刷新，
+// 运行时集成：每轮模型调用前系统提示词随 session.TaskState 进度动态刷新，
 // 且 system 引导始终只有一条（替换而非累积）。
 func TestAgentSystemAssemblerPerTurn(t *testing.T) {
 	reg := tool.NewRegistry()
-	if err := reg.Register(calculator{}); err != nil {
+	if err := reg.Register(readFile{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
 
@@ -131,7 +132,7 @@ func TestAgentSystemAssemblerPerTurn(t *testing.T) {
 		})
 	})
 
-	sess := NewSession("s1")
+	sess := session.NewSession("s1")
 	if _, err := a.Run(context.Background(), sess, "1+2=3?"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -153,8 +154,8 @@ func TestAgentSystemAssemblerPerTurn(t *testing.T) {
 		if req.Messages[0].Role != llm.RoleSystem {
 			t.Fatalf("turn %d: first message not system", i+1)
 		}
-		// 工具签名槽位：calculator 描述
-		if !strings.Contains(req.Messages[0].Content, "- calculator: 计算两个整数之和") {
+		// 工具签名槽位：read_file 描述
+		if !strings.Contains(req.Messages[0].Content, "- read_file: 读取文件内容") {
 			t.Fatalf("turn %d: tools slot missing: %q", i+1, req.Messages[0].Content)
 		}
 	}
@@ -185,7 +186,7 @@ func (m *recordingModel) Chat(_ context.Context, req *llm.Request) (*llm.Respons
 	return &llm.Response{Message: llm.Message{
 		Role:      llm.RoleAssistant,
 		Content:   "我来调用工具",
-		ToolCalls: []llm.ToolCall{{ID: "c1", Name: "calculator", Args: `{"a":1,"b":2}`}},
+		ToolCalls: []llm.ToolCall{{ID: "c1", Name: "read_file", Args: `{"a":1,"b":2}`}},
 	}}, nil
 }
 func (m *recordingModel) ChatStream(context.Context, *llm.Request, func(llm.StreamChunk) error) (*llm.Response, error) {

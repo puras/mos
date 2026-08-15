@@ -6,14 +6,15 @@ import (
 	"strings"
 	"testing"
 
+	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/tool"
 )
 
-// 已验证事实：只读工具（calculator）结果经审计门写入任务状态，模型自述不写入。
+// 已验证事实：只读工具（readFile）结果经审计门写入任务状态，模型自述不写入。
 func TestTaskStateVerifiedFact(t *testing.T) {
 	reg := tool.NewRegistry()
-	if err := reg.Register(calculator{}); err != nil {
+	if err := reg.Register(readFile{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
 
@@ -26,7 +27,7 @@ func TestTaskStateVerifiedFact(t *testing.T) {
 		}
 	})
 
-	sess := NewSession("s1")
+	sess := session.NewSession("s1")
 	if _, err := a.Run(context.Background(), sess, "1+2=3?"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -34,14 +35,14 @@ func TestTaskStateVerifiedFact(t *testing.T) {
 	if sess.State.Goal != "1+2=3?" {
 		t.Fatalf("goal = %q", sess.State.Goal)
 	}
-	if sess.State.Status != StatusCompleted {
+	if sess.State.Status != session.StatusCompleted {
 		t.Fatalf("status = %v, want completed", sess.State.Status)
 	}
 	if len(sess.State.Facts) != 1 {
 		t.Fatalf("facts = %+v, want 1 verified fact", sess.State.Facts)
 	}
 	f := sess.State.Facts[0]
-	if f.Tool != "calculator" || !strings.Contains(f.Summary, "3") {
+	if f.Tool != "read_file" || !strings.Contains(f.Summary, "3") {
 		t.Fatalf("fact = %+v", f)
 	}
 	// 审计事实事件已广播
@@ -61,7 +62,7 @@ func TestTaskStateIgnoresUnverified(t *testing.T) {
 	}
 
 	a := newReAct(mutatingModel{}, reg, nil)
-	sess := NewSession("s1")
+	sess := session.NewSession("s1")
 	if _, err := a.Run(context.Background(), sess, "写文件 B"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -73,11 +74,11 @@ func TestTaskStateIgnoresUnverified(t *testing.T) {
 // 多轮任务：已验证事实跨轮累积，原始目标只记录一次；相同证据自动去重。
 func TestTaskStateAcrossRuns(t *testing.T) {
 	reg := tool.NewRegistry()
-	if err := reg.Register(calculator{}); err != nil {
+	if err := reg.Register(readFile{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
 	a := newReAct(varyingModel{}, reg, nil)
-	sess := NewSession("s1")
+	sess := session.NewSession("s1")
 
 	if _, err := a.Run(context.Background(), sess, "第一题"); err != nil {
 		t.Fatalf("run 1: %v", err)
@@ -95,7 +96,7 @@ func TestTaskStateAcrossRuns(t *testing.T) {
 	}
 	// 状态摘要应包含全部已验证事实
 	snap := sess.State.Snapshot()
-	if !strings.Contains(snap, "已验证事实") || strings.Count(snap, "calculator") != 2 {
+	if !strings.Contains(snap, "已验证事实") || strings.Count(snap, "read_file") != 2 {
 		t.Fatalf("snapshot = %q", snap)
 	}
 }
@@ -103,11 +104,11 @@ func TestTaskStateAcrossRuns(t *testing.T) {
 // 相同工具 + 相同证据的事实只记录一次（审计报告去重）。
 func TestTaskStateDedup(t *testing.T) {
 	reg := tool.NewRegistry()
-	if err := reg.Register(calculator{}); err != nil {
+	if err := reg.Register(readFile{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
 	a := newReAct(mockModel{}, reg, nil)
-	sess := NewSession("s1")
+	sess := session.NewSession("s1")
 
 	if _, err := a.Run(context.Background(), sess, "一"); err != nil {
 		t.Fatalf("run 1: %v", err)
@@ -129,12 +130,12 @@ func TestTaskStateBlockedOnMaxTurns(t *testing.T) {
 	}
 	a := newReAct(alwaysCallModel{}, reg, func(rt *RunContext) { rt.MaxTurns = 2 })
 
-	sess := NewSession("s1")
+	sess := session.NewSession("s1")
 	_, err := a.Run(context.Background(), sess, "永远不完成的任务")
 	if err == nil {
 		t.Fatal("want max iterations error")
 	}
-	if sess.State.Status != StatusBlocked {
+	if sess.State.Status != session.StatusBlocked {
 		t.Fatalf("status = %v, want blocked", sess.State.Status)
 	}
 }
@@ -155,7 +156,7 @@ func (patcher) Execute(_ context.Context, _ json.RawMessage) (any, error) {
 	return "文件 B 已写入（自述）", nil
 }
 
-// varyingModel 每轮以不同参数调用 calculator（证据不同），两轮后作答。
+// varyingModel 每轮以不同参数调用 readFile（证据不同），两轮后作答。
 type varyingModel struct{}
 
 func (varyingModel) Capabilities() llm.Capability { return llm.CapFunctionCalling }
@@ -179,7 +180,7 @@ func (varyingModel) Chat(_ context.Context, req *llm.Request) (*llm.Response, er
 	return &llm.Response{Message: llm.Message{
 		Role:      llm.RoleAssistant,
 		Content:   "我来算",
-		ToolCalls: []llm.ToolCall{{ID: "c1", Name: "calculator", Args: args}},
+		ToolCalls: []llm.ToolCall{{ID: "c1", Name: "read_file", Args: args}},
 	}}, nil
 }
 func (varyingModel) ChatStream(context.Context, *llm.Request, func(llm.StreamChunk) error) (*llm.Response, error) {

@@ -6,18 +6,19 @@ import (
 	"strings"
 	"testing"
 
+	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/planner"
 	"hegq.net/mos/tool"
 )
 
-// countingCalculator 记录实际执行次数（验证截断时工具不执行）。
-type countingCalculator struct{ n int }
+// countingReadFile 记录实际执行次数（验证截断时工具不执行）。
+type countingReadFile struct{ n int }
 
-func (c *countingCalculator) Name() string        { return "calculator" }
-func (c *countingCalculator) Description() string { return "计算两个整数之和" }
-func (c *countingCalculator) Parameters() any     { return &calcParams{} }
-func (c *countingCalculator) Execute(_ context.Context, _ json.RawMessage) (any, error) {
+func (c *countingReadFile) Name() string        { return "read_file" }
+func (c *countingReadFile) Description() string { return "读取文件内容" }
+func (c *countingReadFile) Parameters() any     { return &calcParams{} }
+func (c *countingReadFile) Execute(_ context.Context, _ json.RawMessage) (any, error) {
 	c.n++
 	return map[string]any{"sum": 3}, nil
 }
@@ -33,7 +34,7 @@ func (m *truncModel) Chat(_ context.Context, _ *llm.Request) (*llm.Response, err
 			Message: llm.Message{
 				Role:      llm.RoleAssistant,
 				Content:   "被截断",
-				ToolCalls: []llm.ToolCall{{ID: "c1", Name: "calculator", Args: `{"a":1,"b":2}`}},
+				ToolCalls: []llm.ToolCall{{ID: "c1", Name: "read_file", Args: `{"a":1,"b":2}`}},
 			},
 			FinishReason: "length",
 		}, nil
@@ -47,7 +48,7 @@ func (m *truncModel) ChatStream(context.Context, *llm.Request, func(llm.StreamCh
 // TestTruncatedToolCallFailClosed：输出被截断时，已产出的工具调用不执行、
 // 显式失败回填（模型面有 tool/result 错误），循环继续到下一轮正常完成。
 func TestTruncatedToolCallFailClosed(t *testing.T) {
-	calc := &countingCalculator{}
+	calc := &countingReadFile{}
 	reg := tool.NewRegistry()
 	if err := reg.Register(calc); err != nil {
 		t.Fatalf("register tool: %v", err)
@@ -58,7 +59,7 @@ func TestTruncatedToolCallFailClosed(t *testing.T) {
 		MaxTurns: 5,
 	})
 
-	sess := NewSession("s1")
+	sess := session.NewSession("s1")
 	out, err := a.Run(context.Background(), sess, "计算")
 	if err != nil {
 		t.Fatalf("Run: %v", err)

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/planner"
 	"hegq.net/mos/tool"
@@ -56,7 +57,7 @@ func (m *doomModel) Chat(_ context.Context, _ *llm.Request) (*llm.Response, erro
 	return &llm.Response{Message: llm.Message{
 		Role:      llm.RoleAssistant,
 		Content:   "再试一次",
-		ToolCalls: []llm.ToolCall{{ID: fmt.Sprintf("c%d", m.n), Name: "calculator", Args: `{"a":1,"b":2}`}},
+		ToolCalls: []llm.ToolCall{{ID: fmt.Sprintf("c%d", m.n), Name: "read_file", Args: `{"a":1,"b":2}`}},
 	}}, nil
 }
 func (m *doomModel) ChatStream(context.Context, *llm.Request, func(llm.StreamChunk) error) (*llm.Response, error) {
@@ -65,7 +66,7 @@ func (m *doomModel) ChatStream(context.Context, *llm.Request, func(llm.StreamChu
 
 func TestDoomLoopInAgent(t *testing.T) {
 	reg := tool.NewRegistry()
-	if err := reg.Register(calculator{}); err != nil {
+	if err := reg.Register(readFile{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
 	a := New(&RunContext{
@@ -75,12 +76,12 @@ func TestDoomLoopInAgent(t *testing.T) {
 		MaxTurns:          10,
 	})
 
-	sess := NewSession("s1")
+	sess := session.NewSession("s1")
 	_, err := a.Run(context.Background(), sess, "反复执行")
 	if err == nil || !strings.Contains(err.Error(), "doom loop") {
 		t.Fatalf("应中断为 doom loop 错误: %v", err)
 	}
-	if sess.State.Status != StatusBlocked {
+	if sess.State.Status != session.StatusBlocked {
 		t.Fatalf("Doom Loop 后状态应 blocked: %s", sess.State.Status)
 	}
 }
@@ -97,7 +98,7 @@ func (usageModel) Chat(_ context.Context, req *llm.Request) (*llm.Response, erro
 	return &llm.Response{Message: llm.Message{
 		Role:      llm.RoleAssistant,
 		Content:   "调用",
-		ToolCalls: []llm.ToolCall{{ID: "c1", Name: "calculator", Args: `{"a":1,"b":2}`}},
+		ToolCalls: []llm.ToolCall{{ID: "c1", Name: "read_file", Args: `{"a":1,"b":2}`}},
 	}, Usage: llm.Usage{PromptTokens: 5000, TotalTokens: 5010}}, nil
 }
 func (usageModel) ChatStream(context.Context, *llm.Request, func(llm.StreamChunk) error) (*llm.Response, error) {
@@ -106,7 +107,7 @@ func (usageModel) ChatStream(context.Context, *llm.Request, func(llm.StreamChunk
 
 func TestContextUsageMonitoring(t *testing.T) {
 	reg := tool.NewRegistry()
-	if err := reg.Register(calculator{}); err != nil {
+	if err := reg.Register(readFile{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
 	var usageEvents []Event
@@ -121,7 +122,7 @@ func TestContextUsageMonitoring(t *testing.T) {
 		},
 	})
 
-	sess := NewSession("s1")
+	sess := session.NewSession("s1")
 	if _, err := a.Run(context.Background(), sess, "统计用量"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}

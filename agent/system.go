@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 
+	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 )
 
@@ -47,15 +48,15 @@ type SystemSection struct {
 // 每次模型调用前（每轮）执行，可依据最新的 TaskState 动态产出——
 // 当前状态 / 任务定义随进度刷新，固定指令（系统约束）保持不变。
 type SystemAssembler interface {
-	Assemble(ctx context.Context, sess *Session, tools []llm.Tool) ([]SystemSection, error)
+	Assemble(ctx context.Context, sess *session.Session, tools []llm.Tool) ([]SystemSection, error)
 }
 
 // SystemAssemblerFunc 是 SystemAssembler 的函数式适配器，
 // 便于应用层以闭包形式实现自定义组装器。
-type SystemAssemblerFunc func(ctx context.Context, sess *Session, tools []llm.Tool) ([]SystemSection, error)
+type SystemAssemblerFunc func(ctx context.Context, sess *session.Session, tools []llm.Tool) ([]SystemSection, error)
 
 // Assemble 实现 SystemAssembler。
-func (f SystemAssemblerFunc) Assemble(ctx context.Context, sess *Session, tools []llm.Tool) ([]SystemSection, error) {
+func (f SystemAssemblerFunc) Assemble(ctx context.Context, sess *session.Session, tools []llm.Tool) ([]SystemSection, error) {
 	return f(ctx, sess, tools)
 }
 
@@ -103,7 +104,7 @@ type defaultSystemAssembler struct {
 
 // Assemble 实现 SystemAssembler：按固定顺序输出启用的槽位分段。
 // 项目指令与技能清单仅在首次调用时从磁盘加载（配置不变则缓存复用）。
-func (a *defaultSystemAssembler) Assemble(ctx context.Context, sess *Session, tools []llm.Tool) ([]SystemSection, error) {
+func (a *defaultSystemAssembler) Assemble(ctx context.Context, sess *session.Session, tools []llm.Tool) ([]SystemSection, error) {
 	a.once.Do(func() {
 		a.project, a.loadErr = LoadProjectDocs(a.cfg.ProjectDocDir)
 		if a.loadErr != nil {

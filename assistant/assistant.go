@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 
 	"hegq.net/mos/agent"
+	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/planner"
 	"hegq.net/mos/tool"
@@ -30,7 +31,7 @@ type Assistant struct {
 //
 // 工具名称与参数描述已随 function calling 提供给模型，此处不重复清单，
 // 只保留"何时用、如何用、如何纠错、安全与输出规范"等高信号准则。
-const DefaultSystemPrompt = `你是 MoS 智能体，一个通过调用工具解决问题的通用助手。当前可用的工具包括：计算、时间、联网搜索与网页抓取、文件读写与检索、shell 命令执行。
+const DefaultSystemPrompt = `你是 MoS 智能体，一个通过调用工具解决问题的通用助手。当前可用的工具包括：时间、联网搜索与网页抓取、文件读写与检索、shell 命令执行。
 
 一、任务处理方法
 1. 先理解再行动：确认用户真实意图；需求模糊时先澄清，不猜测。
@@ -83,20 +84,21 @@ func New(model llm.ChatModel, tools []tool.Tool, cfg Config) (*Assistant, error)
 	// Auditor / Truncator / Compactor 由 agent.NewReAct 默认装配（nil 时使用默认实现）。
 
 	rt := &agent.RunContext{
-		Tools:             reg,
-		Planner:           cfg.Planner,
-		Memory:            cfg.Memory,
-		Sandbox:           cfg.Sandbox,
-		Policy:            cfg.Policy,
-		Auditor:           cfg.Auditor,
-		Observer:          cfg.Observer,
-		Retriever:         cfg.Retriever,
-		RetrieverCfg:      agent.RetrieverConfig{MinScore: cfg.RetrieverMinScore},
-		Truncator:         cfg.Truncator,
-		Compactor:         cfg.Compactor,
-		MaxTurns:          cfg.MaxTurns,
-		ContextBudget:     cfg.ContextBudget,
-		DoomLoopMaxRepeat: cfg.DoomLoopMaxRepeat,
+		Tools:               reg,
+		Planner:             cfg.Planner,
+		Memory:              cfg.Memory,
+		Sandbox:             cfg.Sandbox,
+		Policy:              cfg.Policy,
+		Auditor:             cfg.Auditor,
+		Observer:            cfg.Observer,
+		Retriever:           cfg.Retriever,
+		RetrieverCfg:        agent.RetrieverConfig{MinScore: cfg.RetrieverMinScore},
+		Truncator:           cfg.Truncator,
+		Compactor:           cfg.Compactor,
+		MaxTurns:            cfg.MaxTurns,
+		ShouldStopAfterTurn: cfg.ShouldStopAfterTurn,
+		ContextBudget:       cfg.ContextBudget,
+		DoomLoopMaxRepeat:   cfg.DoomLoopMaxRepeat,
 	}
 	// M2.6 系统提示词：显式组装器优先；配置了项目指令/技能目录时自动构建默认组装器；
 	// 否则回退到 SystemPrompt 静态引导（既有行为不变）。
@@ -127,17 +129,17 @@ func (a *Assistant) Config() Config { return a.config }
 func (a *Assistant) Policy() agent.Policy { return a.policy }
 
 // NewSession 创建一个新会话（默认生成 UUID 作为会话 ID，供多会话持久化与恢复）。
-// 需要自定义 ID 时可直接 agent.NewSession(id)。
-func (a *Assistant) NewSession() *agent.Session { return agent.NewSession(uuid.NewString()) }
+// 需要自定义 ID 时可直接 session.NewSession(id)。
+func (a *Assistant) NewSession() *session.Session { return session.NewSession(uuid.NewString()) }
 
 // Run 在会话上执行一次任务。
-func (a *Assistant) Run(ctx context.Context, sess *agent.Session, input string) (string, error) {
+func (a *Assistant) Run(ctx context.Context, sess *session.Session, input string) (string, error) {
 	return a.agent.Run(ctx, sess, input)
 }
 
 // RunStream 同 Run，但模型文本增量会实时广播为 EventStream 事件（打字机效果），
 // 模型或规划器不支持流式时自动回退为非流式路径。
-func (a *Assistant) RunStream(ctx context.Context, sess *agent.Session, input string) (string, error) {
+func (a *Assistant) RunStream(ctx context.Context, sess *session.Session, input string) (string, error) {
 	return a.agent.RunStream(ctx, sess, input)
 }
 

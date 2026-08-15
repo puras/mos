@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"hegq.net/mos/agent/session"
 )
 
 func TestHookBusWaterfallOrder(t *testing.T) {
@@ -11,12 +13,12 @@ func TestHookBusWaterfallOrder(t *testing.T) {
 	var order []string
 	hb.On(HookPreStep, func(_ context.Context, ev *HookEvent, next Next) (*HookEvent, error) {
 		order = append(order, "a")
-		ev.Messages = append(ev.Messages, UserMsg("注入A"))
+		ev.Messages = append(ev.Messages, session.UserMsg("注入A"))
 		return next(ctxForTest(), ev)
 	})
 	hb.On(HookPreStep, func(_ context.Context, ev *HookEvent, next Next) (*HookEvent, error) {
 		order = append(order, "b")
-		ev.Messages = append(ev.Messages, UserMsg("注入B"))
+		ev.Messages = append(ev.Messages, session.UserMsg("注入B"))
 		return next(ctxForTest(), ev)
 	})
 	out, err := hb.Waterfall(ctxForTest(), &HookEvent{Kind: HookPreStep})
@@ -36,7 +38,7 @@ func TestHookBusShortCircuit(t *testing.T) {
 	var order []string
 	hb.On(HookPreStep, func(_ context.Context, ev *HookEvent, next Next) (*HookEvent, error) {
 		order = append(order, "a")
-		ev.Messages = append(ev.Messages, UserMsg("改写"))
+		ev.Messages = append(ev.Messages, session.UserMsg("改写"))
 		return ev, nil // 不调用 next → 短路
 	})
 	hb.On(HookPreStep, func(_ context.Context, _ *HookEvent, _ Next) (*HookEvent, error) {

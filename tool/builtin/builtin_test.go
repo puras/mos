@@ -10,46 +10,6 @@ import (
 	"testing"
 )
 
-func TestEvalExpr(t *testing.T) {
-	cases := []struct {
-		expr string
-		want float64
-	}{
-		{"1+2", 3},
-		{"1+2*3", 7},
-		{"(1+2)*3", 9},
-		{"10/4", 2.5},
-		{"-5+3", -2},
-		{"7%3", 1},
-		{" 2 * (3 + 4) ", 14},
-	}
-	for _, c := range cases {
-		got, err := evalExpr(c.expr)
-		if err != nil {
-			t.Fatalf("eval %q: %v", c.expr, err)
-		}
-		if got != c.want {
-			t.Fatalf("eval %q = %v, want %v", c.expr, got, c.want)
-		}
-	}
-	if _, err := evalExpr("1+"); err == nil {
-		t.Fatal("invalid expr should fail")
-	}
-	if _, err := evalExpr("1/0"); err == nil {
-		t.Fatal("divide by zero should fail")
-	}
-}
-
-func TestCalculatorExecute(t *testing.T) {
-	res, err := Calculator{}.Execute(context.Background(), json.RawMessage(`{"expr":"(1+2)*3"}`))
-	if err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-	if res != "9" {
-		t.Fatalf("result = %v, want 9", res)
-	}
-}
-
 func TestCurrentTimeExecute(t *testing.T) {
 	res, err := CurrentTime{}.Execute(context.Background(), json.RawMessage(`{"timezone":"UTC"}`))
 	if err != nil {
@@ -142,7 +102,7 @@ func TestDefault(t *testing.T) {
 		}
 		names[tl.Name()] = true
 	}
-	want := []string{"calculator", "current_time", "read_file", "write_file", "find_files", "grep", "web_fetch"}
+	want := []string{"shell", "current_time", "read_file", "write_file", "find_files", "grep", "web_fetch"}
 	if len(names) != len(want) {
 		t.Fatalf("Default() has %d tools, want %d", len(names), len(want))
 	}

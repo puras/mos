@@ -1,4 +1,4 @@
-package agent
+package session
 
 import "hegq.net/mos/llm"
 
@@ -52,13 +52,13 @@ func CustomMsg(source, content string) InternalMessage {
 	return InternalMessage{Message: llm.Message{Role: "", Content: content}, Source: source}
 }
 
-// convertToLlm 是两层消息的翻译边界（M2.4）：
+// ConvertToLlm 是两层消息的翻译边界（M2.4）：
 // 将内部结构化消息翻译为 LLM 标准消息（llm.Message），发送给规划器/模型前统一执行。
 // 规则：
 //  1. 过滤 ExcludeFromContext 的消息（不进模型上下文）。
 //  2. 标准角色（system/user/assistant/tool）原样转换。
 //  3. 摘要消息（Summary）与自定义消息统一转 user 角色，并按来源标注格式。
-func convertToLlm(msgs []InternalMessage) []llm.Message {
+func ConvertToLlm(msgs []InternalMessage) []llm.Message {
 	out := make([]llm.Message, 0, len(msgs))
 	for i := range msgs {
 		m := &msgs[i]

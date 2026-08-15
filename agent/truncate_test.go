@@ -8,6 +8,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/tool"
 	"hegq.net/mos/tool/builtin"
@@ -168,7 +169,7 @@ type captureAuditor struct {
 	gotRaw any
 }
 
-func (c *captureAuditor) Audit(_ context.Context, _ *llm.ToolCall, result any) ([]Fact, error) {
+func (c *captureAuditor) Audit(_ context.Context, _ *llm.ToolCall, result any) ([]session.Fact, error) {
 	c.gotRaw = result
 	return nil, nil
 }
@@ -186,14 +187,14 @@ func TestTruncatorInAgentKeepsAuditRaw(t *testing.T) {
 		rt.Truncator = tr
 	})
 
-	sess := NewSession("s1")
+	sess := session.NewSession("s1")
 	if _, err := a.Run(context.Background(), sess, "读文件"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
 	// 模型可见消息中的 tool 消息应被截断（含逃生通道提示）
 	msgs := sess.Messages()
-	var toolMsg *InternalMessage
+	var toolMsg *session.InternalMessage
 	for i := range msgs {
 		if msgs[i].Role == llm.RoleTool {
 			toolMsg = &msgs[i]

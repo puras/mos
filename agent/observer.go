@@ -1,7 +1,10 @@
 // Package agent 提供智能体运行时：任务循环、会话管理与事件通知。
 package agent
 
-import "hegq.net/mos/llm"
+import (
+	"hegq.net/mos/agent/session"
+	"hegq.net/mos/llm"
+)
 
 // EventType 表示运行时事件的类型。
 type EventType int
@@ -38,8 +41,8 @@ type Event struct {
 	Delta      string // 预留：流式文本增量
 	ToolCall   *llm.ToolCall
 	ToolResult any
-	Fact       *Fact     // EventFact：审计通过的已验证事实
-	Usage      llm.Usage // EventContextUsage：模型 token 用量
+	Fact       *session.Fact // EventFact：审计通过的已验证事实
+	Usage      llm.Usage     // EventContextUsage：模型 token 用量
 }
 
 // Observer 是事件回调函数。

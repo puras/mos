@@ -1,6 +1,9 @@
 package agent
 
-import "hegq.net/mos/llm"
+import (
+	"hegq.net/mos/agent/session"
+	"hegq.net/mos/llm"
+)
 
 // Compactor 对消息历史做 fresh-context 压缩（M2.5 上下文工程）。
 // 压缩发生在两轮之间：历史超过阈值时，将旧消息压缩为摘要注入，保留最近消息，
@@ -10,7 +13,7 @@ type Compactor interface {
 	// 第二返回值表示是否发生了压缩（false 时第一返回值无效）。
 	// 压缩摘要直接采用审计写入的 TaskState.Snapshot()，而非 LLM 重新总结——
 	// 已被环境独立验证过的事实才进入压缩摘要，模型自述不算数。
-	Compact(history []InternalMessage, state *TaskState) ([]InternalMessage, bool)
+	Compact(history []session.InternalMessage, state *session.TaskState) ([]session.InternalMessage, bool)
 }
 
 // CompactorConfig 是默认压缩器的配置。
@@ -37,7 +40,7 @@ type defaultCompactor struct {
 // Compact 实现 Compactor。
 // 切割规则：从尾部保留 KeepRecent 条；切割点不切断 ToolCall-Result 对——
 // 保留区首条若是 tool 结果（其 assistant 调用被切），前移切割点使成对保留。
-func (c *defaultCompactor) Compact(history []InternalMessage, state *TaskState) ([]InternalMessage, bool) {
+func (c *defaultCompactor) Compact(history []session.InternalMessage, state *session.TaskState) ([]session.InternalMessage, bool) {
 	// 定位可压缩区（排除开头的 system 引导，system 由 Agent 每轮注入）
 	start := 0
 	if len(history) > 0 && history[0].Role == llm.RoleSystem {
@@ -57,9 +60,9 @@ func (c *defaultCompactor) Compact(history []InternalMessage, state *TaskState) 
 	kept := msgs[cut:]
 
 	// 摘要注入：采用审计写入的 TaskState（已验证事实），经翻译边界转 user 角色注入
-	summary := SummaryMsg(state.Snapshot())
+	summary := session.SummaryMsg(state.Snapshot())
 
-	out := make([]InternalMessage, 0, len(kept)+2)
+	out := make([]session.InternalMessage, 0, len(kept)+2)
 	if start > 0 {
 		out = append(out, history[0])
 	}

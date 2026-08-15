@@ -12,12 +12,12 @@ type calcParams struct {
 	B int `json:"b" mos:"desc=被加数"`
 }
 
-type calculator struct{}
+type readFile struct{}
 
-func (calculator) Name() string        { return "calculator" }
-func (calculator) Description() string { return "计算两个整数之和" }
-func (calculator) Parameters() any     { return &calcParams{} }
-func (calculator) Execute(_ context.Context, args json.RawMessage) (any, error) {
+func (readFile) Name() string        { return "read_file" }
+func (readFile) Description() string { return "读取文件内容" }
+func (readFile) Parameters() any     { return &calcParams{} }
+func (readFile) Execute(_ context.Context, args json.RawMessage) (any, error) {
 	p, err := Parse[calcParams](args)
 	if err != nil {
 		return nil, err
@@ -56,23 +56,23 @@ func TestGenerateSchema(t *testing.T) {
 
 func TestRegistry(t *testing.T) {
 	r := NewRegistry()
-	if err := r.Register(calculator{}); err != nil {
+	if err := r.Register(readFile{}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	// 重名注册应报错
-	if err := r.Register(calculator{}); err == nil {
+	if err := r.Register(readFile{}); err == nil {
 		t.Fatal("duplicate register should fail")
 	}
 
-	got, ok := r.Get("calculator")
+	got, ok := r.Get("read_file")
 	if !ok {
 		t.Fatal("tool not found")
 	}
-	if got.Name() != "calculator" {
+	if got.Name() != "read_file" {
 		t.Fatalf("name = %s", got.Name())
 	}
 
-	res, err := r.Call(context.Background(), "calculator", json.RawMessage(`{"a":1,"b":2}`))
+	res, err := r.Call(context.Background(), "read_file", json.RawMessage(`{"a":1,"b":2}`))
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestRegistry(t *testing.T) {
 	}
 
 	list := r.List()
-	if len(list) != 1 || list[0].Name != "calculator" {
+	if len(list) != 1 || list[0].Name != "read_file" {
 		t.Fatalf("list = %+v", list)
 	}
 	if _, ok := list[0].Parameters.(map[string]any); !ok {
@@ -93,11 +93,11 @@ func TestRegistry(t *testing.T) {
 	}
 }
 
-type calcA struct{ calculator }
+type calcA struct{ readFile }
 
 func (calcA) Name() string { return "calcA" }
 
-type calcB struct{ calculator }
+type calcB struct{ readFile }
 
 func (calcB) Name() string { return "calcB" }
 

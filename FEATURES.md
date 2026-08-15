@@ -38,7 +38,7 @@ MoS 是 SDK，不参与服务化能力范畴：Web UI / API 网关 / 任务调�
 ### 3.2 工具系统（`tool/`）
 - 声明式工具：结构体 + tag 自动生成 JSON Schema，参数自动校验解析（`tool.Parse`）
 - `Registry` 注册 / 查询 / 统一执行；`Call` 入口带参数容错（拼接 JSON 合并为单一对象）
-- 内置工具包 `tool/builtin`：calculator / current_time / web_fetch / read_file / write_file / find_files / grep，纯标准库
+- 内置工具包 `tool/builtin`：shell / current_time / web_fetch / read_file / write_file / find_files / grep，纯标准库
 - 扩展工具包 `tool/extension`：shell（沙箱受限执行）、web_search（DuckDuckGo / Tavily / Serper / Brave / SearXNG）
 - 工具输出截断（M2.3）：行数 / 字节双重限制 + 按工具类型智能截断 + 逃生通道（完整结果落盘、提示模型按偏移回读）
 - 沙箱 `tool.Sandbox`：工作目录 jail + 超时 + 输出上限 + 进程资源限制 + 环境裁剪 + 网络控制
@@ -53,15 +53,15 @@ MoS 是 SDK，不参与服务化能力范畴：Web UI / API 网关 / 任务调�
 - **fresh-context 压缩（M2.5）**：超 `KeepRecent` 触发，不切断 ToolCall-Result 对；摘要直接采用 `TaskState.Snapshot()`
 - **Doom Loop 检测（M2.5）**：相同工具 + 参数连续 N 次 → 单调守卫拦截（`DoomLoopGuard`），上下文利用率 40% 告警线事件广播
 - **系统提示词动态组装（M2.6）**：槽位化（系统约束 / 任务定义 / 当前状态 / 工具签名 / 项目指令 / 技能清单 / 历史摘要）；CLAUDE.md 向上递归、就近覆盖；Skills 懒加载（SKILL.md frontmatter 清单，正文按需读取）
-- **RAG 注入（M2.7）**：每轮按 Goal 检索，知识守门（源验证 / 冲突裁决 / 知识差距检测 / MaxChunks 截断），注入只作用于当轮发送副本、不进历史
+- **RAG 注入（M2.7，扩展点）**：`memory.Retriever` 接口 + 每轮按 Goal 检索注入，知识守门（源验证 / 冲突裁决 / 知识差距检测 / MaxChunks 截断），注入只作用于当轮发送副本、不进历史；实现由使用方提供（原 `memory/longterm` 已移除）
 
 ### 3.4 决策规划（`planner/`）
 - `Planner` / `StreamingPlanner` 接口可插拔，`ReAct` 默认实现（`planner.NewReAct(model)`）
 - 装饰器：`WithLogging` / `WithRetry`
 
 ### 3.5 长期记忆（`memory/`）
-- `memory.Memory` 统一接口；`memory/longterm`：SQLite（modernc 纯 Go 驱动，零 CGO）+ FTS5 全文索引
-- 混合检索 = FTS5 BM25 + Go 侧向量余弦（未配置 Embedder 退化为纯 BM25）；中文检索（CJK 空格化）
+- `memory.Memory`（会话记忆接口，预留）+ `memory.Retriever`（RAG 检索扩展点，agent 每轮注入钩子保留）
+- 原 `memory/longterm`（SQLite + FTS5 + 向量）实现已移除（2026-08 精简：参考 DSH/PI 均未内置 RAG），实现由使用方按需提供
 - 装饰器 `memory/wrap`：`WithLogging` / `WithRetry`
 
 ### 3.6 安全防护（M1.5 + M1.6 + M2.8 雏形）
@@ -85,10 +85,10 @@ MoS 是 SDK，不参与服务化能力范畴：Web UI / API 网关 / 任务调�
 | `tool/` | 工具注册与执行、内置 / 扩展工具包、沙箱 |
 | `planner/` | Planner 接口与 ReAct 默认实现、装饰器 |
 | `agent/` | v2 核心：EventBus / HookBus / GuardBus / LoopDriver / Session 事件日志 / 审计 / 状态 / 压缩 / DoomLoop / 系统提示词 / RAG / 截断 |
-| `memory/` | 记忆接口、longterm（sqlite + FTS5 + 向量）、装饰器 |
+| `memory/` | 记忆接口（Memory + Retriever 扩展点）、装饰器 |
 | `assistant/` | 组装层、默认策略（policy 三文件）、确认器 |
 
-SDK 零第三方依赖（仅依赖本地 `hegq.net/mogo` 与 `modernc.org/sqlite`）。
+SDK 零第三方依赖（仅依赖本地协议库 `hegq.net/mogo`）。
 
 ## 5. 完整性评估
 
@@ -98,7 +98,7 @@ SDK 零第三方依赖（仅依赖本地 `hegq.net/mogo` 与 `modernc.org/sqlite
 - ❌ **未开始（5 项）**：M2.9 经验记忆、M2.10 工具规模化、M3 多智能体编排、M4 生产化、M5 自我进化
 
 ### 5.2 质量现状
-- 测试：SDK 全部测试通过（agent 85% / assistant 83% / tool 86% / planner 89% / llm 94% / longterm 85%），含 llm 适配器 httptest 协议模拟
+- 测试：SDK 全部测试通过（agent / assistant / tool / planner / llm 等），含 llm 适配器 httptest 协议模拟
 
 ### 5.3 已知问题与风险
 - **事件驱动改造待继续**：HookBus 已落地但 LoopDriver 生态只有 ReActDriver；Plan&Execute / Reflection 驱动、声明式配置装配（YAML）未实现

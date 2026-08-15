@@ -50,27 +50,27 @@ sess, err := agent.RestoreSession(data)
     {
       "seq": 1,                        // 从 1 起连续递增（不变式）
       "type": "user/message",          // turn/* | step/* | user/message | assistant/* | tool/* | compaction/*
-      "data": {"message": "请计算 1+2", "source": "user"}
+      "data": {"message": "现在几点了？", "source": "user"}
     },
     {
       "seq": 2,
       "type": "assistant/message",
-      "data": {"turn": 1, "content": "我来计算", "reasoning": "", "tool_calls": [], "usage": {}}
+      "data": {"turn": 1, "content": "我来查询当前时间", "reasoning": "", "tool_calls": [], "usage": {}}
     },
     {
       "seq": 3,
       "type": "tool/call",
-      "data": {"turn": 1, "call_id": "c1", "name": "calculator", "args": "{\"expr\":\"1+2\"}"}
+      "data": {"turn": 1, "call_id": "c1", "name": "current_time", "args": "{\"timezone\":\"UTC\"}"}
     },
     {
       "seq": 4,
       "type": "tool/result",
-      "data": {"turn": 1, "call_id": "c1", "name": "calculator", "result": 3, "text": "3"}
+      "data": {"turn": 1, "call_id": "c1", "name": "current_time", "result": "2026-08-15 09:30:00", "text": "2026-08-15 09:30:00 UTC"}
     }
   ],
   "state": {
-    "goal": "请计算 1+2",
-    "facts": [{"summary": "", "evidence": "", "tool": "calculator"}],
+    "goal": "现在几点了？",
+    "facts": [{"summary": "", "evidence": "", "tool": "current_time"}],
     "pending": [],
     "blocked": [],
     "status": "completed"             // pending | running | blocked | completed

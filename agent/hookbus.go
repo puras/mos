@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 
+	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 )
 
@@ -22,12 +23,12 @@ const (
 // HookEvent 是钩子链中流转的载荷：不同环节使用不同字段。
 type HookEvent struct {
 	Kind       HookKind
-	Messages   []InternalMessage // pre-step：模型输入（可改写）
-	Req        *llm.Request      // request：请求配置（可改写，预留）
-	ToolCall   *llm.ToolCall     // tool/pre-execute、tool/execute
-	Result     any               // tool/execute、tool/post-execute：工具原始返回值
-	ResultText string            // tool/post-execute：给模型看的文本（截断后）
-	Err        error             // tool/execute：工具执行错误
+	Messages   []session.InternalMessage // pre-step：模型输入（可改写）
+	Req        *llm.Request              // request：请求配置（可改写，预留）
+	ToolCall   *llm.ToolCall             // tool/pre-execute、tool/execute
+	Result     any                       // tool/execute、tool/post-execute：工具原始返回值
+	ResultText string                    // tool/post-execute：给模型看的文本（截断后）
+	Err        error                     // tool/execute：工具执行错误
 	Turn       int
 	Step       int
 }

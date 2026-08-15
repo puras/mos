@@ -10,11 +10,47 @@ import (
 	"strings"
 	"testing"
 
+	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/llm/openai"
 	"hegq.net/mos/planner"
 	"hegq.net/mos/tool"
 )
+
+// TestShouldStopAfterTurn 验证外部停止裁决（对齐 PI shouldStopAfterTurn）：
+// 工具执行后回调返回 true 时，任务以 completed 收尾且不再发起下一轮。
+func TestShouldStopAfterTurn(t *testing.T) {
+	reg := tool.NewRegistry()
+	if err := reg.Register(readFile{}); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+	var stopped bool
+	a := newReAct(mockModel{}, reg, func(rt *RunContext) {
+		rt.ShouldStopAfterTurn = func(ctx context.Context, sess *session.Session, turn int, action *planner.Action) (bool, error) {
+			stopped = true
+			return true, nil
+		}
+	})
+
+	sess := session.NewSession("s1")
+	reply, err := a.Run(context.Background(), sess, "1+2=3?")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if reply != "我来调用工具" {
+		t.Fatalf("reply = %q, want 本轮思考文本", reply)
+	}
+	if !stopped {
+		t.Fatal("ShouldStopAfterTurn 未被调用")
+	}
+	if sess.State.Status != session.StatusCompleted {
+		t.Fatalf("status = %v, want completed", sess.State.Status)
+	}
+	// 停止后不再发起第二轮：历史 = user + assistant(工具调用) + tool(结果)
+	if n := len(sess.Messages()); n != 3 {
+		t.Fatalf("messages = %d, want 3（停止后不再追加第二轮）", n)
+	}
+}
 
 // mockModel 模拟：首轮返回工具调用，收到工具结果后返回最终答案。
 type mockModel struct{}
@@ -32,7 +68,7 @@ func (mockModel) Chat(_ context.Context, req *llm.Request) (*llm.Response, error
 		Role:             llm.RoleAssistant,
 		Content:          "我来调用工具",
 		ReasoningContent: "先思考再行动",
-		ToolCalls:        []llm.ToolCall{{ID: "c1", Name: "calculator", Args: `{"a":1,"b":2}`}},
+		ToolCalls:        []llm.ToolCall{{ID: "c1", Name: "read_file", Args: `{"a":1,"b":2}`}},
 	}}, nil
 }
 func (mockModel) ChatStream(context.Context, *llm.Request, func(llm.StreamChunk) error) (*llm.Response, error) {
@@ -44,12 +80,12 @@ type calcParams struct {
 	B int `json:"b" mos:"desc=被加数"`
 }
 
-type calculator struct{}
+type readFile struct{}
 
-func (calculator) Name() string        { return "calculator" }
-func (calculator) Description() string { return "计算两个整数之和" }
-func (calculator) Parameters() any     { return &calcParams{} }
-func (calculator) Execute(_ context.Context, args json.RawMessage) (any, error) {
+func (readFile) Name() string        { return "read_file" }
+func (readFile) Description() string { return "读取文件内容" }
+func (readFile) Parameters() any     { return &calcParams{} }
+func (readFile) Execute(_ context.Context, args json.RawMessage) (any, error) {
 	p, err := tool.Parse[calcParams](args)
 	if err != nil {
 		return nil, err
@@ -68,7 +104,7 @@ func newReAct(model llm.ChatModel, reg *tool.Registry, cfg func(*RunContext)) *A
 
 func TestAgentReActLoop(t *testing.T) {
 	reg := tool.NewRegistry()
-	if err := reg.Register(calculator{}); err != nil {
+	if err := reg.Register(readFile{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
 
@@ -78,7 +114,7 @@ func TestAgentReActLoop(t *testing.T) {
 		rt.SystemPrompt = "你是助手"
 	})
 
-	sess := NewSession("s1")
+	sess := session.NewSession("s1")
 	reply, err := a.Run(context.Background(), sess, "1+2=3?")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -149,7 +185,7 @@ func (streamingModel) ChatStream(_ context.Context, req *llm.Request, emit func(
 	return &llm.Response{Message: llm.Message{
 		Role:      llm.RoleAssistant,
 		Content:   text,
-		ToolCalls: []llm.ToolCall{{ID: "c1", Name: "calculator", Args: `{"a":1,"b":2}`}},
+		ToolCalls: []llm.ToolCall{{ID: "c1", Name: "read_file", Args: `{"a":1,"b":2}`}},
 	}}, nil
 }
 
@@ -157,14 +193,14 @@ func (streamingModel) ChatStream(_ context.Context, req *llm.Request, emit func(
 // 聚合后增量拼接即最终回复，且回退/非流式事件序列不受影响。
 func TestAgentRunStream(t *testing.T) {
 	reg := tool.NewRegistry()
-	if err := reg.Register(calculator{}); err != nil {
+	if err := reg.Register(readFile{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
 	var events []Event
 	a := newReAct(streamingModel{}, reg, func(rt *RunContext) {
 		rt.Observer = func(ev Event) { events = append(events, ev) }
 	})
-	sess := NewSession("s1")
+	sess := session.NewSession("s1")
 	reply, err := a.RunStream(context.Background(), sess, "1+2=3?")
 	if err != nil {
 		t.Fatalf("RunStream: %v", err)
@@ -205,14 +241,14 @@ func TestAgentRunStream(t *testing.T) {
 // （而非逐段增量），回复正确且最终事件仍为 EventDone。
 func TestAgentRunStreamFallback(t *testing.T) {
 	reg := tool.NewRegistry()
-	if err := reg.Register(calculator{}); err != nil {
+	if err := reg.Register(readFile{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
 	var events []Event
 	a := newReAct(mockModel{}, reg, func(rt *RunContext) {
 		rt.Observer = func(ev Event) { events = append(events, ev) }
 	})
-	sess := NewSession("s1")
+	sess := session.NewSession("s1")
 	reply, err := a.RunStream(context.Background(), sess, "1+2=3?")
 	if err != nil {
 		t.Fatalf("RunStream: %v", err)
@@ -247,14 +283,14 @@ func (denyPolicy) Allow(_ context.Context, call *llm.ToolCall) error {
 
 func TestAgentPolicyDenial(t *testing.T) {
 	reg := tool.NewRegistry()
-	if err := reg.Register(calculator{}); err != nil {
+	if err := reg.Register(readFile{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
 	a := newReAct(mockModel{}, reg, func(rt *RunContext) {
 		rt.Policy = denyPolicy{}
 	})
 
-	sess := NewSession("s1")
+	sess := session.NewSession("s1")
 	reply, err := a.Run(context.Background(), sess, "1+2")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -287,7 +323,7 @@ func TestEndToEndReasoningRoundTrip(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		if round == 1 {
 			// 第 1 轮：thinking 模式返回推理内容 + 工具调用
-			io.WriteString(w, `{"choices":[{"index":0,"message":{"role":"assistant","content":"我来计算","reasoning_content":"需要知道当前时间","tool_calls":[{"id":"c1","type":"function","function":{"name":"calculator","arguments":"{\"a\":1,\"b\":2}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`)
+			io.WriteString(w, `{"choices":[{"index":0,"message":{"role":"assistant","content":"我来计算","reasoning_content":"需要知道当前时间","tool_calls":[{"id":"c1","type":"function","function":{"name":"read_file","arguments":"{\"a\":1,\"b\":2}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`)
 		} else {
 			// 第 2 轮：直接作答
 			io.WriteString(w, `{"choices":[{"index":0,"message":{"role":"assistant","content":"结果是 3","reasoning_content":"拿到结果后回答"},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":5,"total_tokens":25}}`)
@@ -301,12 +337,12 @@ func TestEndToEndReasoningRoundTrip(t *testing.T) {
 	}
 
 	reg := tool.NewRegistry()
-	if err := reg.Register(calculator{}); err != nil {
+	if err := reg.Register(readFile{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
 	a := newReAct(model, reg, nil)
 
-	sess := NewSession("s1")
+	sess := session.NewSession("s1")
 	reply, err := a.Run(context.Background(), sess, "1+2")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -323,13 +359,13 @@ func TestEndToEndReasoningRoundTrip(t *testing.T) {
 // 多轮对话应保留历史，且 system 引导不进入会话事件日志。
 func TestAgentMultiTurn(t *testing.T) {
 	reg := tool.NewRegistry()
-	if err := reg.Register(calculator{}); err != nil {
+	if err := reg.Register(readFile{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
 	a := newReAct(mockModel{}, reg, func(rt *RunContext) {
 		rt.SystemPrompt = "你是助手"
 	})
-	sess := NewSession("s1")
+	sess := session.NewSession("s1")
 
 	if _, err := a.Run(context.Background(), sess, "第一轮"); err != nil {
 		t.Fatalf("run 1: %v", err)
@@ -351,12 +387,12 @@ func TestAgentMultiTurn(t *testing.T) {
 // 平台断点续跑契约：Save → Restore → 继续 Run，消息与状态正确累积。
 func TestSessionRestoreResume(t *testing.T) {
 	reg := tool.NewRegistry()
-	if err := reg.Register(calculator{}); err != nil {
+	if err := reg.Register(readFile{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
 	a := newReAct(mockModel{}, reg, nil)
 
-	sess := NewSession("s1")
+	sess := session.NewSession("s1")
 	if _, err := a.Run(context.Background(), sess, "第一轮"); err != nil {
 		t.Fatalf("run 1: %v", err)
 	}
@@ -368,7 +404,7 @@ func TestSessionRestoreResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	restored, err := RestoreSession(data)
+	restored, err := session.RestoreSession(data)
 	if err != nil {
 		t.Fatalf("RestoreSession: %v", err)
 	}
@@ -381,7 +417,7 @@ func TestSessionRestoreResume(t *testing.T) {
 	if restored.State.Goal != "第一轮" {
 		t.Fatalf("goal after resume = %q, want 第一轮（首轮目标保留）", restored.State.Goal)
 	}
-	if restored.State.Status != StatusCompleted {
+	if restored.State.Status != session.StatusCompleted {
 		t.Fatalf("status after resume = %v, want completed", restored.State.Status)
 	}
 }

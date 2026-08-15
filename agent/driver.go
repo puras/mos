@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"hegq.net/mos/agent/event"
+	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/memory"
 	"hegq.net/mos/planner"
@@ -19,8 +20,6 @@ type Policy interface {
 	Allow(ctx context.Context, call *llm.ToolCall) error
 }
 
-const defaultMaxTurns = 10
-
 // LoopDriver 是循环驱动接口：一种智能体类型 = 一个实现
 // （ReActDriver / PlanExecuteDriver / ReflectionDriver / GraphDriver，见架构 v2 §3.3）。
 // MVP 先落地 ReActDriver。
@@ -31,7 +30,7 @@ type LoopDriver interface {
 // RunContext 是 driver 共享设施容器（架构 v2 §3.3）。
 // 驱动通过它访问会话、工具、钩子、守卫与各扩展点；默认装配见 NewReAct。
 type RunContext struct {
-	Session           *Session
+	Session           *session.Session
 	Tools             *tool.Registry
 	Planner           planner.Planner // 决策器（默认 planner.NewReAct(model)，ReActDriver 内部使用）
 	Memory            memory.Memory   // 可选记忆后端（MVP 保留接口，接入见后续 Seam 迭代）
@@ -47,11 +46,19 @@ type RunContext struct {
 	Compactor         Compactor       // fresh-context 压缩（两轮之间）
 	ContextBudget     int             // 模型上下文 token 预算（利用率监控，>0 启用）
 	DoomLoopMaxRepeat int             // Doom Loop 检测（>0 启用，默认阈值 3）
-	MaxTurns          int
-	Stream            bool            // 流式路径：模型文本增量经 EventStream 广播
-	Hooks             *HookBus        // 瀑布钩子（可改写环节）
-	Guards            *GuardBus       // 单调守卫（不可被改写绕过）
-	Bus               *event.EventBus // 事件总线（emit 观测，可选）
+	// MaxTurns 是可选保险丝（>0 生效）：达到该轮数仍未完成时任务置为 blocked。
+	// 0 表示不限制（默认；对齐 DSH/PI 无轮次上限，循环以模型直接作答或
+	// ShouldStopAfterTurn 终止）。
+	MaxTurns int
+	// ShouldStopAfterTurn 是每轮结束后的外部停止裁决回调（对齐 PI shouldStopAfterTurn）：
+	// 返回 true 时任务以 completed 收尾（turn/end reason "stopped"）；
+	// nil 时不生效。回调可基于会话历史、本轮 Action 与工具结果做业务裁决
+	// （如人工叫停、成本控制）。
+	ShouldStopAfterTurn func(ctx context.Context, sess *session.Session, turn int, action *planner.Action) (bool, error)
+	Stream              bool            // 流式路径：模型文本增量经 EventStream 广播
+	Hooks               *HookBus        // 瀑布钩子（可改写环节）
+	Guards              *GuardBus       // 单调守卫（不可被改写绕过）
+	Bus                 *event.EventBus // 事件总线（emit 观测，可选）
 }
 
 // Agent 是智能体实例：RunContext + LoopDriver 的组合（架构 v2 §11.3）。
@@ -63,14 +70,11 @@ type Agent struct {
 
 // New 创建智能体：默认装配 = ReActDriver + 默认钩子/守卫（见 NewReAct）。
 func New(rt *RunContext) *Agent {
-	if rt.MaxTurns <= 0 {
-		rt.MaxTurns = defaultMaxTurns
-	}
 	return &Agent{Driver: NewReAct(rt), RT: rt}
 }
 
 // Run 在会话上执行一次任务（非流式）。
-func (a *Agent) Run(ctx context.Context, sess *Session, input string) (string, error) {
+func (a *Agent) Run(ctx context.Context, sess *session.Session, input string) (string, error) {
 	if a == nil || a.Driver == nil {
 		return "", fmt.Errorf("agent: nil driver")
 	}
@@ -82,7 +86,7 @@ func (a *Agent) Run(ctx context.Context, sess *Session, input string) (string, e
 
 // RunStream 同 Run，但模型产出文本增量实时广播 EventStream 事件（打字机效果）；
 // 模型或规划器不支持流式时自动回退为非流式路径，行为与 Run 一致。
-func (a *Agent) RunStream(ctx context.Context, sess *Session, input string) (string, error) {
+func (a *Agent) RunStream(ctx context.Context, sess *session.Session, input string) (string, error) {
 	if a == nil || a.Driver == nil {
 		return "", fmt.Errorf("agent: nil driver")
 	}

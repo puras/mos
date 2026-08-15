@@ -1,4 +1,4 @@
-package agent
+package session
 
 import (
 	"encoding/json"
@@ -14,7 +14,7 @@ const (
 	StatusPending TaskStatus = iota
 	// StatusRunning 任务执行中。
 	StatusRunning
-	// StatusBlocked 任务被阻塞（如达到最大迭代次数仍未完成）。
+	// StatusBlocked 任务被阻塞（达到显式 MaxTurns 保险丝上限，或 Doom Loop 致命错误）。
 	StatusBlocked
 	// StatusCompleted 任务正常完成。
 	StatusCompleted

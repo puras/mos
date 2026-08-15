@@ -10,43 +10,30 @@ MoS 是一个基于 Go 的智能体基础框架（Agent Base），提供统一�
 - **多协议 LLM 接入**：统一 `ChatModel` 抽象（模型对象）+ 协议注册表，内置 OpenAI 兼容（DeepSeek / 通义千问 / GLM / Ollama 等）、Anthropic Claude 与 Google Gemini 原生协议适配器，支持函数调用与流式输出
 - **声明式工具系统**：结构体 tag 自动生成 JSON Schema，模型函数调用参数自动校验与解析
 - **可插拔规划**：默认 ReAct 循环，可通过 `planner.Planner` 接口替换为其他策略
-- **会话记忆**：统一的 `memory.Memory` 接口，内置内存实现；长期记忆（SQLite + FTS5 混合检索：BM25 + 向量余弦 + 中文检索）已实现，支持 RAG 每轮注入
+- **会话记忆**：会话历史以 `Session` 事件日志为唯一事实来源；`memory.Memory` 与 `Retriever` 提供外部记忆扩展点（RAG 每轮注入，实现由使用方提供，未注入时行为不变）
 - **事件观测**：`Observer` 回调暴露工具调用与完成事件，便于流式输出与可观测性扩展
 - **Harness Engineering（工具安全防护）**：`agent.Policy` 在每次工具调用执行前拦截检查，内置默认策略可拦截危险 Shell 命令、路径越界与非 http 抓取
 - **Loop Engineering（循环可观测）**：每轮循环暴露思考/工具调用/工具结果/完成事件（含迭代序号），完整还原推理过程
 - **审计式任务状态（Audit Gate + Task State）**：工具结果经 `Auditor` 审计后，仅"环境可独立验证"的事实写入独立于消息历史的 `TaskState`（目标 / 已验证事实 / 状态机）；模型自述不算数——执行上下文可刷新，进度真相不过期
 - **开箱即用的智能体**：`assistant` 包组装好 Provider + 内置/扩展工具包 + 安全策略（`assistant.New` 一行装配）
-- **近零依赖**：SDK 仅依赖 `modernc.org/sqlite`（纯 Go，零 CGO）与本地协议库 `hegq.net/mogo`；示例工程 TUI 依赖 charmbracelet 系列（bubbles / bubbletea / glamour / lipgloss）
+- **近零依赖**：SDK 仅依赖本地协议库 `hegq.net/mogo`；示例工程 TUI 依赖 charmbracelet 系列（bubbles / bubbletea / glamour / lipgloss）
 
 ## 快速开始
 
-MoS 是纯依赖库：外部工程 `go get hegq.net/mos` 后按需 import 各包（如 `hegq.net/mos/agent`、`hegq.net/mos/tool`、`hegq.net/mos/planner`、`hegq.net/mos/llm/openai`），SDK 仅依赖 `modernc.org/sqlite`（纯 Go，零 CGO）与本地协议库 `hegq.net/mogo`：
+MoS 是纯依赖库：外部工程 `go get hegq.net/mos` 后按需 import 各包（如 `hegq.net/mos/agent`、`hegq.net/mos/tool`、`hegq.net/mos/tool/builtin`、`hegq.net/mos/planner`、`hegq.net/mos/llm/openai`），SDK 仅依赖本地协议库 `hegq.net/mogo`：
 
 ```go
 // 0. 创建模型对象（实现 llm.ChatModel 即可，见下方"LLM 接入"）
 model := ... 
 
-// 1. 注册工具：结构体定义参数，tag 自动生成 JSON Schema
-type calcParams struct {
-	A int `json:"a" mos:"desc=加数"`
-	B int `json:"b" mos:"desc=被加数"`
-}
-
-type calculator struct{}
-
-func (calculator) Name() string        { return "calculator" }
-func (calculator) Description() string { return "计算两个整数之和" }
-func (calculator) Parameters() any     { return &calcParams{} }
-func (calculator) Execute(_ context.Context, args json.RawMessage) (any, error) {
-	p, err := tool.Parse[calcParams](args)
-	if err != nil {
-		return nil, err
-	}
-	return p.A + p.B, nil
-}
-
+// 1. 注册工具：内置工具包一键装配（时间 / 文件 / 网页抓取 / shell 命令执行），
+//    也可自定义实现 tool.Tool 接口（Name / Description / Parameters / Execute）
 reg := tool.NewRegistry()
-reg.Register(calculator{})
+for _, t := range builtin.Default() {
+	if err := reg.Register(t); err != nil {
+		// 处理注册失败
+	}
+}
 
 // 2. 创建 Agent（v2：装配 RunContext + ReActDriver，框架概念注入/默认）
 a := agent.New(&agent.RunContext{
@@ -54,17 +41,17 @@ a := agent.New(&agent.RunContext{
 	Planner:      planner.NewReAct(model), // 决策器（ReAct）
 	SystemPrompt: "你是助手",
 	Observer:     func(ev agent.Event) { /* 观测工具调用/完成 */ },
-	MaxTurns:     10,
+	// MaxTurns: 10, // 可选保险丝（>0 生效）；0 表示不限制（默认，对齐 DSH/PI）
 })
 
 // 3. 执行任务（多轮对话自动保留历史）
 sess := agent.NewSession("demo")
-reply, err := a.Run(ctx, sess, "请计算 1+2")
+reply, err := a.Run(ctx, sess, "现在几点了？")
 ```
 
 ## 开箱即用的智能体（assistant + CLI 示例）
 
-`assistant` 包提供组装好的智能体：**模型对象、工具集与框架概念全部由调用方注入**（安全策略 / 规划器 / 审计器 / 记忆 / 观察，为 nil 时使用框架默认实现），可直接作为库集成到其他工程。框架只认 `llm.ChatModel` 模型对象与 `[]tool.Tool` 工具集，不预设默认工具、不关心模型接入配置——但**随框架分发工具包并分类**：`tool/builtin` 内置工具包（计算 / 时间 / 文件读写检索 / 网页抓取，纯标准库实现，`builtin.Default()` 一键装配）+ `tool/extension` 扩展工具包（shell 沙箱执行 / web_search 搜索提供商，需依赖注入）：
+`assistant` 包提供组装好的智能体：**模型对象、工具集与框架概念全部由调用方注入**（安全策略 / 规划器 / 审计器 / 记忆 / 观察，为 nil 时使用框架默认实现），可直接作为库集成到其他工程。框架只认 `llm.ChatModel` 模型对象与 `[]tool.Tool` 工具集，不预设默认工具、不关心模型接入配置——但**随框架分发工具包并分类**：`tool/builtin` 内置工具包（时间 / 文件读写检索 / 网页抓取 / shell 命令执行，纯标准库实现，`builtin.Default()` 一键装配）+ `tool/extension` 扩展工具包（web_search 搜索提供商，需依赖注入）：
 
 ```go
 // 1. 构建模型对象（可用 openai/anthropic 适配器，或任何自定义 llm.ChatModel）
@@ -78,7 +65,7 @@ if err != nil {
 
 // 2. 注入模型对象 + 工具集 + 运行配置（概念对象由业务侧构造注入）
 a, err := assistant.New(model, []tool.Tool{
-	builtin.Calculator{}, builtin.ReadFile{}, builtin.WriteFile{}, // 内置工具包按需取用
+	builtin.CurrentTime{}, builtin.ReadFile{}, builtin.WriteFile{}, // 内置工具包按需取用
 }, assistant.Config{
 	SystemPrompt: "你是 MoS 智能体",
 	Policy:       assistant.NewDefaultPolicy([]string{"ls", "cat", "pwd"}, "./workspace"), // 安全策略
@@ -97,7 +84,7 @@ reply, err := a.Run(ctx, sess, "帮我看看 workspace 里有什么文件")
 | `MOS_BASE_URL` | 自定义网关地址（兼容 OpenAI 协议） |
 | `MOS_MODEL` | 模型名 |
 | `MOS_SYSTEM_PROMPT` | 系统引导词 |
-| `MOS_MAX_TURNS` | 一次任务循环的最大 Turn 数（默认 10，达到上限仍未完成则阻塞） |
+| `MOS_MAX_TURNS` | 可选保险丝：一次任务循环的最大 Turn 数（0 表示不限制，默认；>0 时达到上限仍未完成则阻塞） |
 | `MOS_TOOLS` | 按需启用的工具名，逗号分隔（空表示全部） |
 | `MOS_SHELL_ALLOW` | Shell 命令白名单，逗号分隔 |
 | `MOS_WORKDIR` | 文件类工具与受限危险命令的工作目录 |
@@ -115,16 +102,15 @@ reply, err := a.Run(ctx, sess, "帮我看看 workspace 里有什么文件")
 | `MOS_TOOL_OUTPUT_KB` | 工具结果截断：单次结果最大字节数 KB（默认 64，0 不限制） |
 | `MOS_TOOL_OUTPUT_LINES` | 工具结果截断：单次结果最大行数（默认 2000，0 不限制） |
 
-工具包分两类（均在 `tool/` 下随框架分发）：**内置工具包 `tool/builtin`**（纯标准库，`builtin.Default()` 一键装配）——`calculator`（表达式求值）、`current_time`（当前时间）、`web_fetch`（网页抓取转纯文本）、`read_file` / `write_file`（文件读写）、`find_files` / `grep`（文件搜索）；**扩展工具包 `tool/extension`**（需依赖注入）——`shell`（受限命令执行，支持沙箱隔离）、`web_search`（联网搜索，绑定搜索提供商，提供商实现见 `tool/extension/search`）。
+工具包分两类（均在 `tool/` 下随框架分发）：**内置工具包 `tool/builtin`**（纯标准库，`builtin.Default()` 一键装配）——`shell`（受限命令执行，支持沙箱隔离）、`current_time`（当前时间）、`web_fetch`（网页抓取转纯文本）、`read_file` / `write_file`（文件读写）、`find_files` / `grep`（文件搜索）；**扩展工具包 `tool/extension`**（需依赖注入）——`web_search`（联网搜索，绑定搜索提供商，提供商实现见 `tool/extension/search`）。
 
 ```
-你 > 计算 (1+2)*3
-  ⟳ [第1轮思考] 让我来处理
-  ▶ [第1轮] 调用工具 calculator({"expr":"(1+2)*3"})
-  ◀ [第1轮] 工具结果: 9
-  ▶ [第2轮] 调用工具 current_time({})
-  ⟳ [第3轮思考] 计算完成，结果为 9。...
-智能体 > 计算完成，结果为 9。...
+你 > 现在几点了？
+  ⟳ [第1轮思考] 我需要获取当前时间
+  ▶ [第1轮] 调用工具 current_time({"timezone":"UTC"})
+  ◀ [第1轮] 工具结果: {"time":"2026-08-15 09:30:00","weekday":"Saturday","timezone":"UTC"}
+  ⟳ [第2轮思考] 当前时间已获取
+智能体 > 现在是 2026-08-15 09:30:00（UTC，星期六）。
 ```
 
 ### Harness Engineering：工具安全防护
@@ -137,13 +123,13 @@ type Policy interface {
 }
 ```
 
-默认策略 `assistant.NewDefaultPolicy(shellAllowed []string, workDir string)` 提供分级防护（**fail-closed**：未注册检查器的未知工具一律拒绝；内置 9 个工具已注册检查器，平台自定义工具策略 = `DefaultPolicy.Register(name, checker)` 一行注入，契合 v2 守卫可组合）：
+默认策略 `assistant.NewDefaultPolicy(shellAllowed []string, workDir string)` 提供分级防护（**fail-closed**：未注册检查器的未知工具一律拒绝；内置 8 个工具已注册检查器，平台自定义工具策略 = `DefaultPolicy.Register(name, checker)` 一行注入，契合 v2 守卫可组合）：
 
 - **绝对危险命令**（shutdown / reboot / halt / poweroff / mkfs / dd / 写块设备 / fork 炸弹）：无条件拒绝，不提供确认放行
 - **受限危险命令**（rm / sudo / chmod / chown / mv / kill / 管道 shell / **解释器执行入口** `bash -c`、`python3 -c`、`perl -e`、`node -e`、`ruby -e`、`php -r` 等 / **find -delete / -exec**）：路径必须落在 `WorkDir` 内，且须经 `Confirmer` 人工确认后才执行；未配置确认器、确认拒绝、或未配置 `WorkDir` 时一律拒绝——"范围有限 + 操作前确认"（如创建文件后删除临时文件，限定在 `WorkDir` 内的 `rm` 经确认后可用）。覆盖解释器执行入口是为了防止模型绕过黑名单：`rm` 被拒后改用 `python3 -c "os.remove(...)"` / `bash -c "rm -rf ..."` / `find . -delete` 达成删除意图
 - **命令前缀白名单**：配置 `ShellAllowed` 后仅允许白名单前缀的命令
 - **路径越界防护**：基于 `filepath.Rel` 校验文件/目录操作必须落在 `WorkDir` 内；web_fetch 仅允许 http/https；web_search 校验查询参数
-- **只读/自证工具**（calculator / current_time / read_file / find_files / grep / web_fetch / web_search）显式放行；`write_file` 路径受限（配置了 `Confirmer` 时写入前再确认）
+- **只读/自证工具**（current_time / read_file / find_files / grep / web_fetch / web_search）显式放行；`write_file` 路径受限（配置了 `Confirmer` 时写入前再确认）
 
 危险操作确认器 `assistant.Confirmer`（M2.8 人工介入的轻量雏形）：CLI 纯文本模式注入交互确认（y/N）；全屏 TUI 不注入（stdin 被界面接管，受限危险操作按 fail-closed 拒绝）；库集成方可注入自定义确认器。
 
@@ -160,8 +146,8 @@ type Policy interface {
 | 杠杆 | 业界要点 | MoS 现状 |
 | --- | --- | --- |
 | 确定性传感器 | 用测试 / typecheck / lint 等可验证信号代替"问模型对不对" | ✓ 审计门 `Auditor` + Audit Gate（只接受环境验证过的事实） |
-| 显式停止条件 | 可验证的 DONE 信号 + 硬迭代上限 / 预算上限 | ✓ 完成判断 + `MaxTurns`；token 预算上限待 M4 |
-| 跨迭代上下文管理 | 压缩旧轮、JIT 检索、手写 scratchpad，防 context rot | ✓ 截断（M2.3）+ 摘要压缩（M2.5）+ 每轮 RAG 检索注入（M2.7） |
+| 显式停止条件 | 可验证的 DONE 信号 + 硬迭代上限 / 预算上限 | ✓ 完成判断 + `ShouldStopAfterTurn` 外部裁决；`MaxTurns` 为可选保险丝（默认不限）；token 预算上限待 M4 |
+| 跨迭代上下文管理 | 压缩旧轮、JIT 检索、手写 scratchpad，防 context rot | ✓ 截断（M2.3）+ 摘要压缩（M2.5）+ 每轮 RAG 检索注入（`Retriever` 扩展点） |
 | 清晰工具设计 | 单次调用单意图、返回 crisp signal，不留歧义 | ✓ 内置 / 扩展工具签名统一；输出截断（M2.3）保留关键字段 |
 | Doom Loop 检测 | 相同工具连续 3+ 次相似调用 → 死循环检测 / 回退 / 重置 | ✓ 连续相同调用 ≥3 中断为 blocked（M2.5）；回退 / 重置留待后续 |
 | 上下文利用率阈值 | Dumb Zone：窗口用满约 40% 后输出质量明显下降 | ✓ 40% 告警线事件广播（M2.5）；渐进式披露 / 分层懒加载留待后续 |
@@ -192,7 +178,7 @@ MoS 现架构已内嵌图概念，Graph Engineering 是显式化而非重构：
 
 ### Audit Gate：审计式任务状态
 
-对应长程 Agent 的"审计式状态迁移"：`agent.Auditor` 在每次工具调用后独立审查结果，只有**被环境验证过的事实**才能写入 `Session.State`（`agent.TaskState`），模型的自我声明一律不算数。默认审计器 `agent.NewDefaultAuditor()` 采用只读白名单——`calculator` / `current_time` / `web_fetch` / `web_search` / `read_file` / `find_files` / `grep` 的输出本身就是环境的回答，视为已验证事实；`shell` / `write_file` 等变更类工具的输出属于"未核实声明"，不写入任务状态，需后续通过只读工具二次取证。可自定义 `Auditor` 或经 `Trust` 扩展白名单：
+对应长程 Agent 的"审计式状态迁移"：`agent.Auditor` 在每次工具调用后独立审查结果，只有**被环境验证过的事实**才能写入 `Session.State`（`agent.TaskState`），模型的自我声明一律不算数。默认审计器 `agent.NewDefaultAuditor()` 采用只读白名单——`current_time` / `web_fetch` / `web_search` / `read_file` / `find_files` / `grep` 的输出本身就是环境的回答，视为已验证事实；`shell` / `write_file` 等变更类工具的输出属于"未核实声明"，不写入任务状态，需后续通过只读工具二次取证。可自定义 `Auditor` 或经 `Trust` 扩展白名单：
 
 ```go
 // 自定义只读工具也产出可验证事实
@@ -345,10 +331,10 @@ mos/
 │   └── gemini/            #   Google Gemini 协议适配器
 ├── tool/                  # 工具注册表、JSON Schema 生成、参数解析、执行沙箱
 │   ├── sandbox.go         #   执行沙箱（M1.6）：jail + 超时 + 资源限制 + 环境裁剪
-│   ├── builtin/           #   内置工具包：计算/时间/文件读写检索/网页抓取（纯标准库）
-│   └── extension/         #   扩展工具包：shell（沙箱执行）/ web_search（搜索提供商）
+│   ├── builtin/           #   内置工具包：时间/文件读写检索/网页抓取/shell 命令执行（纯标准库）
+│   └── extension/         #   扩展工具包：web_search（搜索提供商）
 │       └── search/        #     搜索提供商：duckduckgo / tavily / serper / brave / searxng
-├── memory/                # 记忆抽象：Retriever 接口 + longterm（sqlite + FTS5 + 向量）
+├── memory/                # 记忆抽象：Memory（会话记忆）+ Retriever（RAG 扩展点，实现由使用方提供）
 ├── agent/                 # 智能体运行时：事件日志 Session / LoopDriver / HookBus / Policy / Observer
 ├── planner/               # 规划策略：Planner 接口 + ReAct 实现
 ├── assistant/             # 组装好的完整智能体：模型对象注入 / 默认策略 / 内置+扩展工具包
@@ -371,7 +357,7 @@ Go 语言本身没有 `pkg/` 目录语义（只有 `internal/` 有编译器强�
 | --- | --- | --- |
 | SDK 根目录 | `llm` / `tool` / `memory` / `agent` / `planner` | 框架层通用基础能力 |
 | SDK 根目录 | `tool/builtin` | 框架层内置工具包：纯标准库通用工具，随框架分发，`builtin.Default()` 一键装配 |
-| SDK 根目录 | `tool/extension` | 框架层扩展工具包：shell（沙箱执行）/ web_search（搜索提供商，实现见 `extension/search`），需依赖注入 |
+| SDK 根目录 | `tool/extension` | 框架层扩展工具包：web_search（搜索提供商，实现见 `extension/search`），需依赖注入 |
 | SDK 根目录 | `assistant` | 框架层组装智能体（模型对象注入，`Config` 仅含运行配置） |
 | SDK 根目录 | `llm/openai` `llm/anthropic` `llm/gemini` | 框架层协议适配器，外部按需选用 |
 
@@ -403,7 +389,7 @@ go test ./...
 - [x] **M2.4**：两层消息与翻译边界（`Session.History` 升级为内部结构化消息 `agent.InternalMessage`——嵌入 `llm.Message` 并附加 `ExcludeFromContext` / `Summary` / `Source` 运行期元数据；翻译边界 `convertToLlm` 在发送给规划器/模型前统一执行——过滤 `ExcludeFromContext` 消息、标准角色原样转换、摘要消息（`SummaryMsg`，M2.5 压缩产物）与自定义消息（`CustomMsg`，应用层注入/Agent 间通信）统一转 user 角色并按来源标注，`[历史摘要]` / `[source]` 前缀；memory/planner 接口不变，`fromLlm` 将持久化标准消息接回内部层，工具调用消息的 `ToolCalls`/`ReasoningContent`/`ToolCallID` 字段翻译边界不丢失）
 - [x] **M2.5**：fresh-context 压缩（`agent.Compactor` 接口 + `NewDefaultCompactor`：两轮之间超 `KeepRecent`（默认 12）触发，切割点从尾部数且不切断 ToolCall-Result 对——首条若为孤儿 tool 结果则前移切割点；压缩摘要直接采用审计写入的 `TaskState.Snapshot()` 而非 LLM 重新总结，以 `SummaryMsg` 注入、翻译边界转 user 角色标 `[历史摘要]`；压缩后 `syncHistory` 剔除 system 引导并把保留消息重放回 memory）+ 上下文利用率监控（`planner.Action.Usage` 透出模型 token 用量，`WithContextBudget` 设置窗口预算，超过 40% Dumb Zone 广播 `EventContextUsage`）+ Doom Loop 检测（`WithDoomLoopDetection`：相同工具名+参数连续 3 次调用 → 中断任务置 blocked 并返回错误）——渐进式披露 / 分层上下文懒加载 / 上下文重置与跨 Session handoff 留待 M2.6+；框架层均为可选 Option，assistant 默认开启 Compactor
 - [x] **M2.6**：系统提示词动态组装（槽位化：系统约束 / 任务定义 / 当前状态 / 工具签名 / 项目指令 / 技能清单 / 历史摘要；`agent.SystemAssembler` 接口 + `NewDefaultSystemAssembler`——每轮模型调用前重新组装，固定指令保持静态利于 prompt cache，运行时状态随 TaskState 进度刷新（当前状态槽位 = 审计写入的已验证事实快照）；克制主义——系统约束槽位独立为最小静态文本，工具签名紧凑逐行渲染不重复全量 schema；`RenderSystem` 以【标题】分段拼接。多级 CLAUDE.md 向上递归：`LoadProjectDocs` 从工作目录向上合并，顶层在前、就近覆盖，注入项目指令槽位。Skills 懒加载清单：`LoadSkills` 扫描 SKILL.md 的 frontmatter（name + description 触发条件），清单注入技能槽位，正文与 references/ 由模型触发时经 read_file 按需读取，不占常驻上下文。历史摘要槽位默认关闭——M2.5 压缩摘要已由 Compactor 注入消息历史，避免冗余。框架层为可选 Option（`WithSystemAssembler` / `SystemAssemblerFunc` 函数式适配器），assistant 经 `Config.Assembler` / `Config.ProjectDocDir` / `Config.SkillsDir` 装配，未配置时回退静态引导行为不变）
-- [x] **M2.7**：长期记忆（RAG 基础设施，`memory/longterm`：SQLite 存储，modernc.org/sqlite 纯 Go 驱动零 CGO，嵌入 FTS5）——**混合检索 = FTS5 BM25 + 向量余弦**（向量检索在 Go 侧计算余弦相似度，sqlite-vec 扩展在纯 Go 驱动下不可可靠加载，语义等价；配置 `Embedder` 走 hybrid，未配置退化为纯 BM25）+ **中文检索**（unicode61 tokenizer 无法切分无空格中文，摄取时对内容做 CJK 逐字空格化存入 `search_text`，查询词同规则空格化为 phrase 匹配，实现中文关键词命中）+ **FTS 同步**（chunks 写入/删除经触发器维护 FTS 索引，删除用 `DELETE ... WHERE rowid` 而非 FTS5 'delete' 命令——后者在 modernc 驱动下报 SQL logic error）。RAG 摄取：`Chunker` 分块策略 chunk_size/overlap（默认 800/100，段落 \n\n / 句末标点优先切割，自然边界不 overlap 回溯保证段落完整，硬切才带重叠），来源引用 `docID#N`，`AddDocument` 文档级更新（先删旧再写）。检索注入：`agent.WithRetriever` 每轮按 `TaskState.Goal` 检索，经知识守门后以 `CustomMsg(Source="rag")` 注入，翻译边界转 user 角色标 `[rag]` 前缀并携带来源与得分；注入只作用于当轮发送副本、不进会话历史（每轮按最新知识重检）。Agentic RAG 知识守门人：源验证（同来源只保留最高分分块）+ 冲突裁决（去重）+ 知识差距检测（`RetrieverConfig.MinScore` >0 时低于阈值的分块不注入，有候选但全部低于阈值则广播 `EventKnowledgeGap`（Content=查询），交由模型经外部工具补齐）+ `MaxChunks` 注入条数截断。assistant 装配：`Config.Retriever` / `Config.RetrieverMinScore` 一行接入。多步检索留待 M2.9 经验记忆复用本基础设施；流式输出透传已由 M2.5 的 `EventStream` 承载，本里程碑未新增）；框架层为可选 Option，未配置时行为不变
+- [x] **M2.7**：长期记忆（RAG 注入，2026-08 精简后**仅保留扩展点**）——`memory.Retriever` 接口 + agent 每轮检索注入（`ragInjectHook`：按 `TaskState.Goal` 检索，经知识守门——源验证 / 冲突裁决 / 知识差距检测（`EventKnowledgeGap`）/ `MaxChunks` 截断——以 `CustomMsg(Source="rag")` 注入当轮副本，不进会话历史）+ `assistant.Config.Retriever` / `RetrieverMinScore` 装配；原 `memory/longterm`（sqlite + FTS5 + 向量）实现已移除（参考 DSH/PI 均未内置 RAG，SDK 只保留接口与注入钩子，实现由使用方按需提供，未注入时行为不变）
 - [ ] **M2.8**：人工介入工具 + 升级策略（`request_human_input`：模型主动请求人类输入/确认/授权，作为普通工具接入；升级策略定义"何时、如何交给人类"，配合人工网关；注意 HITL 权衡：可扩展性不足、依赖专家、敏感数据需匿名化）+ interrupt-before（等待人工输入前用 Checkpointer 持久化状态，恢复后从断点继续，对齐 Graph Engineering 的 checkpointer 语义）
 - [ ] **M2.9**：经验记忆（知识进化第 1 层：执行历史沉淀为成功策略 / 已知陷阱库，按成功率 / 时间 / 成本加权评分择优，决策时检索注入——复用 M2.7 记忆基础设施，零代码风险）
 - [ ] **M2.10**：工具规模化——schema 生成缓存（`generateSchema` 反射结果按工具 memo 化，避免循环内每轮重复）+ schema 压缩（删 title / $defs、过滤注入参数）+ deferred 懒加载（`tool_search` 工具按需取 schema，名字清单进 prompt；工具描述占上下文超阈值自动启用，小工具集保持全量注入，参考 Claude Code 10% 自动阈值）+ 静态系统提示保 prompt cache（动态内容放 user 消息侧，参考 DeerFlow）

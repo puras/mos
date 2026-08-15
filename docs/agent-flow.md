@@ -61,15 +61,16 @@ flowchart TD
 - `TaskState` 首次运行记录 Goal、进入 running
 - 事件日志追加 `turn/start` 与 `user/message`（append-only，唯一事实来源）
 
-### ② 任务循环（maxTurns 上限，默认 10）
+### ② 任务循环（无限循环，无轮次上限）
 
 - 每轮刷新系统提示（`Assembler` 槽位化组装优先，否则静态 `SystemPrompt`），运行时状态随 TaskState 进度更新
+- 终止条件：模型直接作答 → 完成（`EventDone`）；`ShouldStopAfterTurn` 外部裁决 → 完成（reason "stopped"）；`MaxTurns` 为可选保险丝（>0 生效，默认不限）；ctx 取消可随时中断
 - 模型输入 = `SystemMsg` + `deriveMessages(Events)`（system 不写日志、每轮注入）
 - **pre-step 钩子链**（waterfall，可改写/短路）：
   - `compressHook`：两轮之间（turn≥2）压缩，写 `compaction/start → summary → end` 三段式事件（summary 携带阴影范围，可回放）；摘要取 `TaskState.Snapshot()`
   - `ragInjectHook`：按 Goal 检索，知识守门后以 `CustomMsg` 注入**当轮发送副本**（不进日志）
 - 决策经 `convertToLlm` 翻译边界 → 模型调用；`assistant/message` 事件记录回复/推理/工具调用/用量；`EventContextUsage` 监控预算利用率
-- 模型直接作答 → 完成（`EventDone`）；请求工具 → 进入工具链路
+- 模型请求工具 → 进入工具链路
 
 ### ③ 工具执行链路（守卫 → 钩子链）
 

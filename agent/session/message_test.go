@@ -1,4 +1,4 @@
-package agent
+package session
 
 import (
 	"strings"
@@ -14,7 +14,7 @@ func TestConvertToLlm(t *testing.T) {
 		UserMsg("你好"),
 		AssistantMsg("你好！", ""),
 	}
-	got := convertToLlm(msgs)
+	got := ConvertToLlm(msgs)
 	if len(got) != 3 {
 		t.Fatalf("标准消息应原样转换，len=%d", len(got))
 	}
@@ -30,7 +30,7 @@ func TestConvertToLlmExcludeFromContext(t *testing.T) {
 	excluded := CustomMsg("internal", "仅供内部参考，不进上下文")
 	excluded.ExcludeFromContext = true
 	msgs := []InternalMessage{UserMsg("问题"), excluded, AssistantMsg("回答", "")}
-	got := convertToLlm(msgs)
+	got := ConvertToLlm(msgs)
 	if len(got) != 2 {
 		t.Fatalf("exclude 消息应被过滤，len=%d", len(got))
 	}
@@ -45,7 +45,7 @@ func TestConvertToLlmCustomToUser(t *testing.T) {
 		CustomMsg("agent-2", "子智能体反馈"),
 		CustomMsg("", "无来源标注"),
 	}
-	got := convertToLlm(msgs)
+	got := ConvertToLlm(msgs)
 	if len(got) != 3 {
 		t.Fatalf("自定义消息应转 user 保留，len=%d", len(got))
 	}
@@ -64,7 +64,7 @@ func TestConvertToLlmSummaryInjection(t *testing.T) {
 		SummaryMsg("已完成：验证了计算器结果 3；当前进行中：汇总。"),
 		AssistantMsg("继续", ""),
 	}
-	got := convertToLlm(msgs)
+	got := ConvertToLlm(msgs)
 	if len(got) != 4 {
 		t.Fatalf("摘要应保留并转 user，len=%d", len(got))
 	}
@@ -74,17 +74,17 @@ func TestConvertToLlmSummaryInjection(t *testing.T) {
 }
 func TestConvertToLlmKeepsToolCallFields(t *testing.T) {
 	msgs := []InternalMessage{
-		AssistantToolMsg("算一下", "先思考", []llm.ToolCall{{ID: "c1", Name: "calculator", Args: `{}`}}),
-		ToolMsg("c1", "calculator", "3"),
+		AssistantToolMsg("算一下", "先思考", []llm.ToolCall{{ID: "c1", Name: "read_file", Args: `{}`}}),
+		ToolMsg("c1", "read_file", "3"),
 	}
-	got := convertToLlm(msgs)
+	got := ConvertToLlm(msgs)
 	if got[0].Role != llm.RoleAssistant || got[0].ReasoningContent != "先思考" {
 		t.Fatalf("工具调用消息字段丢失: %+v", got[0])
 	}
 	if len(got[0].ToolCalls) != 1 || got[0].ToolCalls[0].ID != "c1" {
 		t.Fatalf("tool_calls 丢失: %+v", got[0])
 	}
-	if got[1].Role != llm.RoleTool || got[1].ToolCallID != "c1" || got[1].Name != "calculator" {
+	if got[1].Role != llm.RoleTool || got[1].ToolCallID != "c1" || got[1].Name != "read_file" {
 		t.Fatalf("tool 结果消息字段丢失: %+v", got[1])
 	}
 }

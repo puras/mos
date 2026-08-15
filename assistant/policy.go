@@ -17,7 +17,7 @@ type Checker func(ctx context.Context, args string) error
 
 // DefaultPolicy 是默认的工具调用安全策略（Harness Engineering）。
 // 设计要点：
-//   - 只读/自证工具（calculator、current_time、read_file、find_files、grep、web_fetch、web_search）显式放行；
+//   - 只读/自证工具（current_time、read_file、find_files、grep、web_fetch、web_search）显式放行；
 //     文件类工具限制路径不得越出 WorkDir。
 //   - shell 命令分级防御：
 //     ① 绝对危险命令（shutdown/mkfs/dd 等）：无条件拒绝，不提供确认放行；
@@ -45,7 +45,6 @@ func NewDefaultPolicy(shellAllowed []string, workDir string) *DefaultPolicy {
 		"grep":         p.checkFileField("root"),
 		"web_fetch":    p.checkWebFetch,
 		"web_search":   p.checkWebSearch,
-		"calculator":   allow,
 		"current_time": allow,
 	}
 	return p

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 
+	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 )
 
@@ -10,11 +11,11 @@ import (
 // 审计门（Audit Gate）：只有被环境独立验证过的事实才能更新任务状态，
 // 模型"自称完成"的声明一律不算数——环境说了算。
 type Auditor interface {
-	Audit(ctx context.Context, call *llm.ToolCall, result any) ([]Fact, error)
+	Audit(ctx context.Context, call *llm.ToolCall, result any) ([]session.Fact, error)
 }
 
 // DefaultAuditor 是基于"只读白名单"的默认审计器：
-// 只读/自证类工具（calculator、read_file、grep 等）的输出本身就是环境的回答，
+// 只读/自证类工具（current_time、read_file、grep 等）的输出本身就是环境的回答，
 // 视为已验证事实；变更类工具（shell、write_file 等）的输出属于"未核实声明"，
 // 不写入任务状态，需后续通过只读工具二次取证。
 type DefaultAuditor struct {
@@ -37,7 +38,6 @@ func (d *DefaultAuditor) Trust(name string) {
 // defaultTrustedTools 返回内置只读工具白名单。
 func defaultTrustedTools() map[string]bool {
 	return map[string]bool{
-		"calculator":   true,
 		"current_time": true,
 		"web_fetch":    true,
 		"web_search":   true,
@@ -48,12 +48,12 @@ func defaultTrustedTools() map[string]bool {
 }
 
 // Audit 实现 Auditor：白名单内工具的输出生成一条已验证事实，其余返回空。
-func (d *DefaultAuditor) Audit(_ context.Context, call *llm.ToolCall, result any) ([]Fact, error) {
+func (d *DefaultAuditor) Audit(_ context.Context, call *llm.ToolCall, result any) ([]session.Fact, error) {
 	if d == nil || d.Trusted == nil || !d.Trusted[call.Name] {
 		return nil, nil
 	}
-	evidence := formatToolResult(result)
-	return []Fact{{
+	evidence := session.FormatToolResult(result)
+	return []session.Fact{{
 		Summary:  call.Name + " → " + truncate(evidence, 120),
 		Evidence: truncate(evidence, 512),
 		Tool:     call.Name,

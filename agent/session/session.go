@@ -1,4 +1,4 @@
-package agent
+package session
 
 import (
 	"encoding/json"
@@ -143,7 +143,7 @@ func deriveMessages(events []SessionEvent) []InternalMessage {
 			}
 			content := d.Text
 			if content == "" {
-				content = formatToolResult(d.Result)
+				content = FormatToolResult(d.Result)
 			}
 			if d.Error != "" {
 				content = "工具执行出错: " + d.Error
@@ -179,10 +179,10 @@ func stableSortByPos(items []messageAt) {
 	}
 }
 
-// messageEventSeqs 返回日志中产生模型面消息的事件序号（按顺序），
+// MessageEventSeqs 返回日志中产生模型面消息的事件序号（按顺序），
 // 用于压缩时计算被替换（shadowed）的日志范围。
 // 消息事件：user/message、assistant/message、tool/result、compaction/summary。
-func messageEventSeqs(events []SessionEvent) []int64 {
+func MessageEventSeqs(events []SessionEvent) []int64 {
 	var seqs []int64
 	for _, ev := range events {
 		switch ev.Type {
@@ -236,17 +236,17 @@ func RestoreSession(data []byte) (*Session, error) {
 
 // ---- 事件构造 helper（typed，供驱动与测试使用）----
 
-func (s *Session) appendUserMessage(message, source string) error {
+func (s *Session) AppendUserMessage(message, source string) error {
 	return s.Append(event.SessionEventUserMessage, event.UserMessageData{Message: message, Source: source})
 }
 
-func (s *Session) appendAssistantMessage(turn int, content, reasoning string, calls []llm.ToolCall, usage llm.Usage) error {
+func (s *Session) AppendAssistantMessage(turn int, content, reasoning string, calls []llm.ToolCall, usage llm.Usage) error {
 	return s.Append(event.SessionEventAssistantMessage, event.AssistantMessageData{
 		Turn: turn, Content: content, Reasoning: reasoning, ToolCalls: calls, Usage: usage,
 	})
 }
 
-func (s *Session) appendToolCall(turn int, call *llm.ToolCall) error {
+func (s *Session) AppendToolCall(turn int, call *llm.ToolCall) error {
 	if call == nil {
 		return nil
 	}
@@ -255,7 +255,7 @@ func (s *Session) appendToolCall(turn int, call *llm.ToolCall) error {
 	})
 }
 
-func (s *Session) appendToolResult(turn int, call *llm.ToolCall, result any, text string, err error) error {
+func (s *Session) AppendToolResult(turn int, call *llm.ToolCall, result any, text string, err error) error {
 	if call == nil {
 		return nil
 	}
@@ -266,8 +266,8 @@ func (s *Session) appendToolResult(turn int, call *llm.ToolCall, result any, tex
 	return s.Append(event.SessionEventToolResult, d)
 }
 
-// formatToolResult 将工具返回值统一序列化为给模型看的文本。
-func formatToolResult(v any) string {
+// FormatToolResult 将工具返回值统一序列化为给模型看的文本。
+func FormatToolResult(v any) string {
 	if v == nil {
 		return ""
 	}

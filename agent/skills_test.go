@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 )
 
@@ -105,7 +106,7 @@ func TestSystemAssemblerSkills(t *testing.T) {
 		Constraints: "你是助手",
 		SkillsDir:   root,
 	})
-	sections, err := asm.Assemble(t.Context(), NewSession("s1"), []llm.Tool{{Name: "grep", Description: "文本检索"}})
+	sections, err := asm.Assemble(t.Context(), session.NewSession("s1"), []llm.Tool{{Name: "grep", Description: "文本检索"}})
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
 	}

@@ -7,7 +7,7 @@ import (
 	"hegq.net/mos/memory"
 )
 
-// RetrieverConfig 是 RAG 检索注入（M2.7）的配置。
+// RetrieverConfig 是 RAG 检索注入的配置。
 type RetrieverConfig struct {
 	// MaxChunks 每次注入上下文的最大分块数（默认 3）。
 	// 经冲突裁决（同来源只保留最高分分块）后按得分取前 MaxChunks。
@@ -21,8 +21,8 @@ type RetrieverConfig struct {
 	MinScore float64
 }
 
-// Retriever 配置经 RunContext.Retriever + RetrieverCfg 注入（v2：见 agent/react.go
-// ragInjectHook）；RetrieverConfig 保留为配置结构。
+// Retriever 配置经 RunContext.Retriever + RetrieverCfg 注入（见 agent/react.go
+// ragInjectHook）；未注入 Retriever 时跳过检索注入，行为不变。
 
 // renderRetrieved 将检索结果渲染为注入文本：逐条标注来源与得分。
 func renderRetrieved(docs []memory.Document) string {

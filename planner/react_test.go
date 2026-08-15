@@ -41,7 +41,7 @@ func TestReActNextActionToolCall(t *testing.T) {
 				Role:    llm.RoleAssistant,
 				Content: "我来调用工具",
 				ToolCalls: []llm.ToolCall{
-					{ID: "c1", Name: "calculator", Args: `{"a":1}`},
+					{ID: "c1", Name: "read_file", Args: `{"a":1}`},
 					{ID: "c2", Name: "grep", Args: `{"p":"x"}`},
 				},
 			},
@@ -153,7 +153,7 @@ func TestToActionTruncated(t *testing.T) {
 		Message: llm.Message{
 			Role:      llm.RoleAssistant,
 			Content:   "截断",
-			ToolCalls: []llm.ToolCall{{ID: "c1", Name: "calculator", Args: `{}`}},
+			ToolCalls: []llm.ToolCall{{ID: "c1", Name: "read_file", Args: `{}`}},
 		},
 		FinishReason: "length",
 		Usage:        llm.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},

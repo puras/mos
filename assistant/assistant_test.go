@@ -9,10 +9,11 @@ import (
 	"testing"
 
 	"hegq.net/mos/agent"
+	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/memory"
 	"hegq.net/mos/tool"
-	"hegq.net/mos/tool/extension"
+	"hegq.net/mos/tool/builtin"
 )
 
 func toolCall(name, args string) *llm.ToolCall {
@@ -159,7 +160,7 @@ func TestAssistantSystemAssemblerAuto(t *testing.T) {
 // 显式注入自定义组装器时直接生效，SystemPrompt 不参与组装。
 func TestAssistantSystemAssemblerCustom(t *testing.T) {
 	ctx := context.Background()
-	custom := agent.SystemAssemblerFunc(func(_ context.Context, _ *agent.Session, _ []llm.Tool) ([]agent.SystemSection, error) {
+	custom := agent.SystemAssemblerFunc(func(_ context.Context, _ *session.Session, _ []llm.Tool) ([]agent.SystemSection, error) {
 		return []agent.SystemSection{{Title: "自定义", Content: "来自应用层"}}, nil
 	})
 
@@ -497,7 +498,7 @@ func TestTUIModeRestrictedShellRejected(t *testing.T) {
 		t.Fatal("TUI 模式不应挂载确认器")
 	}
 
-	a, err := New(tuiShellModel(workDir), []tool.Tool{extension.Shell{}}, Config{Policy: policy})
+	a, err := New(tuiShellModel(workDir), []tool.Tool{builtin.Shell{}}, Config{Policy: policy})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
