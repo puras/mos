@@ -50,7 +50,10 @@ type RunContext struct {
 	RetrieverCfg agent.RetrieverConfig
 	// PlanPlanner 是 Plan&Execute 驱动的计划生成器（架构 v2 §3.3）；
 	// ReAct 驱动不使用，nil 时 planexecute 驱动回退为单步执行。
-	PlanPlanner       planner.PlanPlanner
+	PlanPlanner planner.PlanPlanner
+	// Reflector 是 Reflection 驱动的评审器（架构 v2 §3.3，Basic Reflection）；
+	// ReAct/PlanExecute 驱动不使用，nil 时 reflection 驱动拒绝运行。
+	Reflector         planner.Reflector
 	Truncator         agent.ResultTruncator // 工具结果截断（模型可见文本瘦身）
 	Compactor         agent.Compactor       // fresh-context 压缩（两轮之间）
 	ContextBudget     int                   // 模型上下文 token 预算（利用率监控，>0 启用）

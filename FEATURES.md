@@ -101,7 +101,7 @@ SDK 零第三方依赖（仅依赖本地协议库 `hegq.net/mogo`）。
 - 测试：SDK 全部测试通过（agent / assistant / tool / planner / llm 等），含 llm 适配器 httptest 协议模拟
 
 ### 5.3 已知问题与风险
-- **事件驱动改造待继续**：HookBus 已落地但 LoopDriver 生态只有 ReActDriver；Plan&Execute / Reflection 驱动、声明式配置装配（YAML）未实现
+- **事件驱动改造待继续**：LoopDriver 生态已有 ReAct / Plan&Execute / Reflection 三种驱动；声明式配置装配（YAML）、DriverRouter 任务路由、SeamRegistry 未实现
 - **待办缺口**：token 预算上限、上下文重置与跨 Session handoff、模型分级路由、异常恢复、可恢复运行目录（M4）等仍为空
 - **路线图条目**：M2.9 / M2.10 / M3 条目内容详实但均为规划，实现前需按实际落地情况修订
 

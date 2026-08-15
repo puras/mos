@@ -73,6 +73,23 @@ rt := &driver.RunContext{
 a := planexecute.New(rt) // 无 PlanPlanner 时退化为单步执行
 ```
 
+### Reflection（生成 → 反思 → 修订）
+
+产出型任务（写作 / 方案 / 代码）可换用 `agent/driver/reflection`：先由内嵌 ReAct 生成初稿，
+再由独立评审器（`planner.NewReflector(model)`，独立上下文避免"自我合理化"污染）检查问题，
+有批评即修订，直至评审通过或达到最大迭代（默认 2 轮，`WithMaxIterations` 可调）：
+
+```go
+import "hegq.net/mos/agent/driver/reflection"
+
+rt := &driver.RunContext{
+	Tools:     reg,
+	Planner:   planner.NewReAct(model), // 生成/修订执行器决策
+	Reflector: planner.NewReflector(model), // 评审（建议独立模型）
+}
+a := reflection.New(rt) // 未配置 Reflector 时拒绝运行
+```
+
 ## 开箱即用的智能体（assistant + CLI 示例）
 
 `assistant` 包提供组装好的智能体：**模型对象、工具集与框架概念全部由调用方注入**（安全策略 / 规划器 / 审计器 / 记忆 / 观察，为 nil 时使用框架默认实现），可直接作为库集成到其他工程。框架只认 `llm.ChatModel` 模型对象与 `[]tool.Tool` 工具集，不预设默认工具、不关心模型接入配置——但**随框架分发工具包并分类**：`tool/builtin` 内置工具包（时间 / 文件读写检索 / 网页抓取 / shell 命令执行，纯标准库实现，`builtin.Default()` 一键装配）+ `tool/extension` 扩展工具包（web_search 搜索提供商，需依赖注入）：

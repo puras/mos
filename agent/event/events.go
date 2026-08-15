@@ -25,6 +25,9 @@ const (
 	SessionEventPlanStart         = "plan/start"
 	SessionEventPlanStep          = "plan/step"
 	SessionEventPlanEnd           = "plan/end"
+	SessionEventReflectionStart   = "reflection/start"
+	SessionEventReflectionReview  = "reflection/review"
+	SessionEventReflectionEnd     = "reflection/end"
 )
 
 // ---- 事件载荷（typed payload）----
@@ -120,6 +123,30 @@ type PlanEndData struct {
 	Turn   int    `json:"turn"`
 	Status string `json:"status"` // completed / failed
 	Detail string `json:"detail,omitempty"`
+}
+
+// ReflectionStartData 反思循环开始（Basic Reflection）：目标 + 最大迭代次数。
+type ReflectionStartData struct {
+	Turn          int    `json:"turn"`
+	Goal          string `json:"goal"`
+	MaxIterations int    `json:"max_iterations"`
+}
+
+// ReflectionReviewData 一轮评审结果（Issues 为空 = 评审通过）。
+type ReflectionReviewData struct {
+	Turn      int      `json:"turn"`
+	Iteration int      `json:"iteration"`
+	Issues    []string `json:"issues"`
+	Score     int      `json:"score,omitempty"`
+	Passed    bool     `json:"passed"`
+}
+
+// ReflectionEndData 反思循环结束：completed / max_iterations / failed。
+type ReflectionEndData struct {
+	Turn      int    `json:"turn"`
+	Iteration int    `json:"iteration"`
+	Status    string `json:"status"`
+	Detail    string `json:"detail,omitempty"`
 }
 
 // MarshalData 将载荷序列化为 SessionEvent.Data。

@@ -33,6 +33,8 @@ const (
 	EventKnowledgeGap
 	// EventPlan 计划产出（Plan&Execute）：Content 为步骤摘要文本。
 	EventPlan
+	// EventReflection 评审结果（Basic Reflection）：Content 为问题摘要文本。
+	EventReflection
 )
 
 // Event 是运行时向外广播的事件，用于流式输出、中间过程观测等。
