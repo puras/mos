@@ -148,6 +148,7 @@ type Response struct {
 // StreamChunk 是流式输出的增量块。
 type StreamChunk struct {
 	Delta        string // 增量文本
+	Reasoning    string // 推理内容增量（思维链，DeepSeek 等厂商扩展）
 	ToolCall     *ToolCall
 	FinishReason string
 }

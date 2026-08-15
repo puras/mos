@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"hegq.net/mos/agent/event"
+	"hegq.net/mos/agent/hook"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/memory"
@@ -56,8 +57,8 @@ type RunContext struct {
 	// （如人工叫停、成本控制）。
 	ShouldStopAfterTurn func(ctx context.Context, sess *session.Session, turn int, action *planner.Action) (bool, error)
 	Stream              bool            // 流式路径：模型文本增量经 EventStream 广播
-	Hooks               *HookBus        // 瀑布钩子（可改写环节）
-	Guards              *GuardBus       // 单调守卫（不可被改写绕过）
+	Hooks               *hook.HookBus   // 瀑布钩子（可改写环节）
+	Guards              *hook.GuardBus  // 单调守卫（不可被改写绕过）
 	Bus                 *event.EventBus // 事件总线（emit 观测，可选）
 }
 

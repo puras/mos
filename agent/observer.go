@@ -20,7 +20,7 @@ const (
 	EventDone
 	// EventFact 审计器验证通过，任务状态新增一条已验证事实。
 	EventFact
-	// EventStream 模型流式输出的文本增量（Delta 字段承载）。
+	// EventStream 模型流式输出的文本增量（Delta 承载正文，Reasoning 承载思考增量）。
 	EventStream
 	// EventCompacted 历史被 fresh-context 压缩（M2.5）：Content 为压缩摘要文本。
 	EventCompacted
@@ -39,6 +39,7 @@ type Event struct {
 	Turn       int    // 当前 Turn 序号（从 1 开始）
 	Content    string // EventStep 的思考文本 / EventDone 的最终回复 / EventCompacted 摘要 / EventContextUsage 利用率
 	Delta      string // 预留：流式文本增量
+	Reasoning  string // 流式推理内容增量（EventStream）
 	ToolCall   *llm.ToolCall
 	ToolResult any
 	Fact       *session.Fact // EventFact：审计通过的已验证事实

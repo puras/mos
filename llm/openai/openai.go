@@ -478,11 +478,11 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 		}
 		acc.content.WriteString(choice.Delta.Content)
 		acc.reasoning.WriteString(choice.Delta.ReasoningContent)
-		sc := llm.StreamChunk{Delta: choice.Delta.Content, FinishReason: deref(choice.FinishReason)}
+		sc := llm.StreamChunk{Delta: choice.Delta.Content, Reasoning: choice.Delta.ReasoningContent, FinishReason: deref(choice.FinishReason)}
 		if tc := acc.mergeToolCall(choice.Delta.ToolCalls); tc != nil {
 			sc.ToolCall = tc
 		}
-		if sc.Delta != "" || sc.ToolCall != nil {
+		if sc.Delta != "" || sc.Reasoning != "" || sc.ToolCall != nil {
 			if emit != nil {
 				if err := emit(sc); err != nil {
 					return nil, err

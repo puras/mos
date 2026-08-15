@@ -46,8 +46,9 @@ type UserMessageData struct {
 
 // AssistantChunkData 流式增量（token 级回放保真）。
 type AssistantChunkData struct {
-	Turn  int    `json:"turn"`
-	Delta string `json:"delta"`
+	Turn      int    `json:"turn"`
+	Delta     string `json:"delta"`
+	Reasoning string `json:"reasoning,omitempty"` // 推理内容增量（thinking 模式回放保真）
 }
 
 // AssistantMessageData 单步完整回复 + 用量。

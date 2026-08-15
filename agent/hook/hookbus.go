@@ -1,4 +1,5 @@
-package agent
+// Package hook 提供智能体可改写环节的瀑布钩子（HookBus）与单调守卫（GuardBus）。
+package hook
 
 import (
 	"context"

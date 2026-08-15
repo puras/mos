@@ -278,9 +278,14 @@ func TestChatStreamReasoningContent(t *testing.T) {
 	})
 	defer srv.Close()
 
+	var gotDelta, gotReasoning []string
 	resp, err := p.ChatStream(context.Background(), &llm.Request{
 		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
-	}, nil)
+	}, func(c llm.StreamChunk) error {
+		gotDelta = append(gotDelta, c.Delta)
+		gotReasoning = append(gotReasoning, c.Reasoning)
+		return nil
+	})
 	if err != nil {
 		t.Fatalf("ChatStream: %v", err)
 	}
@@ -289,6 +294,13 @@ func TestChatStreamReasoningContent(t *testing.T) {
 	}
 	if resp.Message.Content != "答案" {
 		t.Fatalf("content = %q", resp.Message.Content)
+	}
+	// 分块层面应透传思考增量；仅含 reasoning_content 的分块也必须广播。
+	if strings.Join(gotReasoning, "") != "先思考再回答" {
+		t.Fatalf("chunk reasoning = %v", gotReasoning)
+	}
+	if strings.Join(gotDelta, "") != "答案" {
+		t.Fatalf("chunk delta = %v", gotDelta)
 	}
 }
 

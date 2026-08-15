@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"hegq.net/mos/agent/event"
+	"hegq.net/mos/agent/hook"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/memory"
@@ -37,10 +38,10 @@ type ReActDriver struct{}
 // 预留 HookRequest / HookToolPreExecute / HookTurnStopping 环节供平台扩展。
 func NewReAct(rt *RunContext) LoopDriver {
 	if rt.Hooks == nil {
-		rt.Hooks = NewHookBus()
+		rt.Hooks = hook.NewHookBus()
 	}
 	if rt.Guards == nil {
-		rt.Guards = NewGuardBus()
+		rt.Guards = hook.NewGuardBus()
 	}
 	if rt.Auditor == nil {
 		rt.Auditor = NewDefaultAuditor()
@@ -52,18 +53,18 @@ func NewReAct(rt *RunContext) LoopDriver {
 		rt.Compactor = NewDefaultCompactor(CompactorConfig{})
 	}
 
-	rt.Hooks.On(HookPreStep, compressHook(rt))
-	rt.Hooks.On(HookPreStep, ragInjectHook(rt))
-	rt.Hooks.On(HookToolExecute, executeHook(rt))
-	rt.Hooks.On(HookToolPostExecute, truncateHook(rt))
-	rt.Hooks.On(HookToolPostExecute, auditHook(rt))
+	rt.Hooks.On(hook.HookPreStep, compressHook(rt))
+	rt.Hooks.On(hook.HookPreStep, ragInjectHook(rt))
+	rt.Hooks.On(hook.HookToolExecute, executeHook(rt))
+	rt.Hooks.On(hook.HookToolPostExecute, truncateHook(rt))
+	rt.Hooks.On(hook.HookToolPostExecute, auditHook(rt))
 	if rt.Policy != nil {
 		rt.Guards.Add(policyGuard(rt.Policy))
 	}
 	// Doom Loop 检测以单调守卫注册（tool/pre-execute 阶段、Policy 之后）：
 	// 相同工具连续相同参数调用达到阈值即中断任务（状态 blocked），见 agent/doomloop.go。
 	if rt.DoomLoopMaxRepeat > 0 {
-		rt.Guards.Add(NewDoomLoopGuard(rt.DoomLoopMaxRepeat).Guard)
+		rt.Guards.Add(hook.NewDoomLoopGuard(rt.DoomLoopMaxRepeat).Guard)
 	}
 	return &ReActDriver{}
 }
@@ -125,7 +126,7 @@ func (d *ReActDriver) Run(ctx context.Context, rt *RunContext, input string) (st
 		msgs = append(msgs, history...)
 
 		// pre-step 钩子：压缩 + RAG 注入（可改写模型输入）
-		hev := &HookEvent{Kind: HookPreStep, Messages: msgs, Turn: turn, Step: step}
+		hev := &hook.HookEvent{Kind: hook.HookPreStep, Messages: msgs, Turn: turn, Step: step}
 		hev, err = rt.Hooks.Waterfall(ctx, hev)
 		if err != nil {
 			return "", fmt.Errorf("agent: pre-step hooks: %w", err)
@@ -187,7 +188,7 @@ func (d *ReActDriver) Run(ctx context.Context, rt *RunContext, input string) (st
 		rt.notify(Event{Type: EventToolCall, SessionID: sess.ID, Turn: turn, ToolCall: call})
 
 		// 执行工具：守卫（单调）→ pre-execute → execute → post-execute
-		tev := &HookEvent{Kind: HookToolPreExecute, ToolCall: call, Turn: turn, Step: step}
+		tev := &hook.HookEvent{Kind: hook.HookToolPreExecute, ToolCall: call, Turn: turn, Step: step}
 		tev, execErr := executeToolChain(ctx, rt, tev)
 
 		var deniedErr *ToolDeniedError
@@ -198,7 +199,7 @@ func (d *ReActDriver) Run(ctx context.Context, rt *RunContext, input string) (st
 			rt.notify(Event{Type: EventToolResult, SessionID: sess.ID, Turn: turn, ToolCall: call})
 		case execErr != nil:
 			// Doom Loop 是致命守卫错误：任务中断（状态 blocked），不回填工具结果
-			var doomErr *DoomLoopError
+			var doomErr *hook.DoomLoopError
 			if errors.As(execErr, &doomErr) {
 				sess.State.Status = session.StatusBlocked
 				_ = sess.Append(event.SessionEventStepEnd, event.StepData{Turn: turn, Step: step})
@@ -242,11 +243,11 @@ func (d *ReActDriver) nextAction(ctx context.Context, rt *RunContext, sess *sess
 		return rt.Planner.NextAction(ctx, llmMsgs, tools)
 	}
 	return sp.NextActionStream(ctx, llmMsgs, tools, func(chunk llm.StreamChunk) error {
-		if chunk.Delta == "" {
+		if chunk.Delta == "" && chunk.Reasoning == "" {
 			return nil
 		}
-		_ = sess.Append(event.SessionEventAssistantChunk, event.AssistantChunkData{Turn: turn, Delta: chunk.Delta})
-		rt.notify(Event{Type: EventStream, SessionID: sess.ID, Turn: turn, Delta: chunk.Delta})
+		_ = sess.Append(event.SessionEventAssistantChunk, event.AssistantChunkData{Turn: turn, Delta: chunk.Delta, Reasoning: chunk.Reasoning})
+		rt.notify(Event{Type: EventStream, SessionID: sess.ID, Turn: turn, Delta: chunk.Delta, Reasoning: chunk.Reasoning})
 		return nil
 	})
 }
@@ -265,9 +266,9 @@ func (rt *RunContext) monitorUsage(turn int, usage llm.Usage) {
 
 // executeToolChain 执行工具调用环节：单调守卫 → tool/pre-execute → tool/execute → tool/post-execute。
 // 守卫拒绝返回 *ToolDeniedError（非致命，结果反馈给模型）；其余错误视为运行期失败。
-func executeToolChain(ctx context.Context, rt *RunContext, ev *HookEvent) (*HookEvent, error) {
+func executeToolChain(ctx context.Context, rt *RunContext, ev *hook.HookEvent) (*hook.HookEvent, error) {
 	if err := rt.Guards.Allow(ctx, ev); err != nil {
-		var doomErr *DoomLoopError
+		var doomErr *hook.DoomLoopError
 		if errors.As(err, &doomErr) {
 			return nil, doomErr // 致命守卫错误：循环层终止任务（状态 blocked）
 		}
@@ -277,22 +278,22 @@ func executeToolChain(ctx context.Context, rt *RunContext, ev *HookEvent) (*Hook
 	if err != nil {
 		return nil, err
 	}
-	execEv := &HookEvent{Kind: HookToolExecute, ToolCall: ev.ToolCall, Turn: ev.Turn, Step: ev.Step}
+	execEv := &hook.HookEvent{Kind: hook.HookToolExecute, ToolCall: ev.ToolCall, Turn: ev.Turn, Step: ev.Step}
 	execEv, err = rt.Hooks.Waterfall(ctx, execEv)
 	if err != nil {
 		return nil, err
 	}
 	// 广播工具结果观测（在审计之前，保持事件序列 ToolCall → ToolResult → Fact）
 	rt.notify(Event{Type: EventToolResult, SessionID: rt.Session.ID, Turn: execEv.Turn, ToolCall: execEv.ToolCall, ToolResult: execEv.Result})
-	postEv := &HookEvent{Kind: HookToolPostExecute, ToolCall: ev.ToolCall, Result: execEv.Result, Err: execEv.Err, Turn: ev.Turn, Step: ev.Step}
+	postEv := &hook.HookEvent{Kind: hook.HookToolPostExecute, ToolCall: ev.ToolCall, Result: execEv.Result, Err: execEv.Err, Turn: ev.Turn, Step: ev.Step}
 	return rt.Hooks.Waterfall(ctx, postEv)
 }
 
 // ---- 默认钩子/守卫 ----
 
 // policyGuard 将 Policy 注入单调守卫链（工具调用前裁决，不可被 hook 改写绕过）。
-func policyGuard(p Policy) Guard {
-	return func(ctx context.Context, ev *HookEvent) error {
+func policyGuard(p Policy) hook.Guard {
+	return func(ctx context.Context, ev *hook.HookEvent) error {
 		if ev.ToolCall == nil {
 			return nil
 		}
@@ -302,8 +303,8 @@ func policyGuard(p Policy) Guard {
 
 // executeHook 是 tool/execute 链尾的默认执行器：实际调用工具并填充结果。
 // 平台可在其前注册包装钩子（超时/重试/指标），经 next 委托到本执行器。
-func executeHook(rt *RunContext) Hook {
-	return func(ctx context.Context, ev *HookEvent, next Next) (*HookEvent, error) {
+func executeHook(rt *RunContext) hook.Hook {
+	return func(ctx context.Context, ev *hook.HookEvent, next hook.Next) (*hook.HookEvent, error) {
 		if ev.ToolCall == nil {
 			return next(ctx, ev)
 		}
@@ -318,8 +319,8 @@ func executeHook(rt *RunContext) Hook {
 
 // truncateHook 是 tool/post-execute 环节的上下文瘦身：对给模型看的工具结果文本
 // 做行数/字节上限截断（超限携带逃生通道提示）；审计仍使用原始 Result。
-func truncateHook(rt *RunContext) Hook {
-	return func(ctx context.Context, ev *HookEvent, next Next) (*HookEvent, error) {
+func truncateHook(rt *RunContext) hook.Hook {
+	return func(ctx context.Context, ev *hook.HookEvent, next hook.Next) (*hook.HookEvent, error) {
 		if ev.ToolCall == nil || rt.Truncator == nil {
 			return next(ctx, ev)
 		}
@@ -335,8 +336,8 @@ func truncateHook(rt *RunContext) Hook {
 
 // auditHook 是 tool/post-execute 环节的审计门（Audit Gate）：
 // 仅将审计器认可的环境事实写入任务状态（TaskState），并广播 EventFact。
-func auditHook(rt *RunContext) Hook {
-	return func(ctx context.Context, ev *HookEvent, next Next) (*HookEvent, error) {
+func auditHook(rt *RunContext) hook.Hook {
+	return func(ctx context.Context, ev *hook.HookEvent, next hook.Next) (*hook.HookEvent, error) {
 		if ev.ToolCall == nil || ev.Err != nil || rt.Auditor == nil {
 			return next(ctx, ev)
 		}
@@ -356,8 +357,8 @@ func auditHook(rt *RunContext) Hook {
 // compressHook 是 pre-step 环节的 fresh-context 压缩：两轮之间历史超过阈值时，
 // 将旧消息压缩为摘要（TaskState 已验证事实）注入，写 compaction 三段式事件
 // （start → summary → end，summary 携带阴影范围，可回放）。
-func compressHook(rt *RunContext) Hook {
-	return func(ctx context.Context, ev *HookEvent, next Next) (*HookEvent, error) {
+func compressHook(rt *RunContext) hook.Hook {
+	return func(ctx context.Context, ev *hook.HookEvent, next hook.Next) (*hook.HookEvent, error) {
 		if rt.Compactor == nil || ev.Turn <= 1 || len(ev.Messages) == 0 {
 			return next(ctx, ev)
 		}
@@ -399,8 +400,8 @@ func compressHook(rt *RunContext) Hook {
 // ragInjectHook 是 pre-step 环节的 RAG 检索注入：按任务目标检索长期记忆，
 // 经知识守门后以 CustomMsg（来源标注 [rag]）注入本轮模型输入（不进日志，
 // 每轮按最新知识重检）。
-func ragInjectHook(rt *RunContext) Hook {
-	return func(ctx context.Context, ev *HookEvent, next Next) (*HookEvent, error) {
+func ragInjectHook(rt *RunContext) hook.Hook {
+	return func(ctx context.Context, ev *hook.HookEvent, next hook.Next) (*hook.HookEvent, error) {
 		if rt.Retriever == nil {
 			return next(ctx, ev)
 		}

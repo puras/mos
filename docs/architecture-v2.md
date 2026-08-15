@@ -7,6 +7,7 @@
 
 | 日期 | 版本 | 更新内容 |
 | --- | --- | --- |
+| 2026-08-15 | v2.7 | 实施：Step 3 落地 `agent/hook`（HookBus + GuardBus + DoomLoopGuard/detector）；react/driver 改 `hook.*` 前缀；detector 单测随迁，doomloop 集成测试留根包 |
 | 2026-08-15 | v2.6 | 实施：Step 2 落地 `agent/session`（Session 日志 + TaskState + InternalMessage + deriveMessages，含 ConvertToLlm/FormatToolResult/MessageEventSeqs 导出）；根 agent 改为 `session.*` 前缀引用；integration 型 state 测试保留在根包 |
 | 2026-08-15 | v2.5 | 实施：按 §11.1 拆分 agent 包，Step 1 落地 `agent/event`（EventBus 四模式 + 会话事件目录/载荷 + MarshalData）；根包引用改为 `event.*` 前缀；§11.1 声明不设公开语义红线（开发阶段，依赖方向强制优于 API 稳定） |
 | 2026-08-14 | v2.4 | 引入 PI（@earendil-works/pi-agent-core）对照：§1.3 补 PI 借鉴表；P0 落地——llm.Response.FinishReason 三协议透传、ReActDriver 截断工具调用 fail-closed（对齐 PI failToolCallsFromTruncatedMessage）、DoomLoop 迁为单调守卫（DoomLoopGuard）；§3.9 补批量执行三阶段语义、§3.10 Inbox 拆三队列、新增 §3.11 Telemetry seam（规划） |
@@ -822,10 +823,10 @@ flowchart LR
 | `TaskState` | 任务状态投影：目标 / 已验证事实 / 状态机；从事件重建 | agent/session | ✅ 现有（保留） |
 | `TaskStatus` | 任务状态机：pending / running / blocked / completed | agent/session | ✅ 现有（保留） |
 | `Fact` | 已验证事实（summary + evidence + tool） | agent/session | ✅ 现有（保留） |
-| `HookBus` | 瀑布钩子：可改写 / 委托 / 短路；环节可插拔 | agent | ✅ 已实现 |
-| `GuardBus` | 单调守卫：串行裁决、短路即拒，不可被 hook 改写绕过（Policy/权限/身份） | agent | ✅ 已实现 |
+| `HookBus` | 瀑布钩子：可改写 / 委托 / 短路；环节可插拔 | agent/hook | ✅ 已实现 |
+| `GuardBus` | 单调守卫：串行裁决、短路即拒，不可被 hook 改写绕过（Policy/权限/身份） | agent/hook | ✅ 已实现 |
 | `Hook` / `HookKind` / `Next` | 瀑布钩子签名与环节枚举（pre-step / request / tool-* / turn-stopping） | agent | ✅ 已实现（request/turn-stopping 预留） |
-| `DoomLoopGuard` / `DoomLoopError` | Doom Loop 单调守卫：相同工具连续相同参数调用达阈值 → 致命守卫错误，循环层终止任务（状态 blocked） | agent | ✅ 已实现 |
+| `DoomLoopGuard` / `DoomLoopError` | Doom Loop 单调守卫：相同工具连续相同参数调用达阈值 → 致命守卫错误，循环层终止任务（状态 blocked） | agent/hook | ✅ 已实现 |
 | `isTruncatedFinish` | 截断停止原因判定（length / max_tokens） | agent | ✅ 已实现 |
 | `llm.Response.FinishReason` | 模型停止原因透传（openai stop/length/tool_calls；anthropic end_turn/max_tokens/tool_use；gemini 小写化） | llm | ✅ 已实现 |
 | `Scope` | per-agent 注册作用域；agent 销毁时按注册逆序回滚（registrations are reversible） | agent/scope（规划） | 🧱 规划中 |
