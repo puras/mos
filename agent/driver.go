@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"hegq.net/mos/agent/event"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/memory"
 	"hegq.net/mos/planner"
@@ -47,10 +48,10 @@ type RunContext struct {
 	ContextBudget     int             // 模型上下文 token 预算（利用率监控，>0 启用）
 	DoomLoopMaxRepeat int             // Doom Loop 检测（>0 启用，默认阈值 3）
 	MaxTurns          int
-	Stream            bool      // 流式路径：模型文本增量经 EventStream 广播
-	Hooks             *HookBus  // 瀑布钩子（可改写环节）
-	Guards            *GuardBus // 单调守卫（不可被改写绕过）
-	Bus               *EventBus // 事件总线（emit 观测，可选）
+	Stream            bool            // 流式路径：模型文本增量经 EventStream 广播
+	Hooks             *HookBus        // 瀑布钩子（可改写环节）
+	Guards            *GuardBus       // 单调守卫（不可被改写绕过）
+	Bus               *event.EventBus // 事件总线（emit 观测，可选）
 }
 
 // Agent 是智能体实例：RunContext + LoopDriver 的组合（架构 v2 §11.3）。

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"hegq.net/mos/agent/event"
 	"hegq.net/mos/llm"
 )
 
@@ -48,7 +49,7 @@ func (s *Session) Append(typ string, data any) error {
 	if s == nil {
 		return fmt.Errorf("agent: append event to nil session")
 	}
-	ev := SessionEvent{Seq: int64(len(s.Events)) + 1, Type: typ, Data: marshalData(data)}
+	ev := SessionEvent{Seq: int64(len(s.Events)) + 1, Type: typ, Data: event.MarshalData(data)}
 	s.Events = append(s.Events, ev)
 	return nil
 }
@@ -76,10 +77,10 @@ func deriveMessages(events []SessionEvent) []InternalMessage {
 	shadowed := make(map[int64]bool)
 	var summaries []messageAt
 	for _, ev := range events {
-		if ev.Type != SessionEventCompactionSummary {
+		if ev.Type != event.SessionEventCompactionSummary {
 			continue
 		}
-		var d CompactionSummaryData
+		var d event.CompactionSummaryData
 		if err := json.Unmarshal(ev.Data, &d); err != nil {
 			continue
 		}
@@ -103,9 +104,9 @@ func deriveMessages(events []SessionEvent) []InternalMessage {
 			continue // 已被压缩摘要替换的旧消息
 		}
 		switch ev.Type {
-		case SessionEventUserMessage:
+		case event.SessionEventUserMessage:
 			flushChunk()
-			var d UserMessageData
+			var d event.UserMessageData
 			if err := json.Unmarshal(ev.Data, &d); err != nil {
 				continue
 			}
@@ -114,8 +115,8 @@ func deriveMessages(events []SessionEvent) []InternalMessage {
 				msg.Source = d.Source
 			}
 			out = append(out, messageAt{pos: ev.Seq, msg: msg})
-		case SessionEventAssistantChunk:
-			var d AssistantChunkData
+		case event.SessionEventAssistantChunk:
+			var d event.AssistantChunkData
 			if err := json.Unmarshal(ev.Data, &d); err != nil {
 				continue
 			}
@@ -123,9 +124,9 @@ func deriveMessages(events []SessionEvent) []InternalMessage {
 				chunkPos = ev.Seq
 			}
 			pendingChunk += d.Delta
-		case SessionEventAssistantMessage:
+		case event.SessionEventAssistantMessage:
 			pendingChunk = "" // 完整消息消费掉前置 chunk 累积
-			var d AssistantMessageData
+			var d event.AssistantMessageData
 			if err := json.Unmarshal(ev.Data, &d); err != nil {
 				continue
 			}
@@ -134,9 +135,9 @@ func deriveMessages(events []SessionEvent) []InternalMessage {
 			} else {
 				out = append(out, messageAt{pos: ev.Seq, msg: AssistantMsg(d.Content, d.Reasoning)})
 			}
-		case SessionEventToolResult:
+		case event.SessionEventToolResult:
 			flushChunk()
-			var d ToolResultData
+			var d event.ToolResultData
 			if err := json.Unmarshal(ev.Data, &d); err != nil {
 				continue
 			}
@@ -185,8 +186,8 @@ func messageEventSeqs(events []SessionEvent) []int64 {
 	var seqs []int64
 	for _, ev := range events {
 		switch ev.Type {
-		case SessionEventUserMessage, SessionEventAssistantMessage,
-			SessionEventToolResult, SessionEventCompactionSummary:
+		case event.SessionEventUserMessage, event.SessionEventAssistantMessage,
+			event.SessionEventToolResult, event.SessionEventCompactionSummary:
 			seqs = append(seqs, ev.Seq)
 		}
 	}
@@ -236,11 +237,11 @@ func RestoreSession(data []byte) (*Session, error) {
 // ---- 事件构造 helper（typed，供驱动与测试使用）----
 
 func (s *Session) appendUserMessage(message, source string) error {
-	return s.Append(SessionEventUserMessage, UserMessageData{Message: message, Source: source})
+	return s.Append(event.SessionEventUserMessage, event.UserMessageData{Message: message, Source: source})
 }
 
 func (s *Session) appendAssistantMessage(turn int, content, reasoning string, calls []llm.ToolCall, usage llm.Usage) error {
-	return s.Append(SessionEventAssistantMessage, AssistantMessageData{
+	return s.Append(event.SessionEventAssistantMessage, event.AssistantMessageData{
 		Turn: turn, Content: content, Reasoning: reasoning, ToolCalls: calls, Usage: usage,
 	})
 }
@@ -249,7 +250,7 @@ func (s *Session) appendToolCall(turn int, call *llm.ToolCall) error {
 	if call == nil {
 		return nil
 	}
-	return s.Append(SessionEventToolCall, ToolCallData{
+	return s.Append(event.SessionEventToolCall, event.ToolCallData{
 		Turn: turn, CallID: call.ID, Name: call.Name, Args: call.Args,
 	})
 }
@@ -258,11 +259,11 @@ func (s *Session) appendToolResult(turn int, call *llm.ToolCall, result any, tex
 	if call == nil {
 		return nil
 	}
-	d := ToolResultData{Turn: turn, CallID: call.ID, Name: call.Name, Result: result, Text: text}
+	d := event.ToolResultData{Turn: turn, CallID: call.ID, Name: call.Name, Result: result, Text: text}
 	if err != nil {
 		d.Error = err.Error()
 	}
-	return s.Append(SessionEventToolResult, d)
+	return s.Append(event.SessionEventToolResult, d)
 }
 
 // formatToolResult 将工具返回值统一序列化为给模型看的文本。

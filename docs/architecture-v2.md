@@ -7,6 +7,7 @@
 
 | 日期 | 版本 | 更新内容 |
 | --- | --- | --- |
+| 2026-08-15 | v2.5 | 实施：按 §11.1 拆分 agent 包，Step 1 落地 `agent/event`（EventBus 四模式 + 会话事件目录/载荷 + MarshalData）；根包引用改为 `event.*` 前缀；§11.1 声明不设公开语义红线（开发阶段，依赖方向强制优于 API 稳定） |
 | 2026-08-14 | v2.4 | 引入 PI（@earendil-works/pi-agent-core）对照：§1.3 补 PI 借鉴表；P0 落地——llm.Response.FinishReason 三协议透传、ReActDriver 截断工具调用 fail-closed（对齐 PI failToolCallsFromTruncatedMessage）、DoomLoop 迁为单调守卫（DoomLoopGuard）；§3.9 补批量执行三阶段语义、§3.10 Inbox 拆三队列、新增 §3.11 Telemetry seam（规划） |
 | 2026-08-14 | v2.3 | 实施进度：MVP 核心（实施顺序 1-5）落地——EventBus 四模式、Session 事件日志（deriveMessages + 不变式）、HookBus+GuardBus、RunContext+LoopDriver+ReActDriver、assistant 默认装配；废弃命令式 run 与 WithXxx 选项；SDK 契约文档 §3 同步为事件日志格式 |
 | 2026-08-14 | v2.3 | 清理：移除死代码（fromLlm、Session.LastSeq、planner.WithInstruction）与零引用包 memory/inmemory；术语表状态同步为已实现/规划中 |
@@ -637,9 +638,10 @@ evals 体系（平台/测试基建，SDK 保留接口级 conformance 测试）�
 
 ### 11.1 模块划分（包结构）
 
-> 以下为**目标包结构**（v2 演进方向，按模块落地时逐步拆分）；当前实现为 `agent` / `assistant` / `llm` /
-> `planner` / `tool` / `memory` 单包（具体状态见第 12 章术语表标注）。包拆分不改变公开语义，
-> 仅作物理组织调整。
+> 以下为**目标包结构**（v2 演进方向，按模块落地时逐步拆分）；当前实现为 `agent`（含已拆出的
+> `agent/event`）/ `assistant` / `llm` / `planner` / `tool` / `memory`（具体状态见第 12 章术语表标注）。
+> 包拆分**不设公开语义红线**（开发阶段）：公开 import 路径可随拆分调整，调用点同步更新；
+> 拆分的核心收益是**依赖方向由编译器强制**（基础层不得反向依赖上层机制）。
 
 ```mermaid
 flowchart TD
@@ -809,8 +811,8 @@ flowchart LR
 
 | 概念 | 定义/职责 | 所在模块/包 | 状态 |
 | --- | --- | --- | --- |
-| `EventBus` | 事件分发器：emit/waterfall/parallel/serial 四模式；事件是扩展点，模式是公开契约 | agent | ✅ 已实现 |
-| `DispatchMode` | 调度模式枚举：观察 / 包装 / 扇出 / 裁决 | agent | ✅ 已实现 |
+| `EventBus` | 事件分发器：emit/waterfall/parallel/serial 四模式；事件是扩展点，模式是公开契约 | agent/event | ✅ 已实现 |
+| `DispatchMode` | 调度模式枚举：观察 / 包装 / 扇出 / 裁决 | agent/event | ✅ 已实现 |
 | `Session` | append-only 事件日志 + `TaskState` 投影 + `SessionHeader`；唯一事实来源，消息经 `deriveMessages` 派生 | agent | ✅ 已实现 |
 | `SessionEvent` | 不可变事件（Seq 连续，Type + Data）；持久化 / 回放 / 恢复的最小单元 | agent | ✅ 已实现 |
 | `SessionHeader` | 存储元数据：version / cwd / lineage / seed；不进模型面 | agent | ✅ 已实现 |

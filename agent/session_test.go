@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"testing"
 
+	"hegq.net/mos/agent/event"
 	"hegq.net/mos/llm"
 )
 
@@ -14,16 +15,16 @@ func TestSessionSaveRestoreRoundTrip(t *testing.T) {
 	sess := NewSession("sess-001")
 	_ = sess.appendUserMessage("请计算 1+2 并汇报", "user")
 	_ = sess.appendAssistantMessage(1, "让我计算", "先调用计算器", []llm.ToolCall{
-		{ID: "call_1", Name: "calculator", Args: `{"expr":"1+2"}`},
+		{ID: "call_1", Name: "read_file", Args: `{"expr":"1+2"}`},
 	}, llm.Usage{})
-	_ = sess.appendToolCall(1, &llm.ToolCall{ID: "call_1", Name: "calculator", Args: `{"expr":"1+2"}`})
-	_ = sess.appendToolResult(1, &llm.ToolCall{ID: "call_1", Name: "calculator"}, 3, "3", nil)
+	_ = sess.appendToolCall(1, &llm.ToolCall{ID: "call_1", Name: "read_file", Args: `{"expr":"1+2"}`})
+	_ = sess.appendToolResult(1, &llm.ToolCall{ID: "call_1", Name: "read_file"}, 3, "3", nil)
 	_ = sess.appendAssistantMessage(2, "结果是 3", "推理：1+2=3", nil, llm.Usage{PromptTokens: 10})
-	_ = sess.Append(SessionEventCompactionSummary, CompactionSummaryData{Summary: "已确认计算结果为 3", ShadowedFrom: 2, ShadowedTo: 3})
+	_ = sess.Append(event.SessionEventCompactionSummary, event.CompactionSummaryData{Summary: "已确认计算结果为 3", ShadowedFrom: 2, ShadowedTo: 3})
 	sess.Header.CWD = "/tmp/work"
 	sess.State = TaskState{
 		Goal:    "请计算 1+2 并汇报",
-		Facts:   []Fact{{Summary: "1+2=3", Evidence: "3", Tool: "calculator"}},
+		Facts:   []Fact{{Summary: "1+2=3", Evidence: "3", Tool: "read_file"}},
 		Pending: []string{"汇报结果"},
 		Status:  StatusRunning,
 	}
@@ -100,10 +101,10 @@ func TestDeriveMessages(t *testing.T) {
 	sess := NewSession("s1")
 	_ = sess.appendUserMessage("用户输入", "user")
 	_ = sess.appendAssistantMessage(1, "回答一", "思考一", nil, llm.Usage{})
-	_ = sess.Append(SessionEventAssistantChunk, AssistantChunkData{Turn: 2, Delta: "部"})
-	_ = sess.Append(SessionEventAssistantChunk, AssistantChunkData{Turn: 2, Delta: "分"})
-	_ = sess.appendAssistantMessage(2, "调用工具", "思考二", []llm.ToolCall{{ID: "c1", Name: "calculator", Args: `{"a":1}`}}, llm.Usage{})
-	_ = sess.appendToolResult(2, &llm.ToolCall{ID: "c1", Name: "calculator"}, 1, "1", nil)
+	_ = sess.Append(event.SessionEventAssistantChunk, event.AssistantChunkData{Turn: 2, Delta: "部"})
+	_ = sess.Append(event.SessionEventAssistantChunk, event.AssistantChunkData{Turn: 2, Delta: "分"})
+	_ = sess.appendAssistantMessage(2, "调用工具", "思考二", []llm.ToolCall{{ID: "c1", Name: "read_file", Args: `{"a":1}`}}, llm.Usage{})
+	_ = sess.appendToolResult(2, &llm.ToolCall{ID: "c1", Name: "read_file"}, 1, "1", nil)
 
 	msgs := sess.Messages()
 	if len(msgs) != 4 {
@@ -126,8 +127,8 @@ func TestDeriveMessages(t *testing.T) {
 // TestDeriveMessagesChunkOnly 仅 chunk 无完整消息（异常中断）时聚合为一条消息。
 func TestDeriveMessagesChunkOnly(t *testing.T) {
 	sess := NewSession("s1")
-	_ = sess.Append(SessionEventAssistantChunk, AssistantChunkData{Turn: 1, Delta: "你"})
-	_ = sess.Append(SessionEventAssistantChunk, AssistantChunkData{Turn: 1, Delta: "好"})
+	_ = sess.Append(event.SessionEventAssistantChunk, event.AssistantChunkData{Turn: 1, Delta: "你"})
+	_ = sess.Append(event.SessionEventAssistantChunk, event.AssistantChunkData{Turn: 1, Delta: "好"})
 	msgs := sess.Messages()
 	if len(msgs) != 1 || msgs[0].Content != "你好" {
 		t.Fatalf("chunk aggregation failed: %+v", msgs)
@@ -142,7 +143,7 @@ func TestDeriveMessagesCompactionSummary(t *testing.T) {
 	_ = sess.appendUserMessage("问题二", "user")
 	_ = sess.appendAssistantMessage(2, "回答二", "", nil, llm.Usage{})
 	// 压缩：摘要替换前 2 条消息事件（seq 1-2）
-	_ = sess.Append(SessionEventCompactionSummary, CompactionSummaryData{
+	_ = sess.Append(event.SessionEventCompactionSummary, event.CompactionSummaryData{
 		Summary: "历史摘要", ShadowedFrom: 1, ShadowedTo: 2,
 	})
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"hegq.net/mos/agent/event"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/memory"
 	"hegq.net/mos/planner"
@@ -88,7 +89,7 @@ func (d *ReActDriver) Run(ctx context.Context, rt *RunContext, input string) (st
 		sess.State.Status = StatusRunning
 	}
 
-	if err := sess.Append(SessionEventTurnStart, TurnData{Turn: 1, Reason: "user"}); err != nil {
+	if err := sess.Append(event.SessionEventTurnStart, event.TurnData{Turn: 1, Reason: "user"}); err != nil {
 		return "", fmt.Errorf("agent: append turn/start: %w", err)
 	}
 	if err := sess.appendUserMessage(input, "user"); err != nil {
@@ -120,7 +121,7 @@ func (d *ReActDriver) Run(ctx context.Context, rt *RunContext, input string) (st
 			return "", fmt.Errorf("agent: pre-step hooks: %w", err)
 		}
 
-		if err := sess.Append(SessionEventStepStart, StepData{Turn: turn, Step: step}); err != nil {
+		if err := sess.Append(event.SessionEventStepStart, event.StepData{Turn: turn, Step: step}); err != nil {
 			return "", fmt.Errorf("agent: append step/start: %w", err)
 		}
 
@@ -144,8 +145,8 @@ func (d *ReActDriver) Run(ctx context.Context, rt *RunContext, input string) (st
 		if len(calls) == 0 {
 			// 直接作答，任务完成
 			sess.State.Status = StatusCompleted
-			_ = sess.Append(SessionEventStepEnd, StepData{Turn: turn, Step: step})
-			_ = sess.Append(SessionEventTurnEnd, TurnData{Turn: turn, Reason: "done"})
+			_ = sess.Append(event.SessionEventStepEnd, event.StepData{Turn: turn, Step: step})
+			_ = sess.Append(event.SessionEventTurnEnd, event.TurnData{Turn: turn, Reason: "done"})
 			rt.notify(Event{Type: EventDone, SessionID: sess.ID, Turn: turn, Content: action.Content})
 			return action.Content, nil
 		}
@@ -161,7 +162,7 @@ func (d *ReActDriver) Run(ctx context.Context, rt *RunContext, input string) (st
 				_ = sess.appendToolResult(turn, call, nil, "", err)
 				rt.notify(Event{Type: EventToolResult, SessionID: sess.ID, Turn: turn, ToolCall: call})
 			}
-			_ = sess.Append(SessionEventStepEnd, StepData{Turn: turn, Step: step})
+			_ = sess.Append(event.SessionEventStepEnd, event.StepData{Turn: turn, Step: step})
 			history = sess.Messages()
 			continue
 		}
@@ -190,7 +191,7 @@ func (d *ReActDriver) Run(ctx context.Context, rt *RunContext, input string) (st
 			var doomErr *DoomLoopError
 			if errors.As(execErr, &doomErr) {
 				sess.State.Status = StatusBlocked
-				_ = sess.Append(SessionEventStepEnd, StepData{Turn: turn, Step: step})
+				_ = sess.Append(event.SessionEventStepEnd, event.StepData{Turn: turn, Step: step})
 				return "", doomErr
 			}
 			_ = sess.appendToolResult(turn, call, nil, "", execErr)
@@ -198,12 +199,12 @@ func (d *ReActDriver) Run(ctx context.Context, rt *RunContext, input string) (st
 			_ = sess.appendToolResult(turn, call, tev.Result, tev.ResultText, tev.Err)
 		}
 
-		_ = sess.Append(SessionEventStepEnd, StepData{Turn: turn, Step: step})
+		_ = sess.Append(event.SessionEventStepEnd, event.StepData{Turn: turn, Step: step})
 		history = sess.Messages()
 	}
 
 	sess.State.Status = StatusBlocked
-	_ = sess.Append(SessionEventTurnEnd, TurnData{Turn: rt.MaxTurns, Reason: "max_turns"})
+	_ = sess.Append(event.SessionEventTurnEnd, event.TurnData{Turn: rt.MaxTurns, Reason: "max_turns"})
 	return "", fmt.Errorf("agent: max turns %d exceeded", rt.MaxTurns)
 }
 
@@ -223,7 +224,7 @@ func (d *ReActDriver) nextAction(ctx context.Context, rt *RunContext, sess *Sess
 		if chunk.Delta == "" {
 			return nil
 		}
-		_ = sess.Append(SessionEventAssistantChunk, AssistantChunkData{Turn: turn, Delta: chunk.Delta})
+		_ = sess.Append(event.SessionEventAssistantChunk, event.AssistantChunkData{Turn: turn, Delta: chunk.Delta})
 		rt.notify(Event{Type: EventStream, SessionID: sess.ID, Turn: turn, Delta: chunk.Delta})
 		return nil
 	})
@@ -362,11 +363,11 @@ func compressHook(rt *RunContext) Hook {
 			from = seqs[0]
 			to = seqs[shadowed-1]
 		}
-		_ = sess.Append(SessionEventCompactionStart, CompactionStartData{Turn: ev.Turn})
-		_ = sess.Append(SessionEventCompactionSummary, CompactionSummaryData{
+		_ = sess.Append(event.SessionEventCompactionStart, event.CompactionStartData{Turn: ev.Turn})
+		_ = sess.Append(event.SessionEventCompactionSummary, event.CompactionSummaryData{
 			Summary: after[0].Content, ShadowedFrom: from, ShadowedTo: to,
 		})
-		_ = sess.Append(SessionEventCompactionEnd, CompactionEndData{Turn: ev.Turn})
+		_ = sess.Append(event.SessionEventCompactionEnd, event.CompactionEndData{Turn: ev.Turn})
 		rt.notify(Event{Type: EventCompacted, SessionID: sess.ID, Turn: ev.Turn, Content: sess.State.Snapshot()})
 
 		ev.Messages = append(system, after...)
