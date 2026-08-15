@@ -240,6 +240,27 @@ func (s *Session) AppendUserMessage(message, source string) error {
 	return s.Append(event.SessionEventUserMessage, event.UserMessageData{Message: message, Source: source})
 }
 
+// NextTurn 返回下一次任务循环的起始 Turn 编号（1 起）：
+// 已有 turn/start 事件时取最大 Turn + 1（续跑会话 / 多步骤执行时全局递增），
+// 否则从 1 开始。驱动循环内用本次起始值做轮次计数，保持日志 Turn 全局唯一。
+func (s *Session) NextTurn() int {
+	if s == nil {
+		return 1
+	}
+	maxTurn := 0
+	for _, ev := range s.Events {
+		if ev.Type != event.SessionEventTurnStart {
+			continue
+		}
+		var d event.TurnData
+		if err := json.Unmarshal(ev.Data, &d); err != nil || d.Turn <= maxTurn {
+			continue
+		}
+		maxTurn = d.Turn
+	}
+	return maxTurn + 1
+}
+
 func (s *Session) AppendAssistantMessage(turn int, content, reasoning string, calls []llm.ToolCall, usage llm.Usage) error {
 	return s.Append(event.SessionEventAssistantMessage, event.AssistantMessageData{
 		Turn: turn, Content: content, Reasoning: reasoning, ToolCalls: calls, Usage: usage,

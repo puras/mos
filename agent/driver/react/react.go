@@ -101,7 +101,8 @@ func (d *ReActDriver) Run(ctx context.Context, rt *driver.RunContext, input stri
 		sess.State.Status = session.StatusRunning
 	}
 
-	if err := sess.Append(event.SessionEventTurnStart, event.TurnData{Turn: 1, Reason: "user"}); err != nil {
+	firstTurn := sess.NextTurn()
+	if err := sess.Append(event.SessionEventTurnStart, event.TurnData{Turn: firstTurn, Reason: "user"}); err != nil {
 		return "", fmt.Errorf("agent: append turn/start: %w", err)
 	}
 	if err := sess.AppendUserMessage(input, "user"); err != nil {
@@ -110,13 +111,14 @@ func (d *ReActDriver) Run(ctx context.Context, rt *driver.RunContext, input stri
 
 	history := sess.Messages() // 不含 system（system 每轮注入，不写日志）
 
-	for turn := 1; ; turn++ {
+	for turn := firstTurn; ; turn++ {
 		const step = 1
 
 		// 可选保险丝（默认关闭，对齐 DSH/PI 无轮次上限）：显式设置 >0 时兜底防失控。
-		if rt.MaxTurns > 0 && turn > rt.MaxTurns {
+		// 按本次 Run 内的轮次数计数（续跑会话 Turn 全局递增，上限语义不变）。
+		if rt.MaxTurns > 0 && turn-firstTurn+1 > rt.MaxTurns {
 			sess.State.Status = session.StatusBlocked
-			_ = sess.Append(event.SessionEventTurnEnd, event.TurnData{Turn: rt.MaxTurns, Reason: "max_turns"})
+			_ = sess.Append(event.SessionEventTurnEnd, event.TurnData{Turn: turn, Reason: "max_turns"})
 			return "", fmt.Errorf("agent: max turns %d exceeded", rt.MaxTurns)
 		}
 		if err := ctx.Err(); err != nil {

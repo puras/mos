@@ -36,18 +36,21 @@ type LoopDriver interface {
 // RunContext 是 driver 共享设施容器（架构 v2 §3.3）。
 // 驱动通过它访问会话、工具、钩子、守卫与各扩展点；默认装配见 react.New。
 type RunContext struct {
-	Session           *session.Session
-	Tools             *tool.Registry
-	Planner           planner.Planner       // 决策器（默认 planner.NewReAct(model)，ReActDriver 内部使用）
-	Memory            memory.Memory         // 可选记忆后端（MVP 保留接口，接入见后续 Seam 迭代）
-	Sandbox           *tool.Sandbox         // shell 命令执行沙箱
-	Policy            Policy                // 工具调用安全策略（注入 Guards，单调守卫）
-	Auditor           agent.Auditor         // 工具结果审计门（默认 NewDefaultAuditor）
-	Observer          agent.Observer        // 观测回调（emit 投影入口，API 不变）
-	Assembler         agent.SystemAssembler // 槽位式系统提示词组装器（优先于 SystemPrompt）
-	SystemPrompt      string                // 静态系统引导词（Assembler 为空时使用）
-	Retriever         memory.Retriever
-	RetrieverCfg      agent.RetrieverConfig
+	Session      *session.Session
+	Tools        *tool.Registry
+	Planner      planner.Planner       // 决策器（默认 planner.NewReAct(model)，ReActDriver 内部使用）
+	Memory       memory.Memory         // 可选记忆后端（MVP 保留接口，接入见后续 Seam 迭代）
+	Sandbox      *tool.Sandbox         // shell 命令执行沙箱
+	Policy       Policy                // 工具调用安全策略（注入 Guards，单调守卫）
+	Auditor      agent.Auditor         // 工具结果审计门（默认 NewDefaultAuditor）
+	Observer     agent.Observer        // 观测回调（emit 投影入口，API 不变）
+	Assembler    agent.SystemAssembler // 槽位式系统提示词组装器（优先于 SystemPrompt）
+	SystemPrompt string                // 静态系统引导词（Assembler 为空时使用）
+	Retriever    memory.Retriever
+	RetrieverCfg agent.RetrieverConfig
+	// PlanPlanner 是 Plan&Execute 驱动的计划生成器（架构 v2 §3.3）；
+	// ReAct 驱动不使用，nil 时 planexecute 驱动回退为单步执行。
+	PlanPlanner       planner.PlanPlanner
 	Truncator         agent.ResultTruncator // 工具结果截断（模型可见文本瘦身）
 	Compactor         agent.Compactor       // fresh-context 压缩（两轮之间）
 	ContextBudget     int                   // 模型上下文 token 预算（利用率监控，>0 启用）

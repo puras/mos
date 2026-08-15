@@ -7,6 +7,7 @@
 
 | 日期 | 版本 | 更新内容 |
 | --- | --- | --- |
+| 2026-08-15 | v2.9 | 实施：新能力 `agent/driver/planexecute`（Plan&Execute 驱动：写计划 → 逐条执行内嵌 ReActDriver → 校验交付物）；配套 `planner.Plan/PlanPlanner/NewPlan`（JSON 计划生成 + 多级解析回退）、会话事件 `plan/start|step|end`、观测事件 `EventPlan`、`session.NextTurn()`（续跑/多步骤 Turn 全局递增）、RunContext 新增 `PlanPlanner` 字段 |
 | 2026-08-15 | v2.8 | 实施：Step 4 拆分 `agent/driver`（LoopDriver + RunContext + Policy + Agent，`New(rt, d)` 显式指定驱动）与 `agent/driver/react`（ReActDriver + 默认装配入口 `react.New(rt)`）；根包 `driver.go`/`react.go` 删除；跨包方法导出 `Notify`/`AssembleSystem`/`MonitorUsage`；循环集成测试随迁 react 包，根包仅保留纯单测 |
 | 2026-08-15 | v2.7 | 实施：Step 3 落地 `agent/hook`（HookBus + GuardBus + DoomLoopGuard/detector）；react/driver 改 `hook.*` 前缀；detector 单测随迁，doomloop 集成测试留根包 |
 | 2026-08-15 | v2.6 | 实施：Step 2 落地 `agent/session`（Session 日志 + TaskState + InternalMessage + deriveMessages，含 ConvertToLlm/FormatToolResult/MessageEventSeqs 导出）；根 agent 改为 `session.*` 前缀引用；integration 型 state 测试保留在根包 |
@@ -660,7 +661,7 @@ flowchart TD
     subgraph LOOP["循环层"]
         L1["agent/driver ✅<br/>LoopDriver 接口 + RunContext"]
         L2["agent/driver/react ✅<br/>ReActDriver"]
-        L3["agent/driver/planexecute<br/>PlanExecuteDriver"]
+        L3["agent/driver/planexecute ✅<br/>PlanExecuteDriver"]
         L4["agent/driver/reflection<br/>ReflectionDriver"]
         L5["agent/driver/graph<br/>GraphDriver（可选）"]
     end
@@ -798,7 +799,8 @@ flowchart LR
 | `RunContext` | driver 共享设施容器：Session/工具/规划器/守卫/钩子/审计/压缩/RAG（MVP 未含 Seam/Executor） | agent/driver | ✅ 已实现 |
 | `Policy` | 工具调用安全策略检查点：注入 GuardBus 单调守卫，不可被 hook 改写绕过 | agent/driver | ✅ 已实现 |
 | `ReActDriver` | 默认驱动：原 run 循环搬移，行为不变；默认装配钩子/守卫 | agent/driver/react | ✅ 已实现 |
-| `PlanExecuteDriver` | 写计划 → 逐条执行（内嵌 ReActDriver 作执行器）→ 校验交付物 | agent/driver/planexecute（规划） | 🧱 规划中 |
+| `PlanExecuteDriver` | 写计划 → 逐条执行（内嵌 ReActDriver 作执行器）→ 校验交付物；步骤失败/校验失败置 blocked | agent/driver/planexecute | ✅ 已实现 |
+| `Plan` / `PlanStep` / `PlanPlanner` | 计划数据结构与生成接口：模型产出 JSON 步骤数组，多级解析回退（围栏/行拆分/单步兜底） | planner | ✅ 已实现 |
 | `ReflectionDriver` | Generate → Reflect → Revise 自查循环 | agent/driver/reflection（规划） | 🧱 规划中 |
 | `GraphDriver` | 显式状态图驱动（可选） | agent/driver/graph（规划） | 🧱 规划中 |
 | `ModelResolver` | 请求级模型解析：分级路由（简单→经济、复杂→强） | agent/driver（RunContext 设施，规划） | 🧱 规划中 |

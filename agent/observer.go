@@ -31,6 +31,8 @@ const (
 	// EventKnowledgeGap 知识差距（M2.7 Agentic RAG）：检索有候选但全部低于知识守门
 	// 最低分，Content 为查询，交由模型经外部工具补齐。
 	EventKnowledgeGap
+	// EventPlan 计划产出（Plan&Execute）：Content 为步骤摘要文本。
+	EventPlan
 )
 
 // Event 是运行时向外广播的事件，用于流式输出、中间过程观测等。

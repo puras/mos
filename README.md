@@ -53,6 +53,26 @@ reply, err := a.Run(ctx, sess, "现在几点了？")
 > 对应 import `hegq.net/mos/agent/driver` 与 `hegq.net/mos/agent/driver/react`；
 > 自定义驱动时用 `driver.New(rt, myDriver)`。
 
+### Plan&Execute（写计划 → 逐条执行）
+
+复杂/多步任务可换用 `agent/driver/planexecute`：先由规划器生成步骤列表
+（`planner.NewPlan(model)`，模型输出 JSON 步骤数组，多级解析回退），再逐条交给内嵌
+ReAct 执行器执行，全部完成后可选校验交付物（`WithVerifier`）：
+
+```go
+import (
+	"hegq.net/mos/agent/driver/planexecute"
+	"hegq.net/mos/planner"
+)
+
+rt := &driver.RunContext{
+	Tools:       reg,
+	Planner:     planner.NewReAct(model), // 步骤执行器决策
+	PlanPlanner: planner.NewPlan(model),  // 计划生成
+}
+a := planexecute.New(rt) // 无 PlanPlanner 时退化为单步执行
+```
+
 ## 开箱即用的智能体（assistant + CLI 示例）
 
 `assistant` 包提供组装好的智能体：**模型对象、工具集与框架概念全部由调用方注入**（安全策略 / 规划器 / 审计器 / 记忆 / 观察，为 nil 时使用框架默认实现），可直接作为库集成到其他工程。框架只认 `llm.ChatModel` 模型对象与 `[]tool.Tool` 工具集，不预设默认工具、不关心模型接入配置——但**随框架分发工具包并分类**：`tool/builtin` 内置工具包（时间 / 文件读写检索 / 网页抓取 / shell 命令执行，纯标准库实现，`builtin.Default()` 一键装配）+ `tool/extension` 扩展工具包（web_search 搜索提供商，需依赖注入）：

@@ -22,6 +22,9 @@ const (
 	SessionEventCompactionStart   = "compaction/start"
 	SessionEventCompactionSummary = "compaction/summary"
 	SessionEventCompactionEnd     = "compaction/end"
+	SessionEventPlanStart         = "plan/start"
+	SessionEventPlanStep          = "plan/step"
+	SessionEventPlanEnd           = "plan/end"
 )
 
 // ---- 事件载荷（typed payload）----
@@ -95,6 +98,28 @@ type CompactionSummaryData struct {
 	Summary      string `json:"summary"`
 	ShadowedFrom int64  `json:"shadowed_from"`
 	ShadowedTo   int64  `json:"shadowed_to"`
+}
+
+// PlanStartData 计划阶段开始（Plan&Execute）：目标 + 步骤数。
+type PlanStartData struct {
+	Turn  int    `json:"turn"`
+	Goal  string `json:"goal"`
+	Steps int    `json:"steps"`
+}
+
+// PlanStepData 计划中一步的状态迁移（pending → running → done/failed）。
+type PlanStepData struct {
+	Turn    int    `json:"turn"`
+	Index   int    `json:"index"`
+	Summary string `json:"summary"`
+	Status  string `json:"status"` // pending / running / done / failed
+}
+
+// PlanEndData 计划阶段结束：completed（全部步骤通过校验）或 failed。
+type PlanEndData struct {
+	Turn   int    `json:"turn"`
+	Status string `json:"status"` // completed / failed
+	Detail string `json:"detail,omitempty"`
 }
 
 // MarshalData 将载荷序列化为 SessionEvent.Data。
