@@ -1,4 +1,4 @@
-package agent
+package react
 
 import (
 	"context"
@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"hegq.net/mos/agent"
+	"hegq.net/mos/agent/driver"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/planner"
@@ -33,7 +35,7 @@ func TestDoomLoopInAgent(t *testing.T) {
 	if err := reg.Register(readFile{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
-	a := New(&RunContext{
+	a := New(&driver.RunContext{
 		Tools:             reg,
 		Planner:           planner.NewReAct(&doomModel{}),
 		DoomLoopMaxRepeat: 3,
@@ -74,13 +76,13 @@ func TestContextUsageMonitoring(t *testing.T) {
 	if err := reg.Register(readFile{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
-	var usageEvents []Event
-	a := New(&RunContext{
+	var usageEvents []agent.Event
+	a := New(&driver.RunContext{
 		Tools:         reg,
 		Planner:       planner.NewReAct(usageModel{}),
 		ContextBudget: 10000,
-		Observer: func(ev Event) {
-			if ev.Type == EventContextUsage {
+		Observer: func(ev agent.Event) {
+			if ev.Type == agent.EventContextUsage {
 				usageEvents = append(usageEvents, ev)
 			}
 		},

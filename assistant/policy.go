@@ -50,7 +50,7 @@ func NewDefaultPolicy(shellAllowed []string, workDir string) *DefaultPolicy {
 	return p
 }
 
-// Allow 实现 agent.Policy：按工具名查表分发；未注册工具默认拒绝（fail-closed）。
+// Allow 实现 driver.Policy：按工具名查表分发；未注册工具默认拒绝（fail-closed）。
 func (p *DefaultPolicy) Allow(ctx context.Context, call *llm.ToolCall) error {
 	p.mu.RLock()
 	chk, ok := p.checkers[call.Name]

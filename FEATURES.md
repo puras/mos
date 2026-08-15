@@ -65,7 +65,7 @@ MoS 是 SDK，不参与服务化能力范畴：Web UI / API 网关 / 任务调�
 - 装饰器 `memory/wrap`：`WithLogging` / `WithRetry`
 
 ### 3.6 安全防护（M1.5 + M1.6 + M2.8 雏形）
-- `agent.Policy` 执行前拦截：`assistant.DefaultPolicy` 按职责拆分为三文件——`policy.go`（策略核心：Allow / Register / 检查器装配）、`policy_shell.go`（shell 命令分级校验）、`policy_file.go`（路径校验）
+- `driver.Policy` 执行前拦截：`assistant.DefaultPolicy` 按职责拆分为三文件——`policy.go`（策略核心：Allow / Register / 检查器装配）、`policy_shell.go`（shell 命令分级校验）、`policy_file.go`（路径校验）
   - 绝对危险命令（shutdown / dd / mkfs / fork 炸弹 / 写块设备）无条件拒绝
   - 受限危险命令（rm / sudo / chmod / mv / kill / 解释器 `-c/-e` 入口 / find 删除语义）须 WorkDir 内 + 人工确认
   - 路径越界防护（withinDir）+ 命令前缀白名单 + fail-closed（未知工具默认拒绝）

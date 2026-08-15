@@ -10,6 +10,7 @@ import (
 	"context"
 
 	"hegq.net/mos/agent"
+	"hegq.net/mos/agent/driver"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/memory"
 	"hegq.net/mos/planner"
@@ -44,7 +45,7 @@ type Config struct {
 	SkillsDir string
 
 	// Policy 工具调用安全策略（默认 NewDefaultPolicy(nil, "")，即无额外限制）。
-	Policy agent.Policy
+	Policy driver.Policy
 	// Planner 决策规划器（默认 ReAct(model)）。
 	Planner planner.Planner
 	// Auditor 工具结果审计器（默认 agent.NewDefaultAuditor()）。

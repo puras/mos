@@ -1,10 +1,12 @@
-package agent
+package react
 
 import (
 	"context"
 	"strings"
 	"testing"
 
+	"hegq.net/mos/agent"
+	"hegq.net/mos/agent/driver"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/memory"
@@ -39,8 +41,8 @@ func (m *directModel) ChatStream(context.Context, *llm.Request, func(llm.StreamC
 	return nil, llm.ErrUnsupported
 }
 
-func newReActRT(model llm.ChatModel, reg *tool.Registry, cfg *RunContext) *RunContext {
-	rt := &RunContext{Tools: reg, Planner: planner.NewReAct(model), SystemPrompt: "你是助手"}
+func newReActRT(model llm.ChatModel, reg *tool.Registry, cfg *driver.RunContext) *driver.RunContext {
+	rt := &driver.RunContext{Tools: reg, Planner: planner.NewReAct(model), SystemPrompt: "你是助手"}
 	if cfg != nil {
 		rt.Retriever = cfg.Retriever
 		rt.RetrieverCfg = cfg.RetrieverCfg
@@ -55,9 +57,9 @@ func TestAgentRetrieverInjection(t *testing.T) {
 		{Source: "doc-b", Content: "SQLite 支持 FTS5 全文检索。", Score: 0.6},
 	}}
 	m := &directModel{}
-	a := New(newReActRT(m, tool.NewRegistry(), &RunContext{
+	a := New(newReActRT(m, tool.NewRegistry(), &driver.RunContext{
 		Retriever:    ret,
-		RetrieverCfg: RetrieverConfig{MaxChunks: 3, Limit: 8},
+		RetrieverCfg: agent.RetrieverConfig{MaxChunks: 3, Limit: 8},
 	}))
 
 	sess := session.NewSession("s1")
@@ -105,11 +107,11 @@ func TestKnowledgeGapEvent(t *testing.T) {
 		{Source: "doc-a", Content: "与查询无关的内容", Score: 0.1},
 	}}
 	m := &directModel{}
-	var events []Event
-	a := New(newReActRT(m, tool.NewRegistry(), &RunContext{
+	var events []agent.Event
+	a := New(newReActRT(m, tool.NewRegistry(), &driver.RunContext{
 		Retriever:    ret,
-		RetrieverCfg: RetrieverConfig{MaxChunks: 3, Limit: 8, MinScore: 0.5},
-		Observer:     func(ev Event) { events = append(events, ev) },
+		RetrieverCfg: agent.RetrieverConfig{MaxChunks: 3, Limit: 8, MinScore: 0.5},
+		Observer:     func(ev agent.Event) { events = append(events, ev) },
 	}))
 
 	sess := session.NewSession("s1")
@@ -121,15 +123,15 @@ func TestKnowledgeGapEvent(t *testing.T) {
 		t.Fatalf("reply = %q", reply)
 	}
 
-	var gap *Event
+	var gap *agent.Event
 	for i := range events {
-		if events[i].Type == EventKnowledgeGap {
+		if events[i].Type == agent.EventKnowledgeGap {
 			gap = &events[i]
 			break
 		}
 	}
 	if gap == nil {
-		t.Fatalf("no EventKnowledgeGap in events: %+v", events)
+		t.Fatalf("no agent.EventKnowledgeGap in events: %+v", events)
 	}
 	if gap.Content != "数据库事务隔离级别" {
 		t.Fatalf("gap content = %q, want 查询文本", gap.Content)
@@ -154,7 +156,7 @@ func TestAgentRetrieverConflictResolution(t *testing.T) {
 		{Source: "doc-c", Content: "丙版本-高分", Score: 0.85},
 		{Source: "doc-d", Content: "丁版本-高分", Score: 0.95},
 	}}
-	rt := &RunContext{Retriever: ret, RetrieverCfg: RetrieverConfig{MaxChunks: 3, Limit: 8}, Session: session.NewSession("s1")}
+	rt := &driver.RunContext{Retriever: ret, RetrieverCfg: agent.RetrieverConfig{MaxChunks: 3, Limit: 8}, Session: session.NewSession("s1")}
 
 	extras, err := retrieveAndInject(context.Background(), rt, 1, "查询")
 	if err != nil {

@@ -7,6 +7,8 @@ import (
 	"github.com/google/uuid"
 
 	"hegq.net/mos/agent"
+	"hegq.net/mos/agent/driver"
+	"hegq.net/mos/agent/driver/react"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/planner"
@@ -16,10 +18,10 @@ import (
 // Assistant 是组装好的智能体实例：模型对象 + 工具集 + 框架概念（策略/规划/审计/记忆）。
 // 外部工程可直接使用 New + Run 集成。
 type Assistant struct {
-	agent  *agent.Agent
+	agent  *driver.Agent
 	config Config
 	tools  *tool.Registry
-	policy agent.Policy
+	policy driver.Policy
 }
 
 // DefaultSystemPrompt 是框架内置的默认系统引导词，开箱即用。
@@ -81,9 +83,9 @@ func New(model llm.ChatModel, tools []tool.Tool, cfg Config) (*Assistant, error)
 	if cfg.SystemPrompt == "" {
 		cfg.SystemPrompt = DefaultSystemPrompt
 	}
-	// Auditor / Truncator / Compactor 由 agent.NewReAct 默认装配（nil 时使用默认实现）。
+	// Auditor / Truncator / Compactor 由 react.New 默认装配（nil 时使用默认实现）。
 
-	rt := &agent.RunContext{
+	rt := &driver.RunContext{
 		Tools:               reg,
 		Planner:             cfg.Planner,
 		Memory:              cfg.Memory,
@@ -115,18 +117,18 @@ func New(model llm.ChatModel, tools []tool.Tool, cfg Config) (*Assistant, error)
 		rt.SystemPrompt = cfg.SystemPrompt
 	}
 
-	ag := agent.New(rt)
+	ag := react.New(rt)
 	return &Assistant{agent: ag, config: cfg, tools: reg, policy: cfg.Policy}, nil
 }
 
 // Agent 返回底层智能体运行时，可用于挂载自定义 Observer。
-func (a *Assistant) Agent() *agent.Agent { return a.agent }
+func (a *Assistant) Agent() *driver.Agent { return a.agent }
 
 // Config 返回当前配置。
 func (a *Assistant) Config() Config { return a.config }
 
 // Policy 返回当前安全策略。
-func (a *Assistant) Policy() agent.Policy { return a.policy }
+func (a *Assistant) Policy() driver.Policy { return a.policy }
 
 // NewSession 创建一个新会话（默认生成 UUID 作为会话 ID，供多会话持久化与恢复）。
 // 需要自定义 ID 时可直接 session.NewSession(id)。

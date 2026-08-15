@@ -1,33 +1,35 @@
-package agent
+package react
 
 import (
 	"context"
 	"strings"
 	"testing"
 
+	"hegq.net/mos/agent"
+	"hegq.net/mos/agent/driver"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/tool"
 )
 
 func TestRenderSystem(t *testing.T) {
-	sections := []SystemSection{
+	sections := []agent.SystemSection{
 		{Title: "系统约束", Content: "你是助手"},
 		{Title: "", Content: "无标题段"},
 		{Title: "空段", Content: "   "}, // 空内容被跳过
 	}
-	got := RenderSystem(sections)
+	got := agent.RenderSystem(sections)
 	wantSub := []string{"【系统约束】", "你是助手", "无标题段"}
 	for _, s := range wantSub {
 		if !strings.Contains(got, s) {
-			t.Fatalf("RenderSystem = %q, want contains %q", got, s)
+			t.Fatalf("agent.RenderSystem = %q, want contains %q", got, s)
 		}
 	}
 	if strings.Contains(got, "空段") {
 		t.Fatalf("empty section should be skipped: %q", got)
 	}
 	if got != strings.TrimSpace(got) {
-		t.Fatalf("RenderSystem should trim edges: %q", got)
+		t.Fatalf("agent.RenderSystem should trim edges: %q", got)
 	}
 }
 
@@ -36,7 +38,7 @@ func TestDefaultSystemAssemblerSections(t *testing.T) {
 	sess.State.Goal = "统计日志错误"
 	sess.State.AddFact(session.Fact{Tool: "grep", Summary: "找到 3 处 ERROR", Evidence: "log"})
 
-	asm := NewDefaultSystemAssembler(SystemAssemblerConfig{
+	asm := agent.NewDefaultSystemAssembler(agent.SystemAssemblerConfig{
 		Constraints: "你是 MoS 智能体",
 	})
 	sections, err := asm.Assemble(context.Background(), sess, []llm.Tool{{Name: "grep", Description: "文本检索"}})
@@ -74,7 +76,7 @@ func TestDefaultSystemAssemblerSections(t *testing.T) {
 
 // 动态组装：同一组装器、不同进度的任务状态，当前状态槽位随已验证事实刷新。
 func TestSystemAssemblerStateRefresh(t *testing.T) {
-	asm := NewDefaultSystemAssembler(SystemAssemblerConfig{Constraints: "约束"})
+	asm := agent.NewDefaultSystemAssembler(agent.SystemAssemblerConfig{Constraints: "约束"})
 
 	sess := session.NewSession("s1")
 	sess.State.Goal = "x"
@@ -82,14 +84,14 @@ func TestSystemAssemblerStateRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
 	}
-	beforeState := RenderSystem(before)
+	beforeState := agent.RenderSystem(before)
 
 	sess.State.AddFact(session.Fact{Tool: "grep", Summary: "找到 2 处", Evidence: "e"})
 	after, err := asm.Assemble(context.Background(), sess, nil)
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
 	}
-	afterState := RenderSystem(after)
+	afterState := agent.RenderSystem(after)
 
 	if !strings.Contains(afterState, "找到 2 处") {
 		t.Fatalf("after state should contain verified fact: %q", afterState)
@@ -101,9 +103,9 @@ func TestSystemAssemblerStateRefresh(t *testing.T) {
 
 func TestSystemAssemblerCustomSlots(t *testing.T) {
 	// 只启用任务槽位：其余槽位不产出
-	asm := NewDefaultSystemAssembler(SystemAssemblerConfig{
+	asm := agent.NewDefaultSystemAssembler(agent.SystemAssemblerConfig{
 		Constraints: "约束",
-		EnableSlots: []SystemSlot{SlotTask},
+		EnableSlots: []agent.SystemSlot{agent.SlotTask},
 	})
 	sess := session.NewSession("s1")
 	sess.State.Goal = "目标"
@@ -125,10 +127,10 @@ func TestAgentSystemAssemblerPerTurn(t *testing.T) {
 	}
 
 	rec := &recordingModel{}
-	a := newReAct(rec, reg, func(rt *RunContext) {
-		rt.Assembler = NewDefaultSystemAssembler(SystemAssemblerConfig{
+	a := newReAct(rec, reg, func(rt *driver.RunContext) {
+		rt.Assembler = agent.NewDefaultSystemAssembler(agent.SystemAssemblerConfig{
 			Constraints: "你是助手",
-			EnableSlots: []SystemSlot{SlotConstraints, SlotTask, SlotState, SlotTools},
+			EnableSlots: []agent.SystemSlot{agent.SlotConstraints, agent.SlotTask, agent.SlotState, agent.SlotTools},
 		})
 	})
 

@@ -1,13 +1,16 @@
-package agent
+package react
 
 import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
+	"hegq.net/mos/agent"
+	"hegq.net/mos/agent/driver"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/tool"
@@ -15,10 +18,10 @@ import (
 )
 
 // newTestTruncator 构造小上限截断器，便于在测试中触发截断。
-func newTestTruncator(t *testing.T, maxBytes, maxLines int) (ResultTruncator, string) {
+func newTestTruncator(t *testing.T, maxBytes, maxLines int) (agent.ResultTruncator, string) {
 	t.Helper()
 	dir := t.TempDir()
-	return NewDefaultTruncator(TruncatorConfig{MaxBytes: maxBytes, MaxLines: maxLines, Dir: dir}), dir
+	return agent.NewDefaultTruncator(agent.TruncatorConfig{MaxBytes: maxBytes, MaxLines: maxLines, Dir: dir}), dir
 }
 
 func TestTruncatorWithinLimits(t *testing.T) {
@@ -39,7 +42,7 @@ func TestTruncatorHeadTailStrategy(t *testing.T) {
 	// head 类（read_file）：保留头部，尾部被省略
 	lines := make([]string, 0, 20)
 	for i := 0; i < 20; i++ {
-		lines = append(lines, "line_"+itoa(i))
+		lines = append(lines, "line_"+strconv.Itoa(i))
 	}
 	content := strings.Join(lines, "\n")
 	out, truncated := tr.Truncate("read_file", content)
@@ -103,7 +106,7 @@ func TestTruncatorByteLimitUTF8Safe(t *testing.T) {
 func TestTruncatorEscapeHatchReRead(t *testing.T) {
 	lines := make([]string, 0, 100)
 	for i := 0; i < 100; i++ {
-		lines = append(lines, "full_line_"+itoa(i))
+		lines = append(lines, "full_line_"+strconv.Itoa(i))
 	}
 	full := strings.Join(lines, "\n")
 	tr, _ := newTestTruncator(t, 0, 10)
@@ -181,7 +184,7 @@ func TestTruncatorInAgentKeepsAuditRaw(t *testing.T) {
 	}
 	aud := &captureAuditor{}
 	tr, _ := newTestTruncator(t, 0, 10)
-	a := newReAct(bigOutputModel{}, reg, func(rt *RunContext) {
+	a := newReAct(bigOutputModel{}, reg, func(rt *driver.RunContext) {
 		rt.SystemPrompt = "你是助手"
 		rt.Auditor = aud
 		rt.Truncator = tr

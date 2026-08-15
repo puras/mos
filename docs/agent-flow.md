@@ -1,6 +1,6 @@
 # MoS Agent 执行流程（v2）
 
-> 来源：`agent/react.go` 的 `ReActDriver.Run` 实现（架构 v2 §3.3-3.4）。
+> 来源：`agent/driver/react/react.go` 的 `ReActDriver.Run` 实现（架构 v2 §3.3-3.4）。
 > 默认装配：ReActDriver + 默认钩子/守卫（压缩 → RAG → 决策 → 工具链路）。
 
 ## 流程图

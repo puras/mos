@@ -1,4 +1,4 @@
-package agent
+package react
 
 import (
 	"context"
@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"hegq.net/mos/agent"
+	"hegq.net/mos/agent/driver"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/llm/openai"
@@ -25,7 +27,7 @@ func TestShouldStopAfterTurn(t *testing.T) {
 		t.Fatalf("register tool: %v", err)
 	}
 	var stopped bool
-	a := newReAct(mockModel{}, reg, func(rt *RunContext) {
+	a := newReAct(mockModel{}, reg, func(rt *driver.RunContext) {
 		rt.ShouldStopAfterTurn = func(ctx context.Context, sess *session.Session, turn int, action *planner.Action) (bool, error) {
 			stopped = true
 			return true, nil
@@ -94,8 +96,8 @@ func (readFile) Execute(_ context.Context, args json.RawMessage) (any, error) {
 }
 
 // newReAct 便捷装配：默认 ReActDriver + 可选 RunContext 定制。
-func newReAct(model llm.ChatModel, reg *tool.Registry, cfg func(*RunContext)) *Agent {
-	rt := &RunContext{Tools: reg, Planner: planner.NewReAct(model)}
+func newReAct(model llm.ChatModel, reg *tool.Registry, cfg func(*driver.RunContext)) *driver.Agent {
+	rt := &driver.RunContext{Tools: reg, Planner: planner.NewReAct(model)}
 	if cfg != nil {
 		cfg(rt)
 	}
@@ -108,9 +110,9 @@ func TestAgentReActLoop(t *testing.T) {
 		t.Fatalf("register tool: %v", err)
 	}
 
-	var events []Event
-	a := newReAct(mockModel{}, reg, func(rt *RunContext) {
-		rt.Observer = func(ev Event) { events = append(events, ev) }
+	var events []agent.Event
+	a := newReAct(mockModel{}, reg, func(rt *driver.RunContext) {
+		rt.Observer = func(ev agent.Event) { events = append(events, ev) }
 		rt.SystemPrompt = "你是助手"
 	})
 
@@ -140,11 +142,11 @@ func TestAgentReActLoop(t *testing.T) {
 	}
 
 	// 事件序列：思考 → 工具调用 → 工具结果 → 审计事实 → 思考 → 完成
-	var gotTypes []EventType
+	var gotTypes []agent.EventType
 	for _, ev := range events {
 		gotTypes = append(gotTypes, ev.Type)
 	}
-	want := []EventType{EventStep, EventToolCall, EventToolResult, EventFact, EventStep, EventDone}
+	want := []agent.EventType{agent.EventStep, agent.EventToolCall, agent.EventToolResult, agent.EventFact, agent.EventStep, agent.EventDone}
 	if len(gotTypes) != len(want) {
 		t.Fatalf("events = %v", gotTypes)
 	}
@@ -196,9 +198,9 @@ func TestAgentRunStream(t *testing.T) {
 	if err := reg.Register(readFile{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
-	var events []Event
-	a := newReAct(streamingModel{}, reg, func(rt *RunContext) {
-		rt.Observer = func(ev Event) { events = append(events, ev) }
+	var events []agent.Event
+	a := newReAct(streamingModel{}, reg, func(rt *driver.RunContext) {
+		rt.Observer = func(ev agent.Event) { events = append(events, ev) }
 	})
 	sess := session.NewSession("s1")
 	reply, err := a.RunStream(context.Background(), sess, "1+2=3?")
@@ -210,10 +212,10 @@ func TestAgentRunStream(t *testing.T) {
 	}
 
 	var streamText string
-	var gotTypes []EventType
+	var gotTypes []agent.EventType
 	for _, ev := range events {
 		gotTypes = append(gotTypes, ev.Type)
-		if ev.Type == EventStream {
+		if ev.Type == agent.EventStream {
 			streamText += ev.Delta
 		}
 	}
@@ -221,11 +223,11 @@ func TestAgentRunStream(t *testing.T) {
 		t.Fatalf("stream text = %q", streamText)
 	}
 	// 事件序列：首轮增量×6 → 思考 → 工具调用 → 结果 → 事实 → 二轮增量×5 → 思考 → 完成
-	want := []EventType{
-		EventStream, EventStream, EventStream, EventStream, EventStream, EventStream,
-		EventStep, EventToolCall, EventToolResult, EventFact,
-		EventStream, EventStream, EventStream, EventStream, EventStream,
-		EventStep, EventDone,
+	want := []agent.EventType{
+		agent.EventStream, agent.EventStream, agent.EventStream, agent.EventStream, agent.EventStream, agent.EventStream,
+		agent.EventStep, agent.EventToolCall, agent.EventToolResult, agent.EventFact,
+		agent.EventStream, agent.EventStream, agent.EventStream, agent.EventStream, agent.EventStream,
+		agent.EventStep, agent.EventDone,
 	}
 	if len(gotTypes) != len(want) {
 		t.Fatalf("events = %v", gotTypes)
@@ -244,9 +246,9 @@ func TestAgentRunStreamFallback(t *testing.T) {
 	if err := reg.Register(readFile{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
-	var events []Event
-	a := newReAct(mockModel{}, reg, func(rt *RunContext) {
-		rt.Observer = func(ev Event) { events = append(events, ev) }
+	var events []agent.Event
+	a := newReAct(mockModel{}, reg, func(rt *driver.RunContext) {
+		rt.Observer = func(ev agent.Event) { events = append(events, ev) }
 	})
 	sess := session.NewSession("s1")
 	reply, err := a.RunStream(context.Background(), sess, "1+2=3?")
@@ -259,7 +261,7 @@ func TestAgentRunStreamFallback(t *testing.T) {
 	// 回退 = 每轮恰好 1 次完整 delta（两轮），非流式模型不做逐字增量
 	var streamEvents []string
 	for _, ev := range events {
-		if ev.Type == EventStream {
+		if ev.Type == agent.EventStream {
 			streamEvents = append(streamEvents, ev.Delta)
 		}
 	}
@@ -286,7 +288,7 @@ func TestAgentPolicyDenial(t *testing.T) {
 	if err := reg.Register(readFile{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
-	a := newReAct(mockModel{}, reg, func(rt *RunContext) {
+	a := newReAct(mockModel{}, reg, func(rt *driver.RunContext) {
 		rt.Policy = denyPolicy{}
 	})
 
@@ -362,7 +364,7 @@ func TestAgentMultiTurn(t *testing.T) {
 	if err := reg.Register(readFile{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
-	a := newReAct(mockModel{}, reg, func(rt *RunContext) {
+	a := newReAct(mockModel{}, reg, func(rt *driver.RunContext) {
 		rt.SystemPrompt = "你是助手"
 	})
 	sess := session.NewSession("s1")

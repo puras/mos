@@ -12,7 +12,7 @@ MoS 是一个基于 Go 的智能体基础框架（Agent Base），提供统一�
 - **可插拔规划**：默认 ReAct 循环，可通过 `planner.Planner` 接口替换为其他策略
 - **会话记忆**：会话历史以 `Session` 事件日志为唯一事实来源；`memory.Memory` 与 `Retriever` 提供外部记忆扩展点（RAG 每轮注入，实现由使用方提供，未注入时行为不变）
 - **事件观测**：`Observer` 回调暴露工具调用与完成事件，便于流式输出与可观测性扩展
-- **Harness Engineering（工具安全防护）**：`agent.Policy` 在每次工具调用执行前拦截检查，内置默认策略可拦截危险 Shell 命令、路径越界与非 http 抓取
+- **Harness Engineering（工具安全防护）**：`driver.Policy`（`agent/driver` 包）在每次工具调用执行前拦截检查，内置默认策略可拦截危险 Shell 命令、路径越界与非 http 抓取
 - **Loop Engineering（循环可观测）**：每轮循环暴露思考/工具调用/工具结果/完成事件（含迭代序号），完整还原推理过程
 - **审计式任务状态（Audit Gate + Task State）**：工具结果经 `Auditor` 审计后，仅"环境可独立验证"的事实写入独立于消息历史的 `TaskState`（目标 / 已验证事实 / 状态机）；模型自述不算数——执行上下文可刷新，进度真相不过期
 - **开箱即用的智能体**：`assistant` 包组装好 Provider + 内置/扩展工具包 + 安全策略（`assistant.New` 一行装配）
@@ -35,8 +35,8 @@ for _, t := range builtin.Default() {
 	}
 }
 
-// 2. 创建 Agent（v2：装配 RunContext + ReActDriver，框架概念注入/默认）
-a := agent.New(&agent.RunContext{
+// 2. 创建 Agent（v2：装配 driver.RunContext + react 默认装配，框架概念注入/默认）
+a := react.New(&driver.RunContext{
 	Tools:        reg,
 	Planner:      planner.NewReAct(model), // 决策器（ReAct）
 	SystemPrompt: "你是助手",
@@ -45,9 +45,13 @@ a := agent.New(&agent.RunContext{
 })
 
 // 3. 执行任务（多轮对话自动保留历史）
-sess := agent.NewSession("demo")
+sess := session.NewSession("demo")
 reply, err := a.Run(ctx, sess, "现在几点了？")
 ```
+
+> 注：`react.New(&driver.RunContext{...})` 是默认装配入口（ReAct 驱动 + 默认钩子/守卫），
+> 对应 import `hegq.net/mos/agent/driver` 与 `hegq.net/mos/agent/driver/react`；
+> 自定义驱动时用 `driver.New(rt, myDriver)`。
 
 ## 开箱即用的智能体（assistant + CLI 示例）
 
@@ -115,7 +119,7 @@ reply, err := a.Run(ctx, sess, "帮我看看 workspace 里有什么文件")
 
 ### Harness Engineering：工具安全防护
 
-`agent.Policy` 接口在每次工具调用**执行前**拦截检查，返回错误即拒绝该次调用，并将拒绝原因回填给模型：
+`driver.Policy` 接口在每次工具调用**执行前**拦截检查，返回错误即拒绝该次调用，并将拒绝原因回填给模型：
 
 ```go
 type Policy interface {
@@ -184,7 +188,7 @@ MoS 现架构已内嵌图概念，Graph Engineering 是显式化而非重构：
 // 自定义只读工具也产出可验证事实
 aud := agent.NewDefaultAuditor()
 aud.Trust("my_inspect")
-a := agent.New(&agent.RunContext{
+a := react.New(&driver.RunContext{
 	Tools:   reg,
 	Planner: planner.NewReAct(model),
 	Auditor: aud,
@@ -377,7 +381,7 @@ go test ./...
 
 > 注：以下 **M1~M2.7 里程碑条目为历史实现记录**，其中引用的旧 Option API（`WithSystemPrompt` / `WithPolicy` /
 > `WithRetriever` / `WithContextBudget` / `WithDoomLoopDetection` 等）在 v2 架构（`docs/architecture-v2.md`：
-> RunContext + LoopDriver + HookBus + GuardBus）中已废弃，改由 `agent.RunContext` 装配与钩子/守卫注册替代；
+> RunContext + LoopDriver + HookBus + GuardBus）中已废弃，改由 `driver.RunContext` 装配与钩子/守卫注册替代；
 > 当前 API 以"快速开始"与 `docs/architecture-v2.md` / `docs/sdk-contracts.md` 为准。
 
 - [x] **M1**：Agent 任务循环、多协议 LLM 接入、工具系统、工作记忆、事件观测

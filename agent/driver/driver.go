@@ -1,9 +1,14 @@
-package agent
+// Package driver 定义智能体循环驱动接口与共享运行上下文（架构 v2 §3.3/§11.3）。
+// 一种智能体类型 = 一个 LoopDriver 实现（ReAct / PlanExecute / Reflection / Graph）；
+// RunContext 承载驱动间共享的会话、工具、钩子、守卫与扩展点。
+// 默认装配（ReActDriver + 默认钩子/守卫）见子包 agent/driver/react。
+package driver
 
 import (
 	"context"
 	"fmt"
 
+	"hegq.net/mos/agent"
 	"hegq.net/mos/agent/event"
 	"hegq.net/mos/agent/hook"
 	"hegq.net/mos/agent/session"
@@ -29,24 +34,24 @@ type LoopDriver interface {
 }
 
 // RunContext 是 driver 共享设施容器（架构 v2 §3.3）。
-// 驱动通过它访问会话、工具、钩子、守卫与各扩展点；默认装配见 NewReAct。
+// 驱动通过它访问会话、工具、钩子、守卫与各扩展点；默认装配见 react.New。
 type RunContext struct {
 	Session           *session.Session
 	Tools             *tool.Registry
-	Planner           planner.Planner // 决策器（默认 planner.NewReAct(model)，ReActDriver 内部使用）
-	Memory            memory.Memory   // 可选记忆后端（MVP 保留接口，接入见后续 Seam 迭代）
-	Sandbox           *tool.Sandbox   // shell 命令执行沙箱
-	Policy            Policy          // 工具调用安全策略（注入 Guards，单调守卫）
-	Auditor           Auditor         // 工具结果审计门（默认 NewDefaultAuditor）
-	Observer          Observer        // 观测回调（emit 投影入口，API 不变）
-	Assembler         SystemAssembler // 槽位式系统提示词组装器（优先于 SystemPrompt）
-	SystemPrompt      string          // 静态系统引导词（Assembler 为空时使用）
+	Planner           planner.Planner       // 决策器（默认 planner.NewReAct(model)，ReActDriver 内部使用）
+	Memory            memory.Memory         // 可选记忆后端（MVP 保留接口，接入见后续 Seam 迭代）
+	Sandbox           *tool.Sandbox         // shell 命令执行沙箱
+	Policy            Policy                // 工具调用安全策略（注入 Guards，单调守卫）
+	Auditor           agent.Auditor         // 工具结果审计门（默认 NewDefaultAuditor）
+	Observer          agent.Observer        // 观测回调（emit 投影入口，API 不变）
+	Assembler         agent.SystemAssembler // 槽位式系统提示词组装器（优先于 SystemPrompt）
+	SystemPrompt      string                // 静态系统引导词（Assembler 为空时使用）
 	Retriever         memory.Retriever
-	RetrieverCfg      RetrieverConfig
-	Truncator         ResultTruncator // 工具结果截断（模型可见文本瘦身）
-	Compactor         Compactor       // fresh-context 压缩（两轮之间）
-	ContextBudget     int             // 模型上下文 token 预算（利用率监控，>0 启用）
-	DoomLoopMaxRepeat int             // Doom Loop 检测（>0 启用，默认阈值 3）
+	RetrieverCfg      agent.RetrieverConfig
+	Truncator         agent.ResultTruncator // 工具结果截断（模型可见文本瘦身）
+	Compactor         agent.Compactor       // fresh-context 压缩（两轮之间）
+	ContextBudget     int                   // 模型上下文 token 预算（利用率监控，>0 启用）
+	DoomLoopMaxRepeat int                   // Doom Loop 检测（>0 启用，默认阈值 3）
 	// MaxTurns 是可选保险丝（>0 生效）：达到该轮数仍未完成时任务置为 blocked。
 	// 0 表示不限制（默认；对齐 DSH/PI 无轮次上限，循环以模型直接作答或
 	// ShouldStopAfterTurn 终止）。
@@ -69,9 +74,10 @@ type Agent struct {
 	RT     *RunContext
 }
 
-// New 创建智能体：默认装配 = ReActDriver + 默认钩子/守卫（见 NewReAct）。
-func New(rt *RunContext) *Agent {
-	return &Agent{Driver: NewReAct(rt), RT: rt}
+// New 创建智能体实例：显式指定驱动。
+// 默认装配（ReActDriver + 默认钩子/守卫）见 agent/driver/react 包的 New。
+func New(rt *RunContext, d LoopDriver) *Agent {
+	return &Agent{Driver: d, RT: rt}
 }
 
 // Run 在会话上执行一次任务（非流式）。
@@ -97,8 +103,8 @@ func (a *Agent) RunStream(ctx context.Context, sess *session.Session, input stri
 	return a.Driver.Run(ctx, rt, input)
 }
 
-// notify 广播观测事件（emit 投影；Observer 单层回调保留为便捷入口）。
-func (rt *RunContext) notify(ev Event) {
+// Notify 广播观测事件（emit 投影；Observer 单层回调保留为便捷入口）。
+func (rt *RunContext) Notify(ev agent.Event) {
 	if rt == nil {
 		return
 	}
@@ -110,8 +116,8 @@ func (rt *RunContext) notify(ev Event) {
 	}
 }
 
-// assembleSystem 调用槽位式组装器产出本轮系统提示词文本（M2.6）。
-func (rt *RunContext) assembleSystem(ctx context.Context) (string, error) {
+// AssembleSystem 调用槽位式组装器产出本轮系统提示词文本（M2.6）。
+func (rt *RunContext) AssembleSystem(ctx context.Context) (string, error) {
 	if rt == nil {
 		return "", nil
 	}
@@ -122,5 +128,17 @@ func (rt *RunContext) assembleSystem(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return RenderSystem(sections), nil
+	return agent.RenderSystem(sections), nil
+}
+
+// MonitorUsage 上下文利用率监控：广播 EventContextUsage 事件。
+func (rt *RunContext) MonitorUsage(turn int, usage llm.Usage) {
+	if rt.ContextBudget <= 0 || usage.PromptTokens <= 0 {
+		return
+	}
+	ratio := float64(usage.PromptTokens) / float64(rt.ContextBudget)
+	rt.Notify(agent.Event{
+		Type: agent.EventContextUsage, SessionID: rt.Session.ID, Turn: turn,
+		Content: fmt.Sprintf("%.0f%%", ratio*100), Usage: usage,
+	})
 }

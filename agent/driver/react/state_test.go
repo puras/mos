@@ -1,4 +1,4 @@
-package agent
+package react
 
 import (
 	"context"
@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"hegq.net/mos/agent"
+	"hegq.net/mos/agent/driver"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/tool"
@@ -18,10 +20,10 @@ func TestTaskStateVerifiedFact(t *testing.T) {
 		t.Fatalf("register tool: %v", err)
 	}
 
-	var facts []Event
-	a := newReAct(mockModel{}, reg, func(rt *RunContext) {
-		rt.Observer = func(ev Event) {
-			if ev.Type == EventFact {
+	var facts []agent.Event
+	a := newReAct(mockModel{}, reg, func(rt *driver.RunContext) {
+		rt.Observer = func(ev agent.Event) {
+			if ev.Type == agent.EventFact {
 				facts = append(facts, ev)
 			}
 		}
@@ -47,10 +49,10 @@ func TestTaskStateVerifiedFact(t *testing.T) {
 	}
 	// 审计事实事件已广播
 	if len(facts) != 1 {
-		t.Fatalf("EventFact count = %d, want 1", len(facts))
+		t.Fatalf("agent.EventFact count = %d, want 1", len(facts))
 	}
 	if facts[0].Fact == nil || facts[0].Fact.Summary != f.Summary {
-		t.Fatalf("EventFact = %+v", facts[0])
+		t.Fatalf("agent.EventFact = %+v", facts[0])
 	}
 }
 
@@ -128,7 +130,7 @@ func TestTaskStateBlockedOnMaxTurns(t *testing.T) {
 	if err := reg.Register(patcher{}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
-	a := newReAct(alwaysCallModel{}, reg, func(rt *RunContext) { rt.MaxTurns = 2 })
+	a := newReAct(alwaysCallModel{}, reg, func(rt *driver.RunContext) { rt.MaxTurns = 2 })
 
 	sess := session.NewSession("s1")
 	_, err := a.Run(context.Background(), sess, "永远不完成的任务")

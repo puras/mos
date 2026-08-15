@@ -1,4 +1,6 @@
-// Package agent 提供智能体运行时：任务循环、会话管理与事件通知。
+// Package agent 提供智能体运行时概念：事件/观测定义与扩展点接口
+// （Audit/Compaction/Truncation/RAG/SystemAssembler）；任务循环与驱动见
+// 子包 agent/driver、agent/driver/react。
 package agent
 
 import (

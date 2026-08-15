@@ -1,4 +1,4 @@
-package agent
+package react
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"hegq.net/mos/agent/driver"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/planner"
@@ -53,7 +54,7 @@ func TestTruncatedToolCallFailClosed(t *testing.T) {
 	if err := reg.Register(calc); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
-	a := New(&RunContext{
+	a := New(&driver.RunContext{
 		Tools:    reg,
 		Planner:  planner.NewReAct(&truncModel{}),
 		MaxTurns: 5,

@@ -1,12 +1,5 @@
 package agent
 
-import (
-	"fmt"
-	"strings"
-
-	"hegq.net/mos/memory"
-)
-
 // RetrieverConfig 是 RAG 检索注入的配置。
 type RetrieverConfig struct {
 	// MaxChunks 每次注入上下文的最大分块数（默认 3）。
@@ -21,23 +14,5 @@ type RetrieverConfig struct {
 	MinScore float64
 }
 
-// Retriever 配置经 RunContext.Retriever + RetrieverCfg 注入（见 agent/react.go
+// Retriever 配置经 RunContext.Retriever + RetrieverCfg 注入（见 react 包
 // ragInjectHook）；未注入 Retriever 时跳过检索注入，行为不变。
-
-// renderRetrieved 将检索结果渲染为注入文本：逐条标注来源与得分。
-func renderRetrieved(docs []memory.Document) string {
-	var b strings.Builder
-	b.WriteString("检索到的相关记忆：\n")
-	for _, d := range docs {
-		fmt.Fprintf(&b, "- [来源: %s] (score %.2f): %s\n", d.Source, d.Score, strings.TrimSpace(d.Content))
-	}
-	return strings.TrimSpace(b.String())
-}
-
-func sortByScore(docs []memory.Document) {
-	for i := 1; i < len(docs); i++ {
-		for j := i; j > 0 && docs[j].Score > docs[j-1].Score; j-- {
-			docs[j], docs[j-1] = docs[j-1], docs[j]
-		}
-	}
-}

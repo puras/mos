@@ -7,6 +7,7 @@
 
 | 日期 | 版本 | 更新内容 |
 | --- | --- | --- |
+| 2026-08-15 | v2.8 | 实施：Step 4 拆分 `agent/driver`（LoopDriver + RunContext + Policy + Agent，`New(rt, d)` 显式指定驱动）与 `agent/driver/react`（ReActDriver + 默认装配入口 `react.New(rt)`）；根包 `driver.go`/`react.go` 删除；跨包方法导出 `Notify`/`AssembleSystem`/`MonitorUsage`；循环集成测试随迁 react 包，根包仅保留纯单测 |
 | 2026-08-15 | v2.7 | 实施：Step 3 落地 `agent/hook`（HookBus + GuardBus + DoomLoopGuard/detector）；react/driver 改 `hook.*` 前缀；detector 单测随迁，doomloop 集成测试留根包 |
 | 2026-08-15 | v2.6 | 实施：Step 2 落地 `agent/session`（Session 日志 + TaskState + InternalMessage + deriveMessages，含 ConvertToLlm/FormatToolResult/MessageEventSeqs 导出）；根 agent 改为 `session.*` 前缀引用；integration 型 state 测试保留在根包 |
 | 2026-08-15 | v2.5 | 实施：按 §11.1 拆分 agent 包，Step 1 落地 `agent/event`（EventBus 四模式 + 会话事件目录/载荷 + MarshalData）；根包引用改为 `event.*` 前缀；§11.1 声明不设公开语义红线（开发阶段，依赖方向强制优于 API 稳定） |
@@ -642,7 +643,8 @@ evals 体系（平台/测试基建，SDK 保留接口级 conformance 测试）�
 ### 11.1 模块划分（包结构）
 
 > 以下为**目标包结构**（v2 演进方向，按模块落地时逐步拆分）；当前实现为 `agent`（含已拆出的
-> `agent/event`）/ `assistant` / `llm` / `planner` / `tool` / `memory`（具体状态见第 12 章术语表标注）。
+> `agent/event`、`agent/session`、`agent/hook`、`agent/driver`、`agent/driver/react`）/
+> `assistant` / `llm` / `planner` / `tool` / `memory`（具体状态见第 12 章术语表标注）。
 > 包拆分**不设公开语义红线**（开发阶段）：公开 import 路径可随拆分调整，调用点同步更新；
 > 拆分的核心收益是**依赖方向由编译器强制**（基础层不得反向依赖上层机制）。
 
@@ -656,8 +658,8 @@ flowchart TD
     end
 
     subgraph LOOP["循环层"]
-        L1["agent/driver<br/>LoopDriver 接口 + RunContext"]
-        L2["agent/driver/react<br/>ReActDriver"]
+        L1["agent/driver ✅<br/>LoopDriver 接口 + RunContext"]
+        L2["agent/driver/react ✅<br/>ReActDriver"]
         L3["agent/driver/planexecute<br/>PlanExecuteDriver"]
         L4["agent/driver/reflection<br/>ReflectionDriver"]
         L5["agent/driver/graph<br/>GraphDriver（可选）"]
@@ -778,7 +780,7 @@ flowchart LR
 
 | 概念 | 定义/职责 | 所在模块/包 | 状态 |
 | --- | --- | --- | --- |
-| `Agent` | 智能体实例 = `RunContext` + `LoopDriver` 组合；对外暴露 Run / RunStream（MVP 未含 Scope/Inbox） | agent | ✅ 已实现 |
+| `Agent` | 智能体实例 = `RunContext` + `LoopDriver` 组合；对外暴露 Run / RunStream（MVP 未含 Scope/Inbox） | agent/driver | ✅ 已实现 |
 | `Assistant` | 默认装配层：ChatModel + 工具集 + Config → 组装好的可运行智能体 | assistant | ✅ 现有 |
 | `assistant.Config` | 声明式装配配置（结构化注入）；按名选组件待 SeamRegistry 迭代 | assistant | ✅ 已实现（按名选择待演进） |
 | `AgentRegistry` | 按 ID 管理 Agent 句柄：Create/Resume/Get | agent/registry（规划） | 🧱 规划中 |
@@ -792,9 +794,10 @@ flowchart LR
 
 | 概念 | 定义/职责 | 所在模块/包 | 状态 |
 | --- | --- | --- | --- |
-| `LoopDriver` | 循环驱动接口 `Run(ctx, rt, input)`；一种智能体类型 = 一个实现 | agent | ✅ 已实现 |
-| `RunContext` | driver 共享设施容器：Session/工具/规划器/守卫/钩子/审计/压缩/RAG（MVP 未含 Seam/Executor） | agent | ✅ 已实现 |
-| `ReActDriver` | 默认驱动：原 run 循环搬移，行为不变；默认装配钩子/守卫 | agent | ✅ 已实现 |
+| `LoopDriver` | 循环驱动接口 `Run(ctx, rt, input)`；一种智能体类型 = 一个实现 | agent/driver | ✅ 已实现 |
+| `RunContext` | driver 共享设施容器：Session/工具/规划器/守卫/钩子/审计/压缩/RAG（MVP 未含 Seam/Executor） | agent/driver | ✅ 已实现 |
+| `Policy` | 工具调用安全策略检查点：注入 GuardBus 单调守卫，不可被 hook 改写绕过 | agent/driver | ✅ 已实现 |
+| `ReActDriver` | 默认驱动：原 run 循环搬移，行为不变；默认装配钩子/守卫 | agent/driver/react | ✅ 已实现 |
 | `PlanExecuteDriver` | 写计划 → 逐条执行（内嵌 ReActDriver 作执行器）→ 校验交付物 | agent/driver/planexecute（规划） | 🧱 规划中 |
 | `ReflectionDriver` | Generate → Reflect → Revise 自查循环 | agent/driver/reflection（规划） | 🧱 规划中 |
 | `GraphDriver` | 显式状态图驱动（可选） | agent/driver/graph（规划） | 🧱 规划中 |
