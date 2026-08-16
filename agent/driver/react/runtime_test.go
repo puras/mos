@@ -146,7 +146,8 @@ func TestAgentReActLoop(t *testing.T) {
 	for _, ev := range events {
 		gotTypes = append(gotTypes, ev.Type)
 	}
-	want := []agent.EventType{agent.EventStep, agent.EventToolCall, agent.EventToolResult, agent.EventFact, agent.EventStep, agent.EventDone}
+	// 批量路径 finalize 语义：ToolResult 观测按模型调用顺序回填（在审计 Fact 之后）
+	want := []agent.EventType{agent.EventStep, agent.EventToolCall, agent.EventFact, agent.EventToolResult, agent.EventStep, agent.EventDone}
 	if len(gotTypes) != len(want) {
 		t.Fatalf("events = %v", gotTypes)
 	}
@@ -222,10 +223,10 @@ func TestAgentRunStream(t *testing.T) {
 	if streamText != "我来调用工具结果是 3" {
 		t.Fatalf("stream text = %q", streamText)
 	}
-	// 事件序列：首轮增量×6 → 思考 → 工具调用 → 结果 → 事实 → 二轮增量×5 → 思考 → 完成
+	// 事件序列：首轮增量×6 → 思考 → 工具调用 → 事实 → 结果（finalize 按源序回填）→ 二轮增量×5 → 思考 → 完成
 	want := []agent.EventType{
 		agent.EventStream, agent.EventStream, agent.EventStream, agent.EventStream, agent.EventStream, agent.EventStream,
-		agent.EventStep, agent.EventToolCall, agent.EventToolResult, agent.EventFact,
+		agent.EventStep, agent.EventToolCall, agent.EventFact, agent.EventToolResult,
 		agent.EventStream, agent.EventStream, agent.EventStream, agent.EventStream, agent.EventStream,
 		agent.EventStep, agent.EventDone,
 	}

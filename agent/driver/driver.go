@@ -7,6 +7,7 @@ package driver
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"hegq.net/mos/agent"
 	"hegq.net/mos/agent/event"
@@ -71,6 +72,26 @@ type RunContext struct {
 	Hooks               *hook.HookBus   // 瀑布钩子（可改写环节）
 	Guards              *hook.GuardBus  // 单调守卫（不可被改写绕过）
 	Bus                 *event.EventBus // 事件总线（emit 观测，可选）
+	// MaxToolParallel 是单轮批量工具调用的并发上限（架构 v2 §3.9；<=0 用默认 4）。
+	// 批量路径：preflight 串行决策 → 有界并发执行 → 结果按模型顺序回填。
+	MaxToolParallel int
+
+	// factMu 串行化审计事实写入：批量工具并发执行时多个 goroutine 同时写
+	// 同一 Session.State.Facts（auditHook 内 AddFact），锁保证无数据竞争。
+	factMu sync.Mutex
+}
+
+// AddFact 追加一条已验证事实（架构 v2 §3.9 日志串行化）：
+// 并发工具执行时多个 goroutine 同时审计写同一 Session.State，经互斥锁串行化。
+func (rt *RunContext) AddFact(f session.Fact) {
+	if rt == nil {
+		return
+	}
+	rt.factMu.Lock()
+	defer rt.factMu.Unlock()
+	if rt.Session != nil {
+		rt.Session.State.AddFact(f)
+	}
 }
 
 // Agent 是智能体实例：RunContext + LoopDriver 的组合（架构 v2 §11.3）。

@@ -12,6 +12,7 @@ import (
 	"hegq.net/mos/agent"
 	"hegq.net/mos/agent/driver"
 	"hegq.net/mos/agent/event"
+	"hegq.net/mos/agent/executor"
 	"hegq.net/mos/agent/hook"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
@@ -195,36 +196,33 @@ func (d *ReActDriver) Run(ctx context.Context, rt *driver.RunContext, input stri
 			continue
 		}
 
-		// 工具调用
-		// 注：多工具批量执行（并发 + 按序回填）属 M3 规划（ConcurrentExecutor），
-		// 当前单调用路径执行第一个，其余由规划器在后续轮次继续产出。
-		call := &calls[0]
-		if err := sess.AppendToolCall(turn, call); err != nil {
-			return "", fmt.Errorf("agent: append tool/call: %w", err)
-		}
-		rt.Notify(agent.Event{Type: agent.EventToolCall, SessionID: sess.ID, Turn: turn, ToolCall: call})
+		// 工具调用：批量执行（并发 + 按源序回填，架构 v2 §3.9 ConcurrentExecutor 三阶段）
+		outs := execBatchTools(ctx, rt, sess, turn, step, calls)
 
-		// 执行工具：守卫（单调）→ pre-execute → execute → post-execute
-		tev := &hook.HookEvent{Kind: hook.HookToolPreExecute, ToolCall: call, Turn: turn, Step: step}
-		tev, execErr := executeToolChain(ctx, rt, tev)
-
-		var deniedErr *ToolDeniedError
-		denied := errors.As(execErr, &deniedErr)
-		switch {
-		case denied:
-			_ = sess.AppendToolResult(turn, call, nil, deniedErr.Error(), nil)
-			rt.Notify(agent.Event{Type: agent.EventToolResult, SessionID: sess.ID, Turn: turn, ToolCall: call})
-		case execErr != nil:
-			// Doom Loop 是致命守卫错误：任务中断（状态 blocked），不回填工具结果
+		// Doom Loop 是致命守卫错误：任务中断（状态 blocked），不回填工具结果
+		for _, out := range outs {
 			var doomErr *hook.DoomLoopError
-			if errors.As(execErr, &doomErr) {
+			if errors.As(out.Err, &doomErr) {
 				sess.State.Status = session.StatusBlocked
 				_ = sess.Append(event.SessionEventStepEnd, event.StepData{Turn: turn, Step: step})
 				return "", doomErr
 			}
-			_ = sess.AppendToolResult(turn, call, nil, "", execErr)
-		default:
-			_ = sess.AppendToolResult(turn, call, tev.Result, tev.ResultText, tev.Err)
+		}
+		// finalize：按模型调用顺序回填（tool/result 日志 + 观测），Seq 连续、顺序可重放
+		for _, out := range outs {
+			call := out.Input
+			if out.Denied {
+				var deniedErr *ToolDeniedError
+				if errors.As(out.Err, &deniedErr) {
+					_ = sess.AppendToolResult(turn, call, nil, "", deniedErr)
+					rt.Notify(agent.Event{Type: agent.EventToolResult, SessionID: sess.ID, Turn: turn, ToolCall: call})
+					continue
+				}
+				// preflight 阶段的非守卫错误（如 tool/call 落日志失败）：终止任务
+				return "", fmt.Errorf("agent: tool preflight: %w", out.Err)
+			}
+			_ = sess.AppendToolResult(turn, call, out.Output.result, out.Output.text, out.Output.err)
+			rt.Notify(agent.Event{Type: agent.EventToolResult, SessionID: sess.ID, Turn: turn, ToolCall: call, ToolResult: out.Output.result})
 		}
 
 		_ = sess.Append(event.SessionEventStepEnd, event.StepData{Turn: turn, Step: step})
@@ -269,29 +267,66 @@ func (d *ReActDriver) nextAction(ctx context.Context, rt *driver.RunContext, ses
 	})
 }
 
-// executeToolChain 执行工具调用环节：单调守卫 → tool/pre-execute → tool/execute → tool/post-execute。
-// 守卫拒绝返回 *ToolDeniedError（非致命，结果反馈给模型）；其余错误视为运行期失败。
-func executeToolChain(ctx context.Context, rt *driver.RunContext, ev *hook.HookEvent) (*hook.HookEvent, error) {
-	if err := rt.Guards.Allow(ctx, ev); err != nil {
-		var doomErr *hook.DoomLoopError
-		if errors.As(err, &doomErr) {
-			return nil, doomErr // 致命守卫错误：循环层终止任务（状态 blocked）
+// toolOutcome 是单条工具调用的执行结果（result 为 execute 链原始返回值，
+// text 为 post-execute 截断后的模型可见文本，err 为运行期错误）。
+type toolOutcome struct {
+	result any
+	text   string
+	err    error
+}
+
+// execBatchTools 批量执行工具调用（架构 v2 §3.9 三阶段，对齐 PI executeToolCallsParallel）：
+//   - preflight（串行）：tool/call 落日志 + 观测；单调守卫决策，拒绝 = 拦截集合（显式失败回填）；
+//   - execute（有界并发）：pre-execute → execute → post-execute 钩子链；任一工具声明
+//     SequentialTool 时整批回退串行（对齐 PI per-tool executionMode）；
+//   - finalize（调用方）：结果按模型调用顺序回填（本函数只产出按源序的 Outcome）。
+//
+// 守卫拒绝返回 *ToolDeniedError（非致命，结果反馈给模型）；DoomLoop 致命错误原样返回
+// （调用方终止任务）；其余错误视为运行期失败，进各自 Outcome。
+func execBatchTools(ctx context.Context, rt *driver.RunContext, sess *session.Session, turn, step int, calls []llm.ToolCall) []executor.Outcome[*llm.ToolCall, toolOutcome] {
+	items := make([]executor.Item[*llm.ToolCall], len(calls))
+	for i := range calls {
+		items[i] = executor.Item[*llm.ToolCall]{Input: &calls[i]}
+		if t, ok := rt.Tools.Get(calls[i].Name); ok {
+			if st, isSeq := t.(tool.SequentialTool); isSeq && st.Sequential() {
+				items[i].Sequential = true
+			}
 		}
-		return nil, &ToolDeniedError{Reason: err.Error()}
 	}
-	ev, err := rt.Hooks.Waterfall(ctx, ev)
-	if err != nil {
-		return nil, err
+	preflight := func(ctx context.Context, call *llm.ToolCall) (bool, error) {
+		if err := sess.AppendToolCall(turn, call); err != nil {
+			return false, err // 日志写失败：终止任务（非拦截回填）
+		}
+		rt.Notify(agent.Event{Type: agent.EventToolCall, SessionID: sess.ID, Turn: turn, ToolCall: call})
+		ev := &hook.HookEvent{Kind: hook.HookToolPreExecute, ToolCall: call, Turn: turn, Step: step}
+		if err := rt.Guards.Allow(ctx, ev); err != nil {
+			var doomErr *hook.DoomLoopError
+			if errors.As(err, &doomErr) {
+				return false, err // 致命守卫错误：循环层终止任务（状态 blocked）
+			}
+			return false, &ToolDeniedError{Reason: err.Error()}
+		}
+		return true, nil
 	}
-	execEv := &hook.HookEvent{Kind: hook.HookToolExecute, ToolCall: ev.ToolCall, Turn: ev.Turn, Step: ev.Step}
-	execEv, err = rt.Hooks.Waterfall(ctx, execEv)
-	if err != nil {
-		return nil, err
+	execute := func(ctx context.Context, call *llm.ToolCall) (toolOutcome, error) {
+		ev := &hook.HookEvent{Kind: hook.HookToolPreExecute, ToolCall: call, Turn: turn, Step: step}
+		ev, err := rt.Hooks.Waterfall(ctx, ev) // pre-execute（可改写/拒绝）
+		if err != nil {
+			return toolOutcome{err: err}, nil
+		}
+		execEv := &hook.HookEvent{Kind: hook.HookToolExecute, ToolCall: ev.ToolCall, Turn: turn, Step: step}
+		execEv, err = rt.Hooks.Waterfall(ctx, execEv)
+		if err != nil {
+			return toolOutcome{err: err}, nil
+		}
+		postEv := &hook.HookEvent{Kind: hook.HookToolPostExecute, ToolCall: ev.ToolCall, Result: execEv.Result, Err: execEv.Err, Turn: turn, Step: step}
+		postEv, err = rt.Hooks.Waterfall(ctx, postEv)
+		if err != nil {
+			return toolOutcome{err: err}, nil
+		}
+		return toolOutcome{result: execEv.Result, text: postEv.ResultText, err: postEv.Err}, nil
 	}
-	// 广播工具结果观测（在审计之前，保持事件序列 ToolCall → ToolResult → Fact）
-	rt.Notify(agent.Event{Type: agent.EventToolResult, SessionID: rt.Session.ID, Turn: execEv.Turn, ToolCall: execEv.ToolCall, ToolResult: execEv.Result})
-	postEv := &hook.HookEvent{Kind: hook.HookToolPostExecute, ToolCall: ev.ToolCall, Result: execEv.Result, Err: execEv.Err, Turn: ev.Turn, Step: ev.Step}
-	return rt.Hooks.Waterfall(ctx, postEv)
+	return executor.Run(ctx, items, rt.MaxToolParallel, preflight, execute)
 }
 
 // ---- 默认钩子/守卫 ----
@@ -350,8 +385,10 @@ func auditHook(rt *driver.RunContext) hook.Hook {
 		if err != nil {
 			return next(ctx, ev)
 		}
+		// 批量工具并发执行时多个 goroutine 同时写同一 Session.State.Facts，
+		// 经 rt.AddFact 串行化（锁外广播 Fact 事件，避免 Observer 回调持锁）。
 		for _, f := range facts {
-			rt.Session.State.AddFact(f)
+			rt.AddFact(f)
 			f := f
 			rt.Notify(agent.Event{Type: agent.EventFact, SessionID: rt.Session.ID, Turn: ev.Turn, Fact: &f})
 		}

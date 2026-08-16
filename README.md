@@ -171,6 +171,26 @@ defer s.Close() // 逆序回滚全部注册
 undo()          // 也可单独撤销某一条
 ```
 
+### 批量工具执行（并发，agent/executor）
+
+模型一次返回多个工具调用时，ReAct 驱动默认**并发执行 + 按模型顺序回填**（架构 v2 §3.9 三阶段：
+preflight 串行决策 → 有界并发 → finalize 按源序回填，对齐 PI `executeToolCallsParallel`）：
+
+```go
+rt := &driver.RunContext{
+	Tools:           reg,
+	Planner:         planner.NewReAct(model),
+	MaxToolParallel: 4, // 单轮批量调用并发上限（<=0 默认 4）
+}
+a := react.New(rt) // 模型返回多个 ToolCalls 时全部执行，tool/result 按模型顺序回填
+```
+
+语义要点：
+- **守卫拦截集合**：被 `Policy`/守卫拒绝的调用不执行，以显式失败回填给模型（其余照常执行）；
+- **per-tool 串行**：工具实现 `tool.SequentialTool`（`Sequential() bool`）时，包含它的整批调用回退串行；
+- **日志串行化**：`tool/call` 按序落日志 → 并发执行 → `tool/result` 按模型调用顺序回填，Seq 连续可重放；
+- **审计串行化**：并发审计写 `TaskState` 经 `RunContext.AddFact` 互斥串行化（无数据竞争）。
+
 ## 开箱即用的智能体（assistant + CLI 示例）
 
 `assistant` 包提供组装好的智能体：**模型对象、工具集与框架概念全部由调用方注入**（安全策略 / 规划器 / 审计器 / 记忆 / 观察，为 nil 时使用框架默认实现），可直接作为库集成到其他工程。框架只认 `llm.ChatModel` 模型对象与 `[]tool.Tool` 工具集，不预设默认工具、不关心模型接入配置——但**随框架分发工具包并分类**：`tool/builtin` 内置工具包（时间 / 文件读写检索 / 网页抓取 / shell 命令执行，纯标准库实现，`builtin.Default()` 一键装配）+ `tool/extension` 扩展工具包（web_search 搜索提供商，需依赖注入）：

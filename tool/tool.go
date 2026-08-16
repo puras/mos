@@ -23,6 +23,14 @@ type Tool interface {
 	Execute(ctx context.Context, args json.RawMessage) (any, error)
 }
 
+// SequentialTool 是可选的执行模式标记（对齐 PI per-tool executionMode）：
+// 工具实现该接口且 Sequential() 返回 true 时，包含其调用的一整批工具调用
+// 回退为串行执行（并发批量路径见 agent/executor）。
+type SequentialTool interface {
+	Tool
+	Sequential() bool
+}
+
 // Definition 是工具在协议层的描述。
 type Definition struct {
 	Name        string

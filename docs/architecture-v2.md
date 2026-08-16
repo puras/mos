@@ -7,6 +7,7 @@
 
 | 日期 | 版本 | 更新内容 |
 | --- | --- | --- |
+| 2026-08-16 | v2.14 | 实施：新能力 `agent/executor`（三阶段批量执行 `executor.Run`：preflight 串行决策 → 有界并发/sequential 回退 → 按源序回填，语义中立零上层依赖）；ReAct 工具路径接入批量执行（多 ToolCall 并发、拦截集合显式失败回填、`tool.SequentialTool` 整批串行回退、`RunContext.MaxToolParallel`、审计经 `AddFact` 串行化）；单调用路径统一走批量路径（N=1 特例），ToolResult 观测移至 finalize 按源序回填 |
 | 2026-08-16 | v2.13 | 实施：新能力 `agent/scope`（Scope 注册作用域：按注册逆序回滚、On 返回可单独撤销 disposer、Close 幂等、关闭后注册立即执行、并发安全）+ 会话日志持久化（`agent/session.Persistence` 接口：SaveHeader/LoadHeader/Append/Load/Close，backend 可换；`JSONL` 后端：每会话一文件、首行 header、追加写、容忍尾部半行；`Session.Append` 同步落盘 fail-fast 保"日志即事实"不变式；`Restore` 重放重建 + `RepairInterrupted` 孤儿 turn 合成 interrupted，会话不存在按空会话恢复） |
 | 2026-08-16 | v2.12 | 实施：新能力 `agent/seam`（SeamRegistry 组件注册表：按 kind+name 注册工厂、按名解析，工厂返回 any 消费端断言，注册表零上层依赖）+ `agent/config`（声明式配置：YAML → 按名解析组件 → assistant 装配）；assistant.Config 新增 `Driver`/`DriverFactory`/`PlanPlanner`/`Reflector` 按名选驱动；引入 yaml.v3 |
 | 2026-08-16 | v2.11 | 实施：新能力 `agent/router`（DriverRouter 接口 + HybridRouter 任务路由：规则硬路由优先 → LLM 分类兜底 → fallback react）；配套 `planner.Classifier/NewClassifier`（JSON 驱动名分类 + 未知回退）；三种驱动支持裸实例惰性自装配（Run 时经 RunContext 补全默认钩子/守卫，Router 可直接返回驱动） |
@@ -60,7 +61,7 @@
 | PI `afterToolCall` 字段级合并覆盖（content/details/isError/usage/terminate） | ✅ | `tool/post-execute` 瀑布（截断/审计，结果可改写） |
 | PI `prepareNextTurn`（跨轮换模型/思考级别） | ✅ | `ModelResolver` + `HookRequest`（模型分级路由，M4） |
 | PI `failToolCallsFromTruncatedMessage`（截断显式失败） | ✅ 已落地 | `llm.Response.FinishReason` + ReActDriver 截断 fail-closed（见 3.3） |
-| PI 批量工具执行三阶段（preflight → 并发执行 → 按序回填）+ per-tool sequential | ✅ | `ConcurrentExecutor`（见 3.9，规划） |
+| PI 批量工具执行三阶段（preflight → 并发执行 → 按序回填）+ per-tool sequential | ✅ 已落地 | `agent/executor.Run` + ReAct 批量路径（见 3.9） |
 | PI `TelemetryContext/TelemetrySpan` 显式契约 + no-op + conformance tests | ✅ | `telemetry` seam（见 3.11，规划） |
 | PI 动态凭据 `getApiKey`（短期 OAuth 刷新） | ✅ | `CredentialResolver` seam（见 11，规划） |
 | PI `SuspendedOperation`（deferred 挂起 + missing 资源校验） | ✅ | approval 异步化 + 会话恢复资源校验（见 3.4/3.8，规划） |
@@ -346,22 +347,28 @@ func (h *AgentHandle) Dispose(ctx context.Context) error // 停循环 → 注销
    （对齐 PI `shouldTerminateToolBatch`）。
 
 ```go
-type ConcurrentExecutor struct {
-	mu sync.Mutex // 串行化 Session 日志写入
-}
-
-// RunBatch 并行执行一批工具调用：preflight 串行 → 允许集合并发 → 结果按模型顺序回填，事件按序落日志
-// （对齐 dsh barriers + bounded pool；三阶段语义见上）
-func (e *ConcurrentExecutor) RunBatch(ctx context.Context, calls []llm.ToolCall, maxParallel int) ([]BatchResult, error)
+// agent/executor（语义中立，零上层依赖；Go 方法不支持类型参数，故为包级泛型函数）
+func Run[T, R any](ctx context.Context, items []Item[T], maxParallel int,
+	preflight Preflight[T], execute Execute[T, R]) []Outcome[T, R]
 ```
+
+落地形态（✅ 已实现）：`agent/executor.Run` 提供三阶段编排；ReAct 驱动的工具调用路径
+（`react.execBatchTools`）接入：preflight = `tool/call` 落日志 + 单调守卫决策（拒绝 = 拦截集合），
+execute = pre-execute → execute → post-execute 钩子链有界并发（`RunContext.MaxToolParallel`，
+任一工具实现 `tool.SequentialTool` 时整批回退串行），finalize = `tool/result` 按模型调用顺序回填
+（日志 Seq 连续 + `EventToolResult` 观测按源序）。审计事实写入经 `RunContext.AddFact` 串行化
+（并发 goroutine 写同一 `Session.State`）。
 
 语义约束：
 - **日志串行化**：并行工具的事件（`tool/call` / `tool/result`）经 Executor 串行追加，Seq 连续、顺序可重放
 - **截断显式失败**：响应被截断（length/max_tokens）时整批工具调用不执行、逐个失败回填（已落地单调用路径，
-  批量路径在 Executor 落地时保持同一语义）
+  批量路径同一语义）
 - **有界并发**：`maxParallel` 上限 + 取消传播（ctx 取消 → 并行批次整体取消）
 - **汇聚语义**：分支结果合并由 driver 负责（Map-Reduce 汇聚 / 摘要合并）
 - **模型顺序回填**：即使工具并行执行，`tool/result` 按模型调用顺序回填，保持模型可见序列稳定
+
+（日志串行化通过 finalize 单 goroutine 按源序回填实现，无需持锁写日志；观测事件 `EventFact`
+由审计在各自执行 goroutine 内按完成序广播，`EventToolResult` 在 finalize 按源序广播。）
 
 ### 3.10 事件域分层（session / agent / capability）+ Inbox
 
@@ -482,7 +489,7 @@ var NoopTelemetry = ...
 4. **`RunContext` + `LoopDriver` + `ReActDriver`**（重写循环，删除命令式 `run`）——✅ 已落地
    （含 P0 增强：截断工具调用 fail-closed + `DoomLoopGuard` 守卫化）
 5. **`assistant` 组装层重写**（默认装配 = ReActDriver + 默认钩子注册；删除 `WithXxx` 选项）——✅ 已落地
-6. **`ConcurrentExecutor`**（批量工具三阶段：preflight → 并发执行 → 按序回填，见 3.9）——规划中
+6. **`ConcurrentExecutor`**（批量工具三阶段：preflight → 并发执行 → 按序回填，见 3.9）——✅ 已落地
 7. **`PlanExecuteDriver` + `ReflectionDriver` + `DriverRouter`**（新能力）——规划中
 8. **`SeamRegistry` + 声明式配置加载器**（新能力，平台装配入口）——规划中
 9. **`Scope` + 会话日志持久化后端接口**（新能力）——✅ 已落地
@@ -684,7 +691,7 @@ flowchart TD
         I4["agent/seam ✅<br/>SeamRegistry"]
         I5["agent/scope ✅<br/>Scope 注册作用域"]
         I6["agent/inbox<br/>Inbox 输入队列"]
-        I7["agent/executor<br/>ConcurrentExecutor"]
+        I7["agent/executor ✅<br/>ConcurrentExecutor 三阶段批量执行"]
         I8["agent/telemetry<br/>Telemetry span 契约（no-op + 适配器）"]
     end
 
@@ -802,7 +809,7 @@ flowchart LR
 | 概念 | 定义/职责 | 所在模块/包 | 状态 |
 | --- | --- | --- | --- |
 | `LoopDriver` | 循环驱动接口 `Run(ctx, rt, input)`；一种智能体类型 = 一个实现 | agent/driver | ✅ 已实现 |
-| `RunContext` | driver 共享设施容器：Session/工具/规划器/守卫/钩子/审计/压缩/RAG（MVP 未含 Seam/Executor） | agent/driver | ✅ 已实现 |
+| `RunContext` | driver 共享设施容器：Session/工具/规划器/守卫/钩子/审计/压缩/RAG/批量执行（MaxToolParallel + AddFact 串行化） | agent/driver | ✅ 已实现 |
 | `Policy` | 工具调用安全策略检查点：注入 GuardBus 单调守卫，不可被 hook 改写绕过 | agent/driver | ✅ 已实现 |
 | `ReActDriver` | 默认驱动：原 run 循环搬移，行为不变；默认装配钩子/守卫 | agent/driver/react | ✅ 已实现 |
 | `PlanExecuteDriver` | 写计划 → 逐条执行（内嵌 ReActDriver 作执行器）→ 校验交付物；步骤失败/校验失败置 blocked | agent/driver/planexecute | ✅ 已实现 |
@@ -845,7 +852,7 @@ flowchart LR
 | `Persistence` | 会话日志持久化后端接口（SaveHeader / LoadHeader / Append / Load / Close，backend 可换）；`Restore` 重放重建会话（无记录=空会话），`RepairInterrupted` 孤儿 turn 合成 interrupted | agent/session | ✅ 已实现 |
 | `JSONL` | 默认持久化后端：每会话一个 `<dir>/<sessionID>.jsonl`，首行 header + 逐行事件（追加写）；`Session.Append` 同步落盘 fail-fast，崩溃截断的尾部半行容忍跳过 | agent/session | ✅ 已实现 |
 | `Inbox` | 输入队列 / 唤醒：异步消息入队，队列非空唤醒 driver | agent/inbox（规划） | 🧱 规划中 |
-| `ConcurrentExecutor` | 并发工具执行器：并行分支 + 日志串行化 + 有界并发 + 模型顺序回填 | agent/executor（规划） | 🧱 规划中 |
+| `ConcurrentExecutor` | 三阶段批量执行（`executor.Run`）：preflight 串行决策 → 有界并发/sequential 回退 → 按源序回填；拦截集合显式失败回填 | agent/executor | ✅ 已实现 |
 | `Observer` / `Event` / `EventType` | 观测回调与事件类型（现有事件流保留，挂到会话事件/钩子的 emit 投影） | agent | ✅ 现有（保留） |
 | `SeamRegistry` | 组件注册表：按 (kind, name) 注册工厂、按名解析（工厂返回 any，消费端断言接口，注册表零上层依赖） | agent/seam | ✅ 已实现 |
 | `agent/config.Config` | 声明式装配配置（YAML）：driver/model/tools/policy/plan_planner/reflector 等按名解析，`Assemble` 返回可运行智能体 | agent/config | ✅ 已实现 |
