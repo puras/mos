@@ -73,6 +73,11 @@ func (d *PlanExecuteDriver) Run(ctx context.Context, rt *driver.RunContext, inpu
 	if rt.Tools == nil {
 		return "", fmt.Errorf("agent: no tool registry configured")
 	}
+	// 裸实例惰性装配：Router 等场景直接构造 PlanExecuteDriver 时补齐内嵌执行器
+	// （ReActDriver 的 Run 会完成默认钩子/守卫装配）。
+	if d.executor == nil {
+		d.executor = &react.ReActDriver{}
+	}
 	sess := rt.Session
 	ctx = tool.WithSandbox(ctx, rt.Sandbox)
 

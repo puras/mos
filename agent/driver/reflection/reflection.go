@@ -77,6 +77,14 @@ func (d *ReflectionDriver) Run(ctx context.Context, rt *driver.RunContext, input
 	if rt.Tools == nil {
 		return "", fmt.Errorf("agent: no tool registry configured")
 	}
+	// 裸实例惰性装配：Router 等场景直接构造 ReflectionDriver 时补齐生成执行器
+	// （ReActDriver 的 Run 会完成默认钩子/守卫装配）。
+	if d.generator == nil {
+		d.generator = &react.ReActDriver{}
+	}
+	if d.reflector == nil {
+		d.reflector = rt.Reflector
+	}
 	if d.reflector == nil {
 		return "", fmt.Errorf("agent: reflection requires a reflector (rt.Reflector or WithReflector)")
 	}

@@ -90,6 +90,11 @@ func (d *ReActDriver) Run(ctx context.Context, rt *driver.RunContext, input stri
 	if rt.Planner == nil {
 		return "", fmt.Errorf("agent: no planner configured")
 	}
+	// 裸实例惰性默认装配：Router 等场景直接构造 ReActDriver 时，Run 前补全
+	// 默认钩子/守卫（react.New 等显式装配入口调用后二者皆非 nil，此处跳过）。
+	if rt.Hooks == nil || rt.Guards == nil {
+		NewReAct(rt)
+	}
 	sess := rt.Session
 	ctx = tool.WithSandbox(ctx, rt.Sandbox)
 

@@ -7,6 +7,7 @@
 
 | 日期 | 版本 | 更新内容 |
 | --- | --- | --- |
+| 2026-08-16 | v2.11 | 实施：新能力 `agent/router`（DriverRouter 接口 + HybridRouter 任务路由：规则硬路由优先 → LLM 分类兜底 → fallback react）；配套 `planner.Classifier/NewClassifier`（JSON 驱动名分类 + 未知回退）；三种驱动支持裸实例惰性自装配（Run 时经 RunContext 补全默认钩子/守卫，Router 可直接返回驱动） |
 | 2026-08-15 | v2.10 | 实施：新能力 `agent/driver/reflection`（Basic Reflection 驱动：Generate → Reflect → Revise 自查循环，评审通过/达最大迭代收尾）；配套 `planner.Reflector/Review/NewReflector`（JSON 评审 + 非 JSON 文本回退）、会话事件 `reflection/start|review|end`、观测事件 `EventReflection`、RunContext 新增 `Reflector` 字段（评审用独立 Context 避免自我合理化） |
 | 2026-08-15 | v2.9 | 实施：新能力 `agent/driver/planexecute`（Plan&Execute 驱动：写计划 → 逐条执行内嵌 ReActDriver → 校验交付物）；配套 `planner.Plan/PlanPlanner/NewPlan`（JSON 计划生成 + 多级解析回退）、会话事件 `plan/start|step|end`、观测事件 `EventPlan`、`session.NextTurn()`（续跑/多步骤 Turn 全局递增）、RunContext 新增 `PlanPlanner` 字段 |
 | 2026-08-15 | v2.8 | 实施：Step 4 拆分 `agent/driver`（LoopDriver + RunContext + Policy + Agent，`New(rt, d)` 显式指定驱动）与 `agent/driver/react`（ReActDriver + 默认装配入口 `react.New(rt)`）；根包 `driver.go`/`react.go` 删除；跨包方法导出 `Notify`/`AssembleSystem`/`MonitorUsage`；循环集成测试随迁 react 包，根包仅保留纯单测 |
@@ -656,7 +657,7 @@ flowchart TD
         A1["agent/config<br/>声明式配置加载（YAML→Agent）"]
         A2["agent/registry<br/>AgentRegistry + AgentHandle"]
         A3["assistant<br/>组装层（默认装配）"]
-        A4["agent/router<br/>DriverRouter 任务路由"]
+        A4["agent/router ✅<br/>DriverRouter 任务路由"]
     end
 
     subgraph LOOP["循环层"]
@@ -788,7 +789,8 @@ flowchart LR
 | `AgentRegistry` | 按 ID 管理 Agent 句柄：Create/Resume/Get | agent/registry（规划） | 🧱 规划中 |
 | `AgentHandle` | 生命周期句柄（create/resume/dispose）；所有权边界，销毁 = 停循环 → 注销 → 回滚 Scope | agent/registry（规划） | 🧱 规划中 |
 | `CreateOptions` / `ResumeOptions` | 创建 / 恢复选项；Resume 按 sessionID 从事件日志重放 | agent/registry（规划） | 🧱 规划中 |
-| `DriverRouter` / `HybridRouter` | 任务路由：规则优先（确定性/可审计）+ LLM 兜底，按输入选 LoopDriver | agent/router（规划） | 🧱 规划中 |
+| `DriverRouter` / `HybridRouter` | 任务路由：规则优先（确定性/可审计）+ LLM 兜底（模糊输入），按输入选 LoopDriver；返回裸驱动实例（Run 时惰性装配） | agent/router | ✅ 已实现 |
+| `Classifier` | LLM 任务分类：输出 JSON 驱动名（react / plan-execute / reflection），未知/无法解析走 fallback | planner | ✅ 已实现 |
 | `SystemAssembler` | 按会话组装系统提示词（Slots：约束/任务/状态/工具） | agent | ✅ 现有 |
 | `SystemSection` / `SystemSlot` | 系统提示的段落与可开关槽位 | agent | ✅ 现有 |
 

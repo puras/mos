@@ -90,6 +90,28 @@ rt := &driver.RunContext{
 a := reflection.New(rt) // 未配置 Reflector 时拒绝运行
 ```
 
+### DriverRouter（按输入路由驱动）
+
+`agent/router` 提供任务路由：**规则硬路由（确定性/可审计）优先**——输入包含关键词
+（如"先规划"）直接选对应驱动；未命中时由 `planner.NewClassifier(model)` 做 LLM 分类兜底
+（模糊输入按意图选驱动）；均未命中走 fallback（默认 react）。返回的驱动实例在
+Run 时经 RunContext 惰性完成默认装配，可直接 `driver.New(rt, d)` 运行：
+
+```go
+import (
+	"hegq.net/mos/agent/router"
+	"hegq.net/mos/planner"
+)
+
+r := router.NewHybrid(
+	router.WithClassifier(planner.NewClassifier(model)),
+	router.WithRule("评审", planner.DriverReflection),
+	router.WithRule("写计划", planner.DriverPlanExec),
+)
+d, err := r.Select(ctx, input, sess)
+ag := driver.New(rt, d)
+```
+
 ## 开箱即用的智能体（assistant + CLI 示例）
 
 `assistant` 包提供组装好的智能体：**模型对象、工具集与框架概念全部由调用方注入**（安全策略 / 规划器 / 审计器 / 记忆 / 观察，为 nil 时使用框架默认实现），可直接作为库集成到其他工程。框架只认 `llm.ChatModel` 模型对象与 `[]tool.Tool` 工具集，不预设默认工具、不关心模型接入配置——但**随框架分发工具包并分类**：`tool/builtin` 内置工具包（时间 / 文件读写检索 / 网页抓取 / shell 命令执行，纯标准库实现，`builtin.Default()` 一键装配）+ `tool/extension` 扩展工具包（web_search 搜索提供商，需依赖注入）：
