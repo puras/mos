@@ -16,7 +16,7 @@ MoS 是一个基于 Go 的智能体基础框架（Agent Base），提供统一�
 - **Loop Engineering（循环可观测）**：每轮循环暴露思考/工具调用/工具结果/完成事件（含迭代序号），完整还原推理过程
 - **审计式任务状态（Audit Gate + Task State）**：工具结果经 `Auditor` 审计后，仅"环境可独立验证"的事实写入独立于消息历史的 `TaskState`（目标 / 已验证事实 / 状态机）；模型自述不算数——执行上下文可刷新，进度真相不过期
 - **开箱即用的智能体**：`assistant` 包组装好 Provider + 内置/扩展工具包 + 安全策略（`assistant.New` 一行装配）
-- **近零依赖**：SDK 仅依赖本地协议库 `hegq.net/mogo`；示例工程 TUI 依赖 charmbracelet 系列（bubbles / bubbletea / glamour / lipgloss）
+- **近零依赖**：SDK 仅依赖本地协议库 `hegq.net/mogo` 与两个轻量纯 Go 库（`google/uuid`、`gopkg.in/yaml.v3`）
 
 ## 快速开始
 
@@ -110,6 +110,31 @@ r := router.NewHybrid(
 )
 d, err := r.Select(ctx, input, sess)
 ag := driver.New(rt, d)
+```
+
+### 声明式配置装配（YAML → Agent）
+
+`agent/config` 提供平台装配入口：组件经 `agent/seam` 按名注册后，仅凭 YAML 即可装配
+可运行智能体（模型必需，其余组件有缺省）：
+
+```go
+import (
+	"hegq.net/mos/agent/config"
+	"hegq.net/mos/agent/seam"
+)
+
+reg := seam.New()
+reg.Register(seam.KindModel, "gpt-4o", func() any { return model }) // 平台注册 provider
+reg.Register(seam.KindReflector, "reviewer", func() any { return planner.NewReflector(model) })
+
+yml := []byte(`
+driver: reflection
+model: gpt-4o
+tools: [builtin]
+reflector: reviewer
+system_prompt: "你是 MoS 智能体"
+`)
+a, err := config.Assemble(reg, yml) // 返回 *assistant.Assistant，可直接 Run
 ```
 
 ## 开箱即用的智能体（assistant + CLI 示例）

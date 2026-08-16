@@ -7,6 +7,7 @@
 
 | 日期 | 版本 | 更新内容 |
 | --- | --- | --- |
+| 2026-08-16 | v2.12 | 实施：新能力 `agent/seam`（SeamRegistry 组件注册表：按 kind+name 注册工厂、按名解析，工厂返回 any 消费端断言，注册表零上层依赖）+ `agent/config`（声明式配置：YAML → 按名解析组件 → assistant 装配）；assistant.Config 新增 `Driver`/`DriverFactory`/`PlanPlanner`/`Reflector` 按名选驱动；引入 yaml.v3 |
 | 2026-08-16 | v2.11 | 实施：新能力 `agent/router`（DriverRouter 接口 + HybridRouter 任务路由：规则硬路由优先 → LLM 分类兜底 → fallback react）；配套 `planner.Classifier/NewClassifier`（JSON 驱动名分类 + 未知回退）；三种驱动支持裸实例惰性自装配（Run 时经 RunContext 补全默认钩子/守卫，Router 可直接返回驱动） |
 | 2026-08-15 | v2.10 | 实施：新能力 `agent/driver/reflection`（Basic Reflection 驱动：Generate → Reflect → Revise 自查循环，评审通过/达最大迭代收尾）；配套 `planner.Reflector/Review/NewReflector`（JSON 评审 + 非 JSON 文本回退）、会话事件 `reflection/start|review|end`、观测事件 `EventReflection`、RunContext 新增 `Reflector` 字段（评审用独立 Context 避免自我合理化） |
 | 2026-08-15 | v2.9 | 实施：新能力 `agent/driver/planexecute`（Plan&Execute 驱动：写计划 → 逐条执行内嵌 ReActDriver → 校验交付物）；配套 `planner.Plan/PlanPlanner/NewPlan`（JSON 计划生成 + 多级解析回退）、会话事件 `plan/start|step|end`、观测事件 `EventPlan`、`session.NextTurn()`（续跑/多步骤 Turn 全局递增）、RunContext 新增 `PlanPlanner` 字段 |
@@ -654,7 +655,7 @@ evals 体系（平台/测试基建，SDK 保留接口级 conformance 测试）�
 ```mermaid
 flowchart TD
     subgraph ASM["装配层"]
-        A1["agent/config<br/>声明式配置加载（YAML→Agent）"]
+        A1["agent/config ✅<br/>声明式配置加载（YAML→Agent）"]
         A2["agent/registry<br/>AgentRegistry + AgentHandle"]
         A3["assistant<br/>组装层（默认装配）"]
         A4["agent/router ✅<br/>DriverRouter 任务路由"]
@@ -678,7 +679,7 @@ flowchart TD
         I1["agent/event<br/>EventBus 四模式"]
         I2["agent/session<br/>Session 日志 + deriveMessages"]
         I3["agent/hook<br/>HookBus + GuardBus"]
-        I4["agent/seam<br/>SeamRegistry"]
+        I4["agent/seam ✅<br/>SeamRegistry"]
         I5["agent/scope<br/>Scope 注册作用域"]
         I6["agent/inbox<br/>Inbox 输入队列"]
         I7["agent/executor<br/>ConcurrentExecutor"]
@@ -785,7 +786,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | `Agent` | 智能体实例 = `RunContext` + `LoopDriver` 组合；对外暴露 Run / RunStream（MVP 未含 Scope/Inbox） | agent/driver | ✅ 已实现 |
 | `Assistant` | 默认装配层：ChatModel + 工具集 + Config → 组装好的可运行智能体 | assistant | ✅ 现有 |
-| `assistant.Config` | 声明式装配配置（结构化注入）；按名选组件待 SeamRegistry 迭代 | assistant | ✅ 已实现（按名选择待演进） |
+| `assistant.Config` | 声明式装配配置（结构化注入）；`Driver`/`DriverFactory`/`PlanPlanner`/`Reflector` 支持按名选驱动与组件 | assistant | ✅ 已实现 |
 | `AgentRegistry` | 按 ID 管理 Agent 句柄：Create/Resume/Get | agent/registry（规划） | 🧱 规划中 |
 | `AgentHandle` | 生命周期句柄（create/resume/dispose）；所有权边界，销毁 = 停循环 → 注销 → 回滚 Scope | agent/registry（规划） | 🧱 规划中 |
 | `CreateOptions` / `ResumeOptions` | 创建 / 恢复选项；Resume 按 sessionID 从事件日志重放 | agent/registry（规划） | 🧱 规划中 |
@@ -842,7 +843,8 @@ flowchart LR
 | `Inbox` | 输入队列 / 唤醒：异步消息入队，队列非空唤醒 driver | agent/inbox（规划） | 🧱 规划中 |
 | `ConcurrentExecutor` | 并发工具执行器：并行分支 + 日志串行化 + 有界并发 + 模型顺序回填 | agent/executor（规划） | 🧱 规划中 |
 | `Observer` / `Event` / `EventType` | 观测回调与事件类型（现有事件流保留，挂到会话事件/钩子的 emit 投影） | agent | ✅ 现有（保留） |
-| `SeamRegistry` | 组件注册表：按名选提供者（driver/policy/sandbox/memory/model/subagent/mcp/attachment/persistence/compactor） | agent/seam（规划） | 🧱 规划中 |
+| `SeamRegistry` | 组件注册表：按 (kind, name) 注册工厂、按名解析（工厂返回 any，消费端断言接口，注册表零上层依赖） | agent/seam | ✅ 已实现 |
+| `agent/config.Config` | 声明式装配配置（YAML）：driver/model/tools/policy/plan_planner/reflector 等按名解析，`Assemble` 返回可运行智能体 | agent/config | ✅ 已实现 |
 | `Projection` | 日志派生投影（模型消息 / TaskState / stats / title），可注册可缓存（对齐 dsh session-projection） | agent/session（规划） | 🧱 规划中 |
 | `TelemetryContext/TelemetrySpan` | 显式遥测契约：span 树 + no-op + 适配器（对齐 PI pi-telemetry） | agent/telemetry（规划） | 🧱 规划中 |
 | `CredentialResolver` | 请求级凭据解析（短期 OAuth 刷新，对齐 PI getApiKey） | llm（规划） | 🧱 规划中 |

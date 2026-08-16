@@ -8,7 +8,9 @@ import (
 
 	"hegq.net/mos/agent"
 	"hegq.net/mos/agent/driver"
+	"hegq.net/mos/agent/driver/planexecute"
 	"hegq.net/mos/agent/driver/react"
+	"hegq.net/mos/agent/driver/reflection"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/planner"
@@ -101,6 +103,8 @@ func New(model llm.ChatModel, tools []tool.Tool, cfg Config) (*Assistant, error)
 		ShouldStopAfterTurn: cfg.ShouldStopAfterTurn,
 		ContextBudget:       cfg.ContextBudget,
 		DoomLoopMaxRepeat:   cfg.DoomLoopMaxRepeat,
+		PlanPlanner:         cfg.PlanPlanner,
+		Reflector:           cfg.Reflector,
 	}
 	// M2.6 系统提示词：显式组装器优先；配置了项目指令/技能目录时自动构建默认组装器；
 	// 否则回退到 SystemPrompt 静态引导（既有行为不变）。
@@ -117,8 +121,29 @@ func New(model llm.ChatModel, tools []tool.Tool, cfg Config) (*Assistant, error)
 		rt.SystemPrompt = cfg.SystemPrompt
 	}
 
-	ag := react.New(rt)
+	ag, err := assembleDriver(cfg, rt)
+	if err != nil {
+		return nil, err
+	}
 	return &Assistant{agent: ag, config: cfg, tools: reg, policy: cfg.Policy}, nil
+}
+
+// assembleDriver 按配置装配驱动（架构 v2 §3.5 按名选组件）：
+// DriverFactory 优先 → Driver 名内置三选一 → 默认 react。
+func assembleDriver(cfg Config, rt *driver.RunContext) (*driver.Agent, error) {
+	if cfg.DriverFactory != nil {
+		return cfg.DriverFactory(rt), nil
+	}
+	switch cfg.Driver {
+	case "", "react":
+		return react.New(rt), nil
+	case "plan-execute":
+		return planexecute.New(rt), nil
+	case "reflection":
+		return reflection.New(rt), nil
+	default:
+		return nil, fmt.Errorf("assistant: unknown driver %q", cfg.Driver)
+	}
 }
 
 // Agent 返回底层智能体运行时，可用于挂载自定义 Observer。

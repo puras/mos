@@ -22,6 +22,16 @@ import (
 // 框架级概念（Policy/Planner/Auditor/Memory/Observer）由外部注入实例；
 // 为 nil 时装配层使用框架默认实现，可在 New 前按需覆盖。
 type Config struct {
+	// Driver 驱动名（架构 v2 §3.5 按名选组件）：react（默认）/ plan-execute / reflection。
+	// 自定义驱动名时使用 DriverFactory 注入。
+	Driver string
+	// DriverFactory 自定义驱动工厂（优先于 Driver 名；nil 时按 Driver 名内置装配）。
+	DriverFactory func(rt *driver.RunContext) *driver.Agent
+	// PlanPlanner Plan&Execute 计划生成器（Driver=plan-execute 时使用；nil 单步退化）。
+	PlanPlanner planner.PlanPlanner
+	// Reflector Reflection 评审器（Driver=reflection 时必需；nil 拒绝运行）。
+	Reflector planner.Reflector
+
 	// SystemPrompt 系统引导词（系统约束槽位内容）。
 	// 设置了 Assembler 时，本字段作为默认组装器的约束槽位（可被组装器配置覆盖）。
 	SystemPrompt string

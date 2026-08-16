@@ -9,3 +9,5 @@ replace github.com/puras/mog v0.1.6 => /Users/puras/workspace/proj/hegq/mog
 require hegq.net/mogo v0.0.0-00010101000000-000000000000
 
 require github.com/google/uuid v1.6.0
+
+require gopkg.in/yaml.v3 v3.0.1
