@@ -137,6 +137,40 @@ system_prompt: "你是 MoS 智能体"
 a, err := config.Assemble(reg, yml) // 返回 *assistant.Assistant，可直接 Run
 ```
 
+### 会话持久化 + Scope（agent/session + agent/scope）
+
+会话事件日志可落盘持久化：给 `Session` 挂一个 `session.Persistence` 后端（默认实现
+`session.NewJSONL(dir)`，每会话一个 `.jsonl` 文件，首行 header + 逐行事件追加写），
+此后 `Append` 同步落盘（写失败事件不进内存，fail-fast 保"日志即事实"不变式）。
+`session.Restore(p, id)` 从日志重放重建会话，崩溃导致的孤儿 `turn/start` 自动合成
+`turn/end{reason: interrupted}` 平衡日志（不截断），会话不存在时返回空会话：
+
+```go
+import "hegq.net/mos/agent/session"
+
+j, _ := session.NewJSONL("./sessions")
+defer j.Close()
+
+sess := session.NewSession("demo")
+sess.Persistence = j // 挂上持久化后端：此后 Append 同步落盘
+
+// 另一进程/后续恢复：重放事件重建会话（可继续 Run）
+restored, err := session.Restore(j, "demo")
+```
+
+`agent/scope` 提供 per-agent/per-session 注册作用域：`On(dispose)` 注册回收器，
+生命周期结束时 `Close()` 按注册逆序统一回滚（registrations are reversible），
+返回的 disposer 可单独撤销某项注册，重复 Close 幂等：
+
+```go
+import "hegq.net/mos/agent/scope"
+
+s := scope.New()
+undo := s.On(func() { /* 注销钩子/工具 */ })
+defer s.Close() // 逆序回滚全部注册
+undo()          // 也可单独撤销某一条
+```
+
 ## 开箱即用的智能体（assistant + CLI 示例）
 
 `assistant` 包提供组装好的智能体：**模型对象、工具集与框架概念全部由调用方注入**（安全策略 / 规划器 / 审计器 / 记忆 / 观察，为 nil 时使用框架默认实现），可直接作为库集成到其他工程。框架只认 `llm.ChatModel` 模型对象与 `[]tool.Tool` 工具集，不预设默认工具、不关心模型接入配置——但**随框架分发工具包并分类**：`tool/builtin` 内置工具包（时间 / 文件读写检索 / 网页抓取 / shell 命令执行，纯标准库实现，`builtin.Default()` 一键装配）+ `tool/extension` 扩展工具包（web_search 搜索提供商，需依赖注入）：

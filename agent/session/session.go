@@ -36,6 +36,11 @@ type Session struct {
 	Events []SessionEvent `json:"events"`
 	State  TaskState      `json:"state"`
 	Header SessionHeader  `json:"header,omitempty"`
+	// Persistence 可选事件日志持久化后端（架构 v2 §10.3；nil = 纯内存）。
+	// 设置后 Append 同步落盘：header 首次写入，事件逐条追加；
+	// 写失败时事件不进内存（fail-fast，不破坏"日志即事实"不变式）。
+	Persistence Persistence `json:"-"`
+	persisted   bool        `json:"-"`
 }
 
 // NewSession 创建指定 ID 的空会话（版本号自动填充）。
@@ -50,6 +55,17 @@ func (s *Session) Append(typ string, data any) error {
 		return fmt.Errorf("agent: append event to nil session")
 	}
 	ev := SessionEvent{Seq: int64(len(s.Events)) + 1, Type: typ, Data: event.MarshalData(data)}
+	if s.Persistence != nil {
+		if !s.persisted {
+			if err := s.Persistence.SaveHeader(s.ID, s.Header); err != nil {
+				return fmt.Errorf("agent: persist session header: %w", err)
+			}
+			s.persisted = true
+		}
+		if err := s.Persistence.Append(s.ID, ev); err != nil {
+			return fmt.Errorf("agent: persist event: %w", err)
+		}
+	}
 	s.Events = append(s.Events, ev)
 	return nil
 }

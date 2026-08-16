@@ -7,6 +7,7 @@
 
 | 日期 | 版本 | 更新内容 |
 | --- | --- | --- |
+| 2026-08-16 | v2.13 | 实施：新能力 `agent/scope`（Scope 注册作用域：按注册逆序回滚、On 返回可单独撤销 disposer、Close 幂等、关闭后注册立即执行、并发安全）+ 会话日志持久化（`agent/session.Persistence` 接口：SaveHeader/LoadHeader/Append/Load/Close，backend 可换；`JSONL` 后端：每会话一文件、首行 header、追加写、容忍尾部半行；`Session.Append` 同步落盘 fail-fast 保"日志即事实"不变式；`Restore` 重放重建 + `RepairInterrupted` 孤儿 turn 合成 interrupted，会话不存在按空会话恢复） |
 | 2026-08-16 | v2.12 | 实施：新能力 `agent/seam`（SeamRegistry 组件注册表：按 kind+name 注册工厂、按名解析，工厂返回 any 消费端断言，注册表零上层依赖）+ `agent/config`（声明式配置：YAML → 按名解析组件 → assistant 装配）；assistant.Config 新增 `Driver`/`DriverFactory`/`PlanPlanner`/`Reflector` 按名选驱动；引入 yaml.v3 |
 | 2026-08-16 | v2.11 | 实施：新能力 `agent/router`（DriverRouter 接口 + HybridRouter 任务路由：规则硬路由优先 → LLM 分类兜底 → fallback react）；配套 `planner.Classifier/NewClassifier`（JSON 驱动名分类 + 未知回退）；三种驱动支持裸实例惰性自装配（Run 时经 RunContext 补全默认钩子/守卫，Router 可直接返回驱动） |
 | 2026-08-15 | v2.10 | 实施：新能力 `agent/driver/reflection`（Basic Reflection 驱动：Generate → Reflect → Revise 自查循环，评审通过/达最大迭代收尾）；配套 `planner.Reflector/Review/NewReflector`（JSON 评审 + 非 JSON 文本回退）、会话事件 `reflection/start|review|end`、观测事件 `EventReflection`、RunContext 新增 `Reflector` 字段（评审用独立 Context 避免自我合理化） |
@@ -484,7 +485,7 @@ var NoopTelemetry = ...
 6. **`ConcurrentExecutor`**（批量工具三阶段：preflight → 并发执行 → 按序回填，见 3.9）——规划中
 7. **`PlanExecuteDriver` + `ReflectionDriver` + `DriverRouter`**（新能力）——规划中
 8. **`SeamRegistry` + 声明式配置加载器**（新能力，平台装配入口）——规划中
-9. **`Scope` + 会话日志持久化后端接口**（新能力）——规划中
+9. **`Scope` + 会话日志持久化后端接口**（新能力）——✅ 已落地
 10. **`telemetry` seam**（span 契约 + no-op + 适配器，见 3.11）——规划中（P0，平台集成前置）
 
 ### 5.3 验收
@@ -603,10 +604,10 @@ README 路线图中未实现的里程碑（M2.8 ~ M5）按三类归位：**v2 �
 
 ### 10.3 持久化 seam 语义（对齐 dsh SessionPersistence）
 
-- **flush checkpoint**：事件按批落盘（首个 pending 事件开启批处理窗口，`session/flush` 显式排空）；写失败保留事件、暂停自动重试、显式 flush 报告错误
-- **crash recovery**：重载到孤儿 `turn/start`（无 `turn/end`）**不截断**，追加合成 `turn/end{reason: interrupted}` 平衡日志
-- **header 分离**：format version / cwd / lineage / seed 存 `SessionHeader`，不进事件日志
-- **backend 可换**：jsonl / sqlite 实现同一 `SessionPersistence` 接口
+- **flush checkpoint**：事件按批落盘（首个 pending 事件开启批处理窗口，`session/flush` 显式排空）；写失败保留事件、暂停自动重试、显式 flush 报告错误——规划中（当前为逐条同步落盘 fail-fast）
+- **crash recovery**：重载到孤儿 `turn/start`（无 `turn/end`）**不截断**，追加合成 `turn/end{reason: interrupted}` 平衡日志——✅ 已落地（`RepairInterrupted`，按 turn 号集合求差）
+- **header 分离**：format version / cwd / lineage / seed 存 `SessionHeader`，不进事件日志——✅ 已落地
+- **backend 可换**：jsonl / sqlite 实现同一 `Persistence` 接口——✅ 接口已落地（jsonl 已实现，sqlite 可后续补充）
 
 ### 10.4 明确不借鉴（复核后确认）
 
@@ -646,9 +647,10 @@ evals 体系（平台/测试基建，SDK 保留接口级 conformance 测试）�
 
 ### 11.1 模块划分（包结构）
 
-> 以下为**目标包结构**（v2 演进方向，按模块落地时逐步拆分）；当前实现为 `agent`（含已拆出的
-> `agent/event`、`agent/session`、`agent/hook`、`agent/driver`、`agent/driver/react`）/
-> `assistant` / `llm` / `planner` / `tool` / `memory`（具体状态见第 12 章术语表标注）。
+  > 以下为**目标包结构**（v2 演进方向，按模块落地时逐步拆分）；当前实现为 `agent`（含已拆出的
+  > `agent/event`、`agent/session`、`agent/hook`、`agent/driver`、`agent/driver/react`、
+  > `agent/driver/planexecute`、`agent/driver/reflection`、`agent/seam`、`agent/router`、`agent/scope`）/
+  > `assistant` / `llm` / `planner` / `tool` / `memory`（具体状态见第 12 章术语表标注）。
 > 包拆分**不设公开语义红线**（开发阶段）：公开 import 路径可随拆分调整，调用点同步更新；
 > 拆分的核心收益是**依赖方向由编译器强制**（基础层不得反向依赖上层机制）。
 
@@ -680,7 +682,7 @@ flowchart TD
         I2["agent/session<br/>Session 日志 + deriveMessages"]
         I3["agent/hook<br/>HookBus + GuardBus"]
         I4["agent/seam ✅<br/>SeamRegistry"]
-        I5["agent/scope<br/>Scope 注册作用域"]
+        I5["agent/scope ✅<br/>Scope 注册作用域"]
         I6["agent/inbox<br/>Inbox 输入队列"]
         I7["agent/executor<br/>ConcurrentExecutor"]
         I8["agent/telemetry<br/>Telemetry span 契约（no-op + 适配器）"]
@@ -839,7 +841,9 @@ flowchart LR
 | `DoomLoopGuard` / `DoomLoopError` | Doom Loop 单调守卫：相同工具连续相同参数调用达阈值 → 致命守卫错误，循环层终止任务（状态 blocked） | agent/hook | ✅ 已实现 |
 | `isTruncatedFinish` | 截断停止原因判定（length / max_tokens） | agent | ✅ 已实现 |
 | `llm.Response.FinishReason` | 模型停止原因透传（openai stop/length/tool_calls；anthropic end_turn/max_tokens/tool_use；gemini 小写化） | llm | ✅ 已实现 |
-| `Scope` | per-agent 注册作用域；agent 销毁时按注册逆序回滚（registrations are reversible） | agent/scope（规划） | 🧱 规划中 |
+| `Scope` | per-agent 注册作用域；按注册逆序回滚，`On` 返回可单独撤销的 disposer，`Close` 幂等（registrations are reversible） | agent/scope | ✅ 已实现 |
+| `Persistence` | 会话日志持久化后端接口（SaveHeader / LoadHeader / Append / Load / Close，backend 可换）；`Restore` 重放重建会话（无记录=空会话），`RepairInterrupted` 孤儿 turn 合成 interrupted | agent/session | ✅ 已实现 |
+| `JSONL` | 默认持久化后端：每会话一个 `<dir>/<sessionID>.jsonl`，首行 header + 逐行事件（追加写）；`Session.Append` 同步落盘 fail-fast，崩溃截断的尾部半行容忍跳过 | agent/session | ✅ 已实现 |
 | `Inbox` | 输入队列 / 唤醒：异步消息入队，队列非空唤醒 driver | agent/inbox（规划） | 🧱 规划中 |
 | `ConcurrentExecutor` | 并发工具执行器：并行分支 + 日志串行化 + 有界并发 + 模型顺序回填 | agent/executor（规划） | 🧱 规划中 |
 | `Observer` / `Event` / `EventType` | 观测回调与事件类型（现有事件流保留，挂到会话事件/钩子的 emit 投影） | agent | ✅ 现有（保留） |
