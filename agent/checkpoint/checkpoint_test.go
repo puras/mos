@@ -2,8 +2,10 @@ package checkpoint
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"hegq.net/mos/agent/approval"
@@ -121,7 +123,9 @@ func TestFileStoreOverwrite(t *testing.T) {
 	}
 }
 
-// TestCheckpointScriptStateRoundtrip 验证 Scripted 驱动断点：ScriptState 经 MemStore 往返不丢字段。
+// TestCheckpointScriptStateRoundtrip 验证 Scripted 驱动断点：ScriptState 经 FileStore（真实 json 落盘）
+// 往返不丢值——若 ScriptState 的 tag 错（`-` / 拼错 / 缺 omitempty 行为），FileStore 会沉默丢失脚本态，
+// resume 时无法续跑已完成的步骤。MemStore 仅做结构浅拷贝，不走 json 路径，故不作为本测试后端。
 // 字段说明：Plan=脚本定义、Outputs=已完成步骤的命名输出、Status=每步运行状态（resume 时按此续跑）。
 func TestCheckpointScriptStateRoundtrip(t *testing.T) {
 	plan := planner.ScriptedPlan{
@@ -150,7 +154,10 @@ func TestCheckpointScriptStateRoundtrip(t *testing.T) {
 			Status:  map[string]string{"a": "running"},
 		},
 	}
-	st := NewMemStore()
+	st, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
 	ctx := context.Background()
 	if err := st.Save(ctx, ckpt); err != nil {
 		t.Fatalf("save: %v", err)
@@ -160,7 +167,7 @@ func TestCheckpointScriptStateRoundtrip(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 	if got.ScriptState == nil {
-		t.Fatal("ScriptState not persisted")
+		t.Fatal("ScriptState not persisted (json tag likely broken)")
 	}
 	if got.ScriptState.Status["a"] != "running" {
 		t.Fatalf("Status mismatch: %+v", got.ScriptState.Status)
@@ -176,24 +183,45 @@ func TestCheckpointScriptStateRoundtrip(t *testing.T) {
 	}
 }
 
-// TestCheckpointBackwardCompat_NoScriptState 验证老 checkpoint（react/planexecute 等）无 ScriptState 字段
-// 时仍可正常落盘/读取，且加载后 ScriptState 为 nil——这是变更的核心契约：向后兼容。
-func TestCheckpointBackwardCompat_NoScriptState(t *testing.T) {
-	ckpt := sampleCheckpoint("old1") // 不含 ScriptState
-	st := NewMemStore()
-	ctx := context.Background()
-	if err := st.Save(ctx, ckpt); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-	got, err := st.Load(ctx, "old1")
-	if err != nil {
-		t.Fatalf("load: %v", err)
+// TestCheckpointBackwardCompatNoScriptState 验证老 checkpoint（react/planexecute 等）无 ScriptState 字段
+// 时仍可正常落盘/读取。两条核心契约：
+//  1. 反序列化：用一段字面量 legacy JSON（不包含 script_state 键）直接 Unmarshal，得到 ScriptState == nil
+//     且其他字段完整还原——这是 on-disk 兼容性，对 MemStore（浅拷贝）无效。
+//  2. 序列化：ScriptState 为 nil 的 Checkpoint 经 json.Marshal 后不出现 "script_state" 键——避免 Scripted
+//     之外的驱动写出空壳字段污染老读取端。两边共同锁定 *T + omitempty 的正确性。
+func TestCheckpointBackwardCompatNoScriptState(t *testing.T) {
+	// 模拟"升级前已经写好的 on-disk 文件"：只含 Checkpoint 既有字段，无 script_state 键。
+	legacyJSON := `{
+		"session_id": "legacy1",
+		"turn": 7,
+		"step": 2,
+		"hook_kind": "tool/pre-execute",
+		"calls": [{"id":"c1","name":"write_file","args":"{}"}],
+		"request": {"tool_name":"write_file","command":"a.txt","reason":"legacy"},
+		"approval_id": "ap-legacy",
+		"suspended_call_id": "c1",
+		"decisions": {},
+		"snapshot": {"goal":"legacy goal","status":"running"},
+		"created_at": "2026-01-01T00:00:00Z"
+	}`
+	var got Checkpoint
+	if err := json.Unmarshal([]byte(legacyJSON), &got); err != nil {
+		t.Fatalf("legacy json unmarshal: %v", err)
 	}
 	if got.ScriptState != nil {
-		t.Fatalf("ScriptState = %+v, want nil（向后兼容）", got.ScriptState)
+		t.Fatalf("ScriptState = %+v, want nil（向后兼容：老 json 无此键）", got.ScriptState)
 	}
-	// 现有字段仍可读
-	if got.SuspendedCallID != "c1" || got.Turn != 3 {
-		t.Fatalf("老字段被破坏: %+v", got)
+	if got.SessionID != "legacy1" || got.Turn != 7 || got.SuspendedCallID != "c1" || got.ApprovalID != "ap-legacy" {
+		t.Fatalf("老字段还原错误: %+v", got)
+	}
+
+	// 反向：nil ScriptState 的 Checkpoint 不应在 json 中出现 script_state 键（omitempty 契约）。
+	ckpt := sampleCheckpoint("marsh1")
+	b, err := json.Marshal(ckpt)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(b), "script_state") {
+		t.Fatalf("nil ScriptState 仍写入 json 字段，污染老读取端：%s", string(b))
 	}
 }
