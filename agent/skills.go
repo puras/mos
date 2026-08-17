@@ -4,12 +4,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // SkillFile 是技能声明文件名（对齐 Agent Skills 规范：SKILL.md）。
 const SkillFile = "SKILL.md"
 
-// Skill 是扫描到的一个技能：SKILL.md frontmatter 声明的 name 与 description（触发条件）。
+// Skill 是扫描到的一个技能：SKILL.md frontmatter 声明的元数据。
 // 技能正文与 references/ 目录由模型在触发时经 read_file 按需读取——框架只注入
 // 懒加载清单，正文不占常驻上下文（对齐 Claude Code / Agent Skills 的懒加载语义）。
 type Skill struct {
@@ -17,8 +19,25 @@ type Skill struct {
 	Name string
 	// Description 是技能的触发条件与能力描述（frontmatter description）。
 	Description string
+	// SchemaVersion 是 frontmatter schema 版本（约定为字符串，向后兼容）。
+	SchemaVersion string
+	// WhenToUse 是 frontmatter 中模型触发条件的额外描述。
+	WhenToUse string
+	// AllowedTools 是技能允许使用的工具白名单（frontmatter allowed-tools）。
+	AllowedTools []string
+	// References 是技能引用文件路径列表（frontmatter references）。
+	References []string
+	// Paths 是技能生效路径 glob 列表（frontmatter paths）。
+	Paths []string
+	// Source 是技能来源（frontmatter source，如 local/repository）。
+	Source string
+	// UserInvocable 表示是否允许用户直接调用（frontmatter user-invocable）。
+	UserInvocable bool
+
 	// Dir 是 SKILL.md 所在目录。
 	Dir string
+	// PathMatch 是当前 working dir 是否命中 paths glob（运行时计算）。
+	PathMatch bool
 }
 
 // LoadSkills 扫描 dir 中的技能：
@@ -56,46 +75,52 @@ func parseSkillFile(path string) (Skill, bool) {
 	if err != nil {
 		return Skill{}, false
 	}
-	meta, ok := parseFrontmatter(b)
-	if !ok {
+	// SKILL.md = `---<yaml>---\n<markdown body>`
+	// 用 yaml.Unmarshal 解析首段 frontmatter（遇到非键值对行停止）
+	meta := struct {
+		Name          string   `yaml:"name"`
+		Description   string   `yaml:"description"`
+		SchemaVersion string   `yaml:"schema_version"`
+		WhenToUse     string   `yaml:"when_to_use"`
+		AllowedTools  []string `yaml:"allowed-tools"`
+		References    []string `yaml:"references"`
+		Paths         []string `yaml:"paths"`
+		Source        string   `yaml:"source"`
+		UserInvocable bool     `yaml:"user-invocable"`
+	}{}
+	if err := yaml.Unmarshal(extractFrontmatter(b), &meta); err != nil {
 		return Skill{}, false
 	}
-	s := Skill{Dir: filepath.Dir(path)}
-	s.Name = strings.TrimSpace(meta["name"])
+	s := Skill{
+		Name:          strings.TrimSpace(meta.Name),
+		Description:   strings.TrimSpace(meta.Description),
+		SchemaVersion: strings.TrimSpace(meta.SchemaVersion),
+		WhenToUse:     strings.TrimSpace(meta.WhenToUse),
+		AllowedTools:  meta.AllowedTools,
+		References:    meta.References,
+		Paths:         meta.Paths,
+		Source:        strings.TrimSpace(meta.Source),
+		UserInvocable: meta.UserInvocable,
+		Dir:           filepath.Dir(path),
+	}
 	if s.Name == "" {
 		return Skill{}, false
 	}
-	s.Description = strings.TrimSpace(meta["description"])
 	return s, true
 }
 
-// parseFrontmatter 解析 SKILL.md 顶部的 frontmatter 块（首个 `---` 到第二个 `---` 之间），
-// 仅提取 name 与 description 键。非键值对行（注释等）被忽略。
-func parseFrontmatter(b []byte) (map[string]string, bool) {
-	lines := strings.Split(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n")
-	if len(lines) < 3 || strings.TrimSpace(lines[0]) != "---" {
-		return nil, false
+// extractFrontmatter 提取 `---` 之间的 YAML 块（含末尾 ---）。
+func extractFrontmatter(b []byte) []byte {
+	s := string(b)
+	if !strings.HasPrefix(strings.TrimSpace(s), "---") {
+		return nil
 	}
-	meta := make(map[string]string)
-	for i := 1; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) == "---" {
-			return meta, true
-		}
-		line := strings.TrimSpace(lines[i])
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		k, v, ok := strings.Cut(line, ":")
-		if !ok {
-			continue
-		}
-		k = strings.TrimSpace(k)
-		if k != "name" && k != "description" {
-			continue
-		}
-		meta[k] = strings.Trim(strings.TrimSpace(v), `"'`)
+	rest := strings.TrimPrefix(strings.TrimSpace(s), "---")
+	end := strings.Index(rest, "\n---")
+	if end < 0 {
+		return nil
 	}
-	return nil, false
+	return []byte(rest[:end])
 }
 
 // renderSkills 将技能清单渲染为懒加载目录文本（注入系统提示词的技能槽位）。

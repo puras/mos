@@ -2,6 +2,7 @@ package agent
 
 import (
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -18,6 +19,89 @@ description: 排查网页抓取失败问题，仅在 web_fetch 报错时触发
 
 步骤化正文（懒加载，触发时才经 read_file 读取）。
 `
+
+const skillDocFull = `---
+name: git-commit-helper
+description: 辅助提交 Git commit
+schema_version: "1"
+when_to_use: 用户请求提交时
+allowed-tools:
+  - git
+  - read_file
+references:
+  - references/commit-types.md
+paths:
+  - "*.go"
+source: local
+user-invocable: true
+---
+
+# Body markdown
+`
+
+func TestParseSkillFile_Full(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "SKILL.md"), skillDocFull)
+
+	s, ok := parseSkillFile(filepath.Join(dir, "SKILL.md"))
+	if !ok {
+		t.Fatal("parseSkillFile returned !ok")
+	}
+	if s.Name != "git-commit-helper" {
+		t.Errorf("Name = %q", s.Name)
+	}
+	if s.SchemaVersion != "1" {
+		t.Errorf("SchemaVersion = %q", s.SchemaVersion)
+	}
+	if s.WhenToUse != "用户请求提交时" {
+		t.Errorf("WhenToUse = %q", s.WhenToUse)
+	}
+	if !reflect.DeepEqual(s.AllowedTools, []string{"git", "read_file"}) {
+		t.Errorf("AllowedTools = %v", s.AllowedTools)
+	}
+	if !reflect.DeepEqual(s.References, []string{"references/commit-types.md"}) {
+		t.Errorf("References = %v", s.References)
+	}
+	if !reflect.DeepEqual(s.Paths, []string{"*.go"}) {
+		t.Errorf("Paths = %v", s.Paths)
+	}
+	if s.Source != "local" {
+		t.Errorf("Source = %q", s.Source)
+	}
+	if !s.UserInvocable {
+		t.Errorf("UserInvocable = false")
+	}
+}
+
+func TestParseSkillFile_Minimal(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "SKILL.md"), skillDoc) // 旧 fixture
+
+	s, ok := parseSkillFile(filepath.Join(dir, "SKILL.md"))
+	if !ok {
+		t.Fatal("parseSkillFile returned !ok for legacy SKILL.md")
+	}
+	if s.Name != "web-debug" {
+		t.Errorf("Name = %q", s.Name)
+	}
+	if s.Description == "" {
+		t.Errorf("Description empty")
+	}
+	if s.SchemaVersion != "" || len(s.AllowedTools) != 0 {
+		t.Errorf("unexpected fields populated: %+v", s)
+	}
+}
+
+func TestParseSkillFile_BadYAML(t *testing.T) {
+	dir := t.TempDir()
+	// 缺 closing ---
+	writeFile(t, filepath.Join(dir, "SKILL.md"), "---\nname: x\nno-close\n")
+
+	_, ok := parseSkillFile(filepath.Join(dir, "SKILL.md"))
+	if ok {
+		t.Error("expected !ok for malformed YAML")
+	}
+}
 
 func TestLoadSkills(t *testing.T) {
 	root := t.TempDir()
