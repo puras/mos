@@ -7,6 +7,7 @@
 
 | 日期 | 版本 | 更新内容 |
 | --- | --- | --- |
+| 2026-08-17 | v2.16 | 文档修正：§5.2 实施顺序第 7、8 项状态同步为已落地（PlanExecute/Reflection/DriverRouter、SeamRegistry + 声明式配置此前已提交，标记遗留为规划中） |
 | 2026-08-17 | v2.15 | 边界声明：MoS 不操作数据库——持久化只提供接口（`Persistence`）与内存/JSONL 轻量默认；sqlite/postgres 等数据库后端由业务层实现接口并注入（§1.2 边界、§3.5 示意、§10.3、§12.4、README 同步） |
 | 2026-08-16 | v2.14 | 实施：新能力 `agent/executor`（三阶段批量执行 `executor.Run`：preflight 串行决策 → 有界并发/sequential 回退 → 按源序回填，语义中立零上层依赖）；ReAct 工具路径接入批量执行（多 ToolCall 并发、拦截集合显式失败回填、`tool.SequentialTool` 整批串行回退、`RunContext.MaxToolParallel`、审计经 `AddFact` 串行化）；单调用路径统一走批量路径（N=1 特例），ToolResult 观测移至 finalize 按源序回填 |
 | 2026-08-16 | v2.13 | 实施：新能力 `agent/scope`（Scope 注册作用域：按注册逆序回滚、On 返回可单独撤销 disposer、Close 幂等、关闭后注册立即执行、并发安全）+ 会话日志持久化（`agent/session.Persistence` 接口：SaveHeader/LoadHeader/Append/Load/Close，backend 可换；`JSONL` 后端：每会话一文件、首行 header、追加写、容忍尾部半行；`Session.Append` 同步落盘 fail-fast 保"日志即事实"不变式；`Restore` 重放重建 + `RepairInterrupted` 孤儿 turn 合成 interrupted，会话不存在按空会话恢复） |
@@ -492,8 +493,8 @@ var NoopTelemetry = ...
    （含 P0 增强：截断工具调用 fail-closed + `DoomLoopGuard` 守卫化）
 5. **`assistant` 组装层重写**（默认装配 = ReActDriver + 默认钩子注册；删除 `WithXxx` 选项）——✅ 已落地
 6. **`ConcurrentExecutor`**（批量工具三阶段：preflight → 并发执行 → 按序回填，见 3.9）——✅ 已落地
-7. **`PlanExecuteDriver` + `ReflectionDriver` + `DriverRouter`**（新能力）——规划中
-8. **`SeamRegistry` + 声明式配置加载器**（新能力，平台装配入口）——规划中
+7. **`PlanExecuteDriver` + `ReflectionDriver` + `DriverRouter`**（新能力）——✅ 已落地
+8. **`SeamRegistry` + 声明式配置加载器**（新能力，平台装配入口）——✅ 已落地
 9. **`Scope` + 会话日志持久化后端接口**（新能力）——✅ 已落地
 10. **`telemetry` seam**（span 契约 + no-op + 适配器，见 3.11）——规划中（P0，平台集成前置）
 
