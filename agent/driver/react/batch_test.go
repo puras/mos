@@ -10,8 +10,12 @@ import (
 	"time"
 
 	"hegq.net/mos/agent"
+	"hegq.net/mos/agent/approval"
 	"hegq.net/mos/agent/driver"
 	"hegq.net/mos/agent/event"
+	"hegq.net/mos/agent/execpath"
+	"hegq.net/mos/agent/executor"
+	"hegq.net/mos/agent/hook"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/planner"
@@ -285,5 +289,51 @@ func TestBatchConcurrentAudit(t *testing.T) {
 	mu.Unlock()
 	if fact == 0 || result != 6 {
 		t.Fatalf("fact=%d result=%d", fact, result)
+	}
+}
+
+// TestBatchSuspendSkipsResultApply 钉住 Task 4 的有意设计选择（计划 Task 4 §Step 4 顺序调整说明）：
+// 批内任一工具触发 SuspendError（来自执行路径，非守卫拦截）时，整批 tool/result 均不落日志。
+// 取舍：resume 时 runResumeTurn 会重跑整批并按决策表放行；旧版行为会在挂起轮 + 恢复轮各落
+// 一次 normal 工具的 tool/result，导致重复日志。新版在挂起点 saveCheckpoint 后直接冒泡，
+// 恢复轮才完整落结果，日志只发生一次。
+func TestBatchSuspendSkipsResultApply(t *testing.T) {
+	calls := []llm.ToolCall{
+		{ID: "c1", Name: "read_file", Args: `{}`},
+		{ID: "c2", Name: "read_file", Args: `{}`},
+		{ID: "c3", Name: "read_file", Args: `{}`},
+	}
+	suspend := &approval.SuspendError{
+		ID:       "approval-1",
+		Request:  approval.ApprovalRequest{ToolName: "read_file", Reason: "test"},
+		CallID:   "c3",
+		HookKind: hook.HookToolPreExecute,
+	}
+	outs := []executor.Outcome[*llm.ToolCall, execpath.ToolOutcome]{
+		{Input: &calls[0], Output: execpath.ToolOutcome{Result: 1, Text: "1"}},
+		{Input: &calls[1], Output: execpath.ToolOutcome{Result: 2, Text: "2"}},
+		{Input: &calls[2], Output: execpath.ToolOutcome{Err: suspend}},
+	}
+	sess := session.NewSession("suspend-batch")
+	rt := &driver.RunContext{
+		Session: sess,
+		Tools:   tool.NewRegistry(),
+		Hooks:   hook.NewHookBus(),
+		Guards:  hook.NewGuardBus(),
+	}
+	d := &ReActDriver{}
+	_, _, err := d.finalizeToolBatch(context.Background(), rt, sess, 1, 1, calls, &planner.Action{}, outs)
+	if !errors.Is(err, suspend) {
+		t.Fatalf("err = %v, want SuspendError", err)
+	}
+	// 整批 tool/result 应一条都没有：suspend 优先于 ApplyOutcomes
+	var leaked int
+	for _, ev := range sess.Events {
+		if ev.Type == event.SessionEventToolResult {
+			leaked++
+		}
+	}
+	if leaked != 0 {
+		t.Fatalf("tool/result leaked under suspend: %d events", leaked)
 	}
 }
