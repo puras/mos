@@ -41,6 +41,12 @@ const (
 	EventResume
 	// EventDisposed 句柄释放（M2.8）：AgentHandle.Dispose 广播。
 	EventDisposed
+	// EventSkillLoad 技能清单装载（skill/load 事件投影）。
+	EventSkillLoad
+	// EventSkillActivate 技能激活（skill/activate 事件投影）。
+	EventSkillActivate
+	// EventSkillDeactivate 技能取消激活（skill/deactivate 事件投影）。
+	EventSkillDeactivate
 )
 
 // Event 是运行时向外广播的事件，用于流式输出、中间过程观测等。

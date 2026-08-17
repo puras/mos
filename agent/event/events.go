@@ -57,6 +57,13 @@ const (
 	SessionEventSubagentStart = "subagent/start"
 	// SessionEventAgentInbox Agent 输入入队/claim（M3 Inbox 规划，本里程碑仅占位）。
 	SessionEventAgentInbox = "agent/inbox"
+	// SessionEventSkillLoad 技能清单装载（emit 观测）：defaultSystemAssembler
+	// 首次扫描后写入一次（durable），载荷 SkillLoadData 含全部 Skill frontmatter 摘要。
+	SessionEventSkillLoad = "skill/load"
+	// SessionEventSkillActivate 技能激活（emit 观测）：activate_skill 工具执行成功后写入。
+	SessionEventSkillActivate = "skill/activate"
+	// SessionEventSkillDeactivate 技能取消激活（emit 观测）：每轮 runTurnInner 末尾统一写入。
+	SessionEventSkillDeactivate = "skill/deactivate"
 )
 
 // ---- 事件载荷（typed payload）----
@@ -240,6 +247,37 @@ type AgentHandleData struct {
 	SessionID string `json:"session_id"`
 	Status    string `json:"status,omitempty"` // agent/status 专用
 	Reason    string `json:"reason,omitempty"`
+}
+
+// SkillLoadData 技能清单装载载荷（skill/load 事件）。
+type SkillLoadData struct {
+	Skills []SkillMeta `json:"skills"`
+}
+
+// SkillMeta 技能 frontmatter 摘要（事件载荷用，避免重复正文）。
+type SkillMeta struct {
+	Name          string   `json:"name"`
+	Description   string   `json:"description"`
+	SchemaVersion string   `json:"schema_version,omitempty"`
+	WhenToUse     string   `json:"when_to_use,omitempty"`
+	AllowedTools  []string `json:"allowed_tools,omitempty"`
+	References    []string `json:"references,omitempty"`
+	Paths         []string `json:"paths,omitempty"`
+	Source        string   `json:"source,omitempty"`
+	UserInvocable bool     `json:"user_invocable,omitempty"`
+}
+
+// SkillActivateData 技能激活载荷（skill/activate 事件）。
+// 仅记元数据；正文由 activate_skill 工具直接返回给模型（不进 Event Log）。
+type SkillActivateData struct {
+	Name         string   `json:"name"`
+	AllowedTools []string `json:"allowed_tools,omitempty"`
+	References   []string `json:"references,omitempty"`
+}
+
+// SkillDeactivateData 技能取消激活载荷（skill/deactivate 事件）。
+type SkillDeactivateData struct {
+	Names []string `json:"names"`
 }
 
 // MarshalData 将载荷序列化为 SessionEvent.Data。
