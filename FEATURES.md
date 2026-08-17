@@ -52,6 +52,7 @@ MoS 是 SDK，不参与服务化能力范畴：Web UI / API 网关 / 任务调�
 - **会话日志持久化**：`session.Persistence` 后端接口（backend 可换）+ `JSONL` 实现（每会话一文件、追加写、容忍尾部半行）；`Session.Append` 同步落盘 fail-fast；`Restore` 重放重建 + 孤儿 turn 合成 `interrupted`（崩溃恢复，不截断）
 - **`agent/scope` 注册作用域**：per-agent/per-session 回收容器，按注册逆序回滚（`Close` 幂等），`On` 返回可单独撤销的 disposer（对齐 Cordis registrations are reversible）
 - **批量工具执行（并发）**：`agent/executor` 三阶段（preflight 串行决策 → 有界并发 → 按源序回填，对齐 PI `executeToolCallsParallel`）；守卫拦截集合显式失败回填；`tool.SequentialTool` 整批串行回退；`MaxToolParallel` 并发上限；审计经 `AddFact` 串行化
+- **Telemetry seam**：`agent/telemetry` 显式 span 契约（TelemetryContext/TelemetrySpan + Noop + WithSpan 回调生命周期，对齐 PI pi-telemetry）；`RunContext.Telemetry` 注入后驱动自动打 `driver.turn` / `llm.request` / `tool.execute` span；`Recorder` 内存参考实现 + `Conformance` 契约测试（平台适配器复用）
 - **审计式任务状态（M2.1 + M2.2）**：`TaskState`（目标 / 已验证事实 / 状态机）独立于消息历史；`Auditor` 审计门只接受环境可验证事实（默认白名单只读工具，可 `Trust` 扩展），模型自述不算数
 - **fresh-context 压缩（M2.5）**：超 `KeepRecent` 触发，不切断 ToolCall-Result 对；摘要直接采用 `TaskState.Snapshot()`
 - **Doom Loop 检测（M2.5）**：相同工具 + 参数连续 N 次 → 单调守卫拦截（`DoomLoopGuard`），上下文利用率 40% 告警线事件广播
@@ -104,7 +105,7 @@ SDK 零第三方依赖（仅依赖本地协议库 `hegq.net/mogo`）。
 - 测试：SDK 全部测试通过（agent / assistant / tool / planner / llm 等），含 llm 适配器 httptest 协议模拟
 
 ### 5.3 已知问题与风险
-- **事件驱动改造待继续**：LoopDriver 生态已有 ReAct / Plan&Execute / Reflection 三种驱动 + DriverRouter 任务路由 + SeamRegistry 组件注册表 + 声明式配置装配（YAML）+ Scope / 会话持久化（JSONL）+ ConcurrentExecutor 批量执行；telemetry 未实现
+- **v2 重构全部落地**：LoopDriver 生态（ReAct / Plan&Execute / Reflection + DriverRouter）+ SeamRegistry + 声明式配置（YAML）+ Scope + 会话持久化（JSONL）+ ConcurrentExecutor 批量执行 + Telemetry seam 已全部实现
 - **待办缺口**：token 预算上限、上下文重置与跨 Session handoff、模型分级路由、异常恢复、可恢复运行目录（M4）等仍为空
 - **路线图条目**：M2.9 / M2.10 / M3 条目内容详实但均为规划，实现前需按实际落地情况修订
 

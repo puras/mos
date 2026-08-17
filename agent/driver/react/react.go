@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"hegq.net/mos/agent"
@@ -15,6 +16,7 @@ import (
 	"hegq.net/mos/agent/executor"
 	"hegq.net/mos/agent/hook"
 	"hegq.net/mos/agent/session"
+	"hegq.net/mos/agent/telemetry"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/memory"
 	"hegq.net/mos/planner"
@@ -118,8 +120,6 @@ func (d *ReActDriver) Run(ctx context.Context, rt *driver.RunContext, input stri
 	history := sess.Messages() // 不含 system（system 每轮注入，不写日志）
 
 	for turn := firstTurn; ; turn++ {
-		const step = 1
-
 		// 可选保险丝（默认关闭，对齐 DSH/PI 无轮次上限）：显式设置 >0 时兜底防失控。
 		// 按本次 Run 内的轮次数计数（续跑会话 Turn 全局递增，上限语义不变）。
 		if rt.MaxTurns > 0 && turn-firstTurn+1 > rt.MaxTurns {
@@ -130,124 +130,162 @@ func (d *ReActDriver) Run(ctx context.Context, rt *driver.RunContext, input stri
 		if err := ctx.Err(); err != nil {
 			return "", fmt.Errorf("agent: run canceled: %w", err)
 		}
-
-		// 每轮刷新系统提示词：状态槽位随 TaskState 进度更新（M2.6 动态组装）
-		sysText, err := rt.AssembleSystem(ctx)
+		reply, done, err := d.runTurn(ctx, rt, sess, turn, history)
 		if err != nil {
-			return "", fmt.Errorf("agent: assemble system: %w", err)
+			return "", err
 		}
+		if done {
+			return reply, nil
+		}
+		history = sess.Messages() // 本轮工具执行后历史更新（直接作答/停止分支已 done）
+	}
+}
 
-		msgs := make([]session.InternalMessage, 0, len(history)+1)
-		if sysText != "" {
-			msgs = append(msgs, session.SystemMsg(sysText))
-		}
-		msgs = append(msgs, history...)
+// runTurn 执行一轮循环并打 driver.turn span（架构 v2 §3.11）。
+// 返回 (reply, done, err)：done=true 表示任务本轮收尾（直接作答 / 外部停止），
+// reply 为最终回复；done=false 表示继续下一轮。
+func (d *ReActDriver) runTurn(ctx context.Context, rt *driver.RunContext, sess *session.Session, turn int, history []session.InternalMessage) (reply string, done bool, err error) {
+	err = telemetry.WithSpan(ctx, rt.Telemetry, telemetry.SpanDriverTurn,
+		map[string]string{"turn": strconv.Itoa(turn), "driver": "react"},
+		func(ctx context.Context) error {
+			reply, done, err = d.runTurnInner(ctx, rt, sess, turn, history)
+			return err
+		})
+	return reply, done, err
+}
 
-		// pre-step 钩子：压缩 + RAG 注入（可改写模型输入）
-		hev := &hook.HookEvent{Kind: hook.HookPreStep, Messages: msgs, Turn: turn, Step: step}
-		hev, err = rt.Hooks.Waterfall(ctx, hev)
-		if err != nil {
-			return "", fmt.Errorf("agent: pre-step hooks: %w", err)
-		}
+// runTurnInner 是一轮循环的实现（pre-step → 规划 → 工具/作答 → 停止裁决）。
+func (d *ReActDriver) runTurnInner(ctx context.Context, rt *driver.RunContext, sess *session.Session, turn int, history []session.InternalMessage) (string, bool, error) {
+	const step = 1
 
-		if err := sess.Append(event.SessionEventStepStart, event.StepData{Turn: turn, Step: step}); err != nil {
-			return "", fmt.Errorf("agent: append step/start: %w", err)
-		}
+	// 每轮刷新系统提示词：状态槽位随 TaskState 进度更新（M2.6 动态组装）
+	sysText, err := rt.AssembleSystem(ctx)
+	if err != nil {
+		return "", false, fmt.Errorf("agent: assemble system: %w", err)
+	}
 
-		action, err := d.nextAction(ctx, rt, sess, turn, hev.Messages)
-		if err != nil {
-			return "", fmt.Errorf("agent: plan turn %d: %w", turn, err)
-		}
+	msgs := make([]session.InternalMessage, 0, len(history)+1)
+	if sysText != "" {
+		msgs = append(msgs, session.SystemMsg(sysText))
+	}
+	msgs = append(msgs, history...)
 
-		calls := action.ToolCalls
-		if len(calls) == 0 && action.ToolCall != nil {
-			calls = []llm.ToolCall{*action.ToolCall} // 兼容仅填 ToolCall 的第三方规划器
-		}
-		if err := sess.AppendAssistantMessage(turn, action.Content, action.ReasoningContent, calls, action.Usage); err != nil {
-			return "", fmt.Errorf("agent: append assistant/message: %w", err)
-		}
-		rt.MonitorUsage(turn, action.Usage)
-		if action.Content != "" {
-			rt.Notify(agent.Event{Type: agent.EventStep, SessionID: sess.ID, Turn: turn, Content: action.Content})
-		}
+	// pre-step 钩子：压缩 + RAG 注入（可改写模型输入）
+	hev := &hook.HookEvent{Kind: hook.HookPreStep, Messages: msgs, Turn: turn, Step: step}
+	hev, err = rt.Hooks.Waterfall(ctx, hev)
+	if err != nil {
+		return "", false, fmt.Errorf("agent: pre-step hooks: %w", err)
+	}
 
-		if len(calls) == 0 {
-			// 直接作答，任务完成
-			sess.State.Status = session.StatusCompleted
-			_ = sess.Append(event.SessionEventStepEnd, event.StepData{Turn: turn, Step: step})
-			_ = sess.Append(event.SessionEventTurnEnd, event.TurnData{Turn: turn, Reason: "done"})
-			rt.Notify(agent.Event{Type: agent.EventDone, SessionID: sess.ID, Turn: turn, Content: action.Content})
-			return action.Content, nil
-		}
+	if err := sess.Append(event.SessionEventStepStart, event.StepData{Turn: turn, Step: step}); err != nil {
+		return "", false, fmt.Errorf("agent: append step/start: %w", err)
+	}
 
-		// 截断检测（对齐 PI failToolCallsFromTruncatedMessage）：
-		// 输出被截断（finish_reason=length/max_tokens）时，已产出的工具调用可能不完整，
-		// fail-closed：不执行、逐个显式失败回填（模型下一轮看到失败原因后调整），
-		// 避免"已声明调用但模型面无回填"的静默丢弃。
-		if isTruncatedFinish(action.FinishReason) {
-			for i := range calls {
-				call := &calls[i]
-				err := fmt.Errorf("模型输出被截断（finish_reason=%s），工具调用未执行（fail-closed）", action.FinishReason)
-				_ = sess.AppendToolResult(turn, call, nil, "", err)
-				rt.Notify(agent.Event{Type: agent.EventToolResult, SessionID: sess.ID, Turn: turn, ToolCall: call})
-			}
-			_ = sess.Append(event.SessionEventStepEnd, event.StepData{Turn: turn, Step: step})
-			history = sess.Messages()
-			continue
-		}
+	action, err := d.nextAction(ctx, rt, sess, turn, hev.Messages)
+	if err != nil {
+		return "", false, fmt.Errorf("agent: plan turn %d: %w", turn, err)
+	}
 
-		// 工具调用：批量执行（并发 + 按源序回填，架构 v2 §3.9 ConcurrentExecutor 三阶段）
-		outs := execBatchTools(ctx, rt, sess, turn, step, calls)
+	calls := action.ToolCalls
+	if len(calls) == 0 && action.ToolCall != nil {
+		calls = []llm.ToolCall{*action.ToolCall} // 兼容仅填 ToolCall 的第三方规划器
+	}
+	if err := sess.AppendAssistantMessage(turn, action.Content, action.ReasoningContent, calls, action.Usage); err != nil {
+		return "", false, fmt.Errorf("agent: append assistant/message: %w", err)
+	}
+	rt.MonitorUsage(turn, action.Usage)
+	if action.Content != "" {
+		rt.Notify(agent.Event{Type: agent.EventStep, SessionID: sess.ID, Turn: turn, Content: action.Content})
+	}
 
-		// Doom Loop 是致命守卫错误：任务中断（状态 blocked），不回填工具结果
-		for _, out := range outs {
-			var doomErr *hook.DoomLoopError
-			if errors.As(out.Err, &doomErr) {
-				sess.State.Status = session.StatusBlocked
-				_ = sess.Append(event.SessionEventStepEnd, event.StepData{Turn: turn, Step: step})
-				return "", doomErr
-			}
-		}
-		// finalize：按模型调用顺序回填（tool/result 日志 + 观测），Seq 连续、顺序可重放
-		for _, out := range outs {
-			call := out.Input
-			if out.Denied {
-				var deniedErr *ToolDeniedError
-				if errors.As(out.Err, &deniedErr) {
-					_ = sess.AppendToolResult(turn, call, nil, "", deniedErr)
-					rt.Notify(agent.Event{Type: agent.EventToolResult, SessionID: sess.ID, Turn: turn, ToolCall: call})
-					continue
-				}
-				// preflight 阶段的非守卫错误（如 tool/call 落日志失败）：终止任务
-				return "", fmt.Errorf("agent: tool preflight: %w", out.Err)
-			}
-			_ = sess.AppendToolResult(turn, call, out.Output.result, out.Output.text, out.Output.err)
-			rt.Notify(agent.Event{Type: agent.EventToolResult, SessionID: sess.ID, Turn: turn, ToolCall: call, ToolResult: out.Output.result})
-		}
-
+	if len(calls) == 0 {
+		// 直接作答，任务完成
+		sess.State.Status = session.StatusCompleted
 		_ = sess.Append(event.SessionEventStepEnd, event.StepData{Turn: turn, Step: step})
-		history = sess.Messages()
+		_ = sess.Append(event.SessionEventTurnEnd, event.TurnData{Turn: turn, Reason: "done"})
+		rt.Notify(agent.Event{Type: agent.EventDone, SessionID: sess.ID, Turn: turn, Content: action.Content})
+		return action.Content, true, nil
+	}
 
-		// 外部停止裁决（对齐 PI shouldStopAfterTurn）：每轮工具执行后调用，
-		// 返回 true 时任务以 completed 收尾（reason "stopped"）。
-		if rt.ShouldStopAfterTurn != nil {
-			stop, err := rt.ShouldStopAfterTurn(ctx, sess, turn, &action)
-			if err != nil {
-				return "", fmt.Errorf("agent: shouldStopAfterTurn turn %d: %w", turn, err)
-			}
-			if stop {
-				sess.State.Status = session.StatusCompleted
-				_ = sess.Append(event.SessionEventTurnEnd, event.TurnData{Turn: turn, Reason: "stopped"})
-				rt.Notify(agent.Event{Type: agent.EventDone, SessionID: sess.ID, Turn: turn, Content: action.Content})
-				return action.Content, nil
-			}
+	// 截断检测（对齐 PI failToolCallsFromTruncatedMessage）：
+	// 输出被截断（finish_reason=length/max_tokens）时，已产出的工具调用可能不完整，
+	// fail-closed：不执行、逐个显式失败回填（模型下一轮看到失败原因后调整），
+	// 避免"已声明调用但模型面无回填"的静默丢弃。
+	if isTruncatedFinish(action.FinishReason) {
+		for i := range calls {
+			call := &calls[i]
+			err := fmt.Errorf("模型输出被截断（finish_reason=%s），工具调用未执行（fail-closed）", action.FinishReason)
+			_ = sess.AppendToolResult(turn, call, nil, "", err)
+			rt.Notify(agent.Event{Type: agent.EventToolResult, SessionID: sess.ID, Turn: turn, ToolCall: call})
+		}
+		_ = sess.Append(event.SessionEventStepEnd, event.StepData{Turn: turn, Step: step})
+		return "", false, nil
+	}
+
+	// 工具调用：批量执行（并发 + 按源序回填，架构 v2 §3.9 ConcurrentExecutor 三阶段）
+	outs := execBatchTools(ctx, rt, sess, turn, step, calls)
+
+	// Doom Loop 是致命守卫错误：任务中断（状态 blocked），不回填工具结果
+	for _, out := range outs {
+		var doomErr *hook.DoomLoopError
+		if errors.As(out.Err, &doomErr) {
+			sess.State.Status = session.StatusBlocked
+			_ = sess.Append(event.SessionEventStepEnd, event.StepData{Turn: turn, Step: step})
+			return "", false, doomErr
 		}
 	}
+	// finalize：按模型调用顺序回填（tool/result 日志 + 观测），Seq 连续、顺序可重放
+	for _, out := range outs {
+		call := out.Input
+		if out.Denied {
+			var deniedErr *ToolDeniedError
+			if errors.As(out.Err, &deniedErr) {
+				_ = sess.AppendToolResult(turn, call, nil, "", deniedErr)
+				rt.Notify(agent.Event{Type: agent.EventToolResult, SessionID: sess.ID, Turn: turn, ToolCall: call})
+				continue
+			}
+			// preflight 阶段的非守卫错误（如 tool/call 落日志失败）：终止任务
+			return "", false, fmt.Errorf("agent: tool preflight: %w", out.Err)
+		}
+		_ = sess.AppendToolResult(turn, call, out.Output.result, out.Output.text, out.Output.err)
+		rt.Notify(agent.Event{Type: agent.EventToolResult, SessionID: sess.ID, Turn: turn, ToolCall: call, ToolResult: out.Output.result})
+	}
+
+	_ = sess.Append(event.SessionEventStepEnd, event.StepData{Turn: turn, Step: step})
+
+	// 外部停止裁决（对齐 PI shouldStopAfterTurn）：每轮工具执行后调用，
+	// 返回 true 时任务以 completed 收尾（reason "stopped"）。
+	if rt.ShouldStopAfterTurn != nil {
+		stop, err := rt.ShouldStopAfterTurn(ctx, sess, turn, &action)
+		if err != nil {
+			return "", false, fmt.Errorf("agent: shouldStopAfterTurn turn %d: %w", turn, err)
+		}
+		if stop {
+			sess.State.Status = session.StatusCompleted
+			_ = sess.Append(event.SessionEventTurnEnd, event.TurnData{Turn: turn, Reason: "stopped"})
+			rt.Notify(agent.Event{Type: agent.EventDone, SessionID: sess.ID, Turn: turn, Content: action.Content})
+			return action.Content, true, nil
+		}
+	}
+	return "", false, nil
 }
 
 // nextAction 执行单轮规划。流式路径下转发模型文本增量（EventStream + assistant/chunk）；
 // 规划器不支持流式接口时回退非流式 NextAction。
 func (d *ReActDriver) nextAction(ctx context.Context, rt *driver.RunContext, sess *session.Session, turn int, msgs []session.InternalMessage) (planner.Action, error) {
+	var action planner.Action
+	err := telemetry.WithSpan(ctx, rt.Telemetry, telemetry.SpanLLMRequest,
+		map[string]string{"turn": strconv.Itoa(turn), "stream": strconv.FormatBool(rt.Stream)},
+		func(ctx context.Context) error {
+			var err error
+			action, err = d.nextActionInner(ctx, rt, sess, turn, msgs)
+			return err
+		})
+	return action, err
+}
+
+// nextActionInner 是 nextAction 的实现（模型调用 + 流式增量转发）。
+func (d *ReActDriver) nextActionInner(ctx context.Context, rt *driver.RunContext, sess *session.Session, turn int, msgs []session.InternalMessage) (planner.Action, error) {
 	llmMsgs := session.ConvertToLlm(msgs)
 	tools := rt.Tools.List()
 	if !rt.Stream {
@@ -309,24 +347,38 @@ func execBatchTools(ctx context.Context, rt *driver.RunContext, sess *session.Se
 		return true, nil
 	}
 	execute := func(ctx context.Context, call *llm.ToolCall) (toolOutcome, error) {
-		ev := &hook.HookEvent{Kind: hook.HookToolPreExecute, ToolCall: call, Turn: turn, Step: step}
-		ev, err := rt.Hooks.Waterfall(ctx, ev) // pre-execute（可改写/拒绝）
-		if err != nil {
-			return toolOutcome{err: err}, nil
-		}
-		execEv := &hook.HookEvent{Kind: hook.HookToolExecute, ToolCall: ev.ToolCall, Turn: turn, Step: step}
-		execEv, err = rt.Hooks.Waterfall(ctx, execEv)
-		if err != nil {
-			return toolOutcome{err: err}, nil
-		}
-		postEv := &hook.HookEvent{Kind: hook.HookToolPostExecute, ToolCall: ev.ToolCall, Result: execEv.Result, Err: execEv.Err, Turn: turn, Step: step}
-		postEv, err = rt.Hooks.Waterfall(ctx, postEv)
-		if err != nil {
-			return toolOutcome{err: err}, nil
-		}
-		return toolOutcome{result: execEv.Result, text: postEv.ResultText, err: postEv.Err}, nil
+		var out toolOutcome
+		err := telemetry.WithSpan(ctx, rt.Telemetry, telemetry.SpanToolExec,
+			map[string]string{"tool": call.Name, "call_id": call.ID, "turn": strconv.Itoa(turn)},
+			func(ctx context.Context) error {
+				var err error
+				out, err = executeTool(ctx, rt, call, turn, step)
+				return err
+			})
+		return out, err
 	}
 	return executor.Run(ctx, items, rt.MaxToolParallel, preflight, execute)
+}
+
+// executeTool 执行单条工具调用的钩子链：tool/pre-execute（可改写/拒绝）→
+// tool/execute（链尾调 Tools.Call）→ tool/post-execute（截断/审计）。
+func executeTool(ctx context.Context, rt *driver.RunContext, call *llm.ToolCall, turn, step int) (toolOutcome, error) {
+	ev := &hook.HookEvent{Kind: hook.HookToolPreExecute, ToolCall: call, Turn: turn, Step: step}
+	ev, err := rt.Hooks.Waterfall(ctx, ev) // pre-execute（可改写/拒绝）
+	if err != nil {
+		return toolOutcome{err: err}, nil
+	}
+	execEv := &hook.HookEvent{Kind: hook.HookToolExecute, ToolCall: ev.ToolCall, Turn: turn, Step: step}
+	execEv, err = rt.Hooks.Waterfall(ctx, execEv)
+	if err != nil {
+		return toolOutcome{err: err}, nil
+	}
+	postEv := &hook.HookEvent{Kind: hook.HookToolPostExecute, ToolCall: ev.ToolCall, Result: execEv.Result, Err: execEv.Err, Turn: turn, Step: step}
+	postEv, err = rt.Hooks.Waterfall(ctx, postEv)
+	if err != nil {
+		return toolOutcome{err: err}, nil
+	}
+	return toolOutcome{result: execEv.Result, text: postEv.ResultText, err: postEv.Err}, nil
 }
 
 // ---- 默认钩子/守卫 ----

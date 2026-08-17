@@ -7,6 +7,7 @@
 
 | 日期 | 版本 | 更新内容 |
 | --- | --- | --- |
+| 2026-08-17 | v2.17 | 实施：新能力 `agent/telemetry`（Telemetry seam 契约：TelemetryContext/TelemetrySpan + Noop + WithSpan 回调生命周期 + Recorder 参考实现 + Conformance 契约测试，对齐 PI pi-telemetry）；RunContext.Telemetry 注入（nil 降级 no-op）；ReAct 驱动自动打点 driver.turn / llm.request / tool.execute span；§5.2 第 10 项落地，v2 重构 10 项全部完成 |
 | 2026-08-17 | v2.16 | 文档修正：§5.2 实施顺序第 7、8 项状态同步为已落地（PlanExecute/Reflection/DriverRouter、SeamRegistry + 声明式配置此前已提交，标记遗留为规划中） |
 | 2026-08-17 | v2.15 | 边界声明：MoS 不操作数据库——持久化只提供接口（`Persistence`）与内存/JSONL 轻量默认；sqlite/postgres 等数据库后端由业务层实现接口并注入（§1.2 边界、§3.5 示意、§10.3、§12.4、README 同步） |
 | 2026-08-16 | v2.14 | 实施：新能力 `agent/executor`（三阶段批量执行 `executor.Run`：preflight 串行决策 → 有界并发/sequential 回退 → 按源序回填，语义中立零上层依赖）；ReAct 工具路径接入批量执行（多 ToolCall 并发、拦截集合显式失败回填、`tool.SequentialTool` 整批串行回退、`RunContext.MaxToolParallel`、审计经 `AddFact` 串行化）；单调用路径统一走批量路径（N=1 特例），ToolResult 观测移至 finalize 按源序回填 |
@@ -65,7 +66,7 @@
 | PI `prepareNextTurn`（跨轮换模型/思考级别） | ✅ | `ModelResolver` + `HookRequest`（模型分级路由，M4） |
 | PI `failToolCallsFromTruncatedMessage`（截断显式失败） | ✅ 已落地 | `llm.Response.FinishReason` + ReActDriver 截断 fail-closed（见 3.3） |
 | PI 批量工具执行三阶段（preflight → 并发执行 → 按序回填）+ per-tool sequential | ✅ 已落地 | `agent/executor.Run` + ReAct 批量路径（见 3.9） |
-| PI `TelemetryContext/TelemetrySpan` 显式契约 + no-op + conformance tests | ✅ | `telemetry` seam（见 3.11，规划） |
+| PI `TelemetryContext/TelemetrySpan` 显式契约 + no-op + conformance tests | ✅ 已落地 | `agent/telemetry` + 驱动自动打点（见 3.11） |
 | PI 动态凭据 `getApiKey`（短期 OAuth 刷新） | ✅ | `CredentialResolver` seam（见 11，规划） |
 | PI `SuspendedOperation`（deferred 挂起 + missing 资源校验） | ✅ | approval 异步化 + 会话恢复资源校验（见 3.4/3.8，规划） |
 | PI steer/followUp/nextRun 三队列 + QueueMode | ✅ | `Inbox` 三队列（见 3.10，规划） |
@@ -399,13 +400,13 @@ func (b *Inbox) Drain(mode QueueMode) []InternalMessage // all：全部排空 / 
 注入续跑；`nextRun` 作为下次 Run 的初始输入。`one-at-a-time` 模式每次只注入最旧一条，其余留待后续排空点，
 避免大批量消息一次性冲垮上下文。
 
-### 3.11 Telemetry seam（规划，对齐 PI pi-telemetry）
+### 3.11 Telemetry seam（✅ 已实现，对齐 PI pi-telemetry）
 
 MoS 现有 `Observer`（单层回调）+ `EventBus` emit 只覆盖"应用内观测"；平台可观测性（SaaS 指标/追踪）需要
 **显式传递的 span 契约**（对齐 PI：无全局 current-span、无 exporter 依赖、适配器由平台注入）：
 
 ```go
-// telemetry 包（规划）：契约 + no-op + 参考实现
+// agent/telemetry：契约 + no-op + 参考实现（recorder）+ conformance 测试
 type TelemetryContext interface {
 	StartSpan(ctx context.Context, name string, attrs map[string]string) (TelemetrySpan, context.Context)
 }
@@ -415,12 +416,18 @@ type TelemetrySpan interface {
 	End(err error)
 }
 
-var NoopTelemetry = ...
+var NoopTelemetry TelemetryContext = ... // 无遥测环境零开销降级
+
+// WithSpan 回调式生命周期（对齐 PI startSpan 回调形态）：自动 End、错误透传
+func WithSpan(ctx context.Context, tc TelemetryContext, name string, attrs map[string]string, fn func(ctx context.Context) error) error
 ```
 
-- `RunContext.Telemetry`（可选，nil 时内部降级 no-op）：llm 请求、工具执行、driver 回合自动打 span
-  （携带 provider / model / tool / turn 属性），`Observer`/会话事件投影为 span 事件
-- 平台提供适配器（OpenTelemetry / 自研），并复用"实现者 conformance 测试"模式验证适配正确性（对齐 PI）
+- `RunContext.Telemetry`（可选，nil 时内部降级 no-op，已落地）：ReAct 驱动自动打
+  `driver.turn` / `llm.request` / `tool.execute` span（携带 turn / driver / stream / tool / call_id 属性）；
+  model / provider 属性由平台在模型适配器/包装层补充（RunContext 不持有模型引用）
+- 参考实现 `telemetry.NewRecorder()`：内存 span 树（父子、属性、事件、错误、时间戳），供本地调试与测试断言；
+  `telemetry.Conformance(t, tc)` 复用 PI"实现者 conformance 测试"模式——平台适配器
+  （OpenTelemetry / 自研）实现后在其测试中调用即验证契约
 - 与"权威快照 vs transient 事件"原则配合：span 是诊断数据，不参与会话权威状态还原
 
 ## 4. 事件目录（草案）
@@ -496,7 +503,7 @@ var NoopTelemetry = ...
 7. **`PlanExecuteDriver` + `ReflectionDriver` + `DriverRouter`**（新能力）——✅ 已落地
 8. **`SeamRegistry` + 声明式配置加载器**（新能力，平台装配入口）——✅ 已落地
 9. **`Scope` + 会话日志持久化后端接口**（新能力）——✅ 已落地
-10. **`telemetry` seam**（span 契约 + no-op + 适配器，见 3.11）——规划中（P0，平台集成前置）
+10. **`telemetry` seam**（span 契约 + no-op + 适配器，见 3.11）——✅ 已落地（P0）
 
 ### 5.3 验收
 
@@ -643,7 +650,7 @@ README 路线图中未实现的里程碑（M2.8 ~ M5）按三类归位：**v2 �
 | 批量工具三阶段执行 + per-tool sequential + 批量早停规则 | 3.9 | 规划 |
 | Guard 家族化（DoomLoop / 超时策略 / 重复提醒为独立守卫） | 3.4 | DoomLoop 已落地 |
 | 钩子时机补齐（before_payload / after_response / before_compaction） | 4.3 | 规划 |
-| Telemetry 显式 span 契约 + conformance tests | 3.11 | 规划 |
+| Telemetry 显式 span 契约 + conformance tests | 3.11 | ✅ 已落地 |
 | Inbox 三队列（steer/followUp/nextRun）+ QueueMode | 3.10 | 规划 |
 | 动态凭据解析（getApiKey，短期 OAuth 刷新） | 11.4 CredentialResolver | 规划 |
 | Deferred 人工介入（approval 异步化 + 挂起恢复资源校验） | 3.4 / 3.8 | 规划 |
@@ -695,7 +702,7 @@ flowchart TD
         I5["agent/scope ✅<br/>Scope 注册作用域"]
         I6["agent/inbox<br/>Inbox 输入队列"]
         I7["agent/executor ✅<br/>ConcurrentExecutor 三阶段批量执行"]
-        I8["agent/telemetry<br/>Telemetry span 契约（no-op + 适配器）"]
+        I8["agent/telemetry ✅<br/>Telemetry span 契约（no-op + 适配器）"]
     end
 
     subgraph BASE["基础层（现有，不动）"]
@@ -778,7 +785,7 @@ flowchart LR
 | `ModelResolver` | 请求级模型解析 | 模型分级路由（简单→经济、复杂→强） |
 | `Approval` | 人工确认（one-shot） | 发起确认 → 异步回填 → 放行一次；默认拒绝 |
 | `Projection` | 日志派生投影（规划） | 模型消息 / TaskState / stats / title 多投影，可注册可缓存（对齐 dsh session-projection） |
-| `TelemetryContext/TelemetrySpan` | 显式遥测契约（规划） | 平台可观测性：span 树 + no-op + 适配器（对齐 PI pi-telemetry） |
+| `TelemetryContext/TelemetrySpan` | 显式遥测契约（已实现） | 平台可观测性：span 树 + no-op + 适配器（对齐 PI pi-telemetry） |
 | `CredentialResolver` | 请求级凭据解析（规划） | 短期 OAuth token 按请求刷新（对齐 PI getApiKey） |
 
 ### 11.4 投影单元与 CredentialResolver（规划，对齐 DSH/PI）
@@ -860,7 +867,8 @@ flowchart LR
 | `SeamRegistry` | 组件注册表：按 (kind, name) 注册工厂、按名解析（工厂返回 any，消费端断言接口，注册表零上层依赖） | agent/seam | ✅ 已实现 |
 | `agent/config.Config` | 声明式装配配置（YAML）：driver/model/tools/policy/plan_planner/reflector 等按名解析，`Assemble` 返回可运行智能体 | agent/config | ✅ 已实现 |
 | `Projection` | 日志派生投影（模型消息 / TaskState / stats / title），可注册可缓存（对齐 dsh session-projection） | agent/session（规划） | 🧱 规划中 |
-| `TelemetryContext/TelemetrySpan` | 显式遥测契约：span 树 + no-op + 适配器（对齐 PI pi-telemetry） | agent/telemetry（规划） | 🧱 规划中 |
+| `TelemetryContext/TelemetrySpan` | 显式遥测契约：span 树 + no-op + 适配器（对齐 PI pi-telemetry）；`WithSpan` 回调生命周期 + `Conformance` 契约测试 | agent/telemetry | ✅ 已实现 |
+| `Recorder` | telemetry 参考实现：内存 span 树（父子/属性/事件/错误/时间戳），本地调试与测试断言 | agent/telemetry | ✅ 已实现 |
 | `CredentialResolver` | 请求级凭据解析（短期 OAuth 刷新，对齐 PI getApiKey） | llm（规划） | 🧱 规划中 |
 
 ### 12.5 基础层（现有包，不动）

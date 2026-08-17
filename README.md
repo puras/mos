@@ -195,6 +195,27 @@ a := react.New(rt) // 模型返回多个 ToolCalls 时全部执行，tool/result
 - **日志串行化**：`tool/call` 按序落日志 → 并发执行 → `tool/result` 按模型调用顺序回填，Seq 连续可重放；
 - **审计串行化**：并发审计写 `TaskState` 经 `RunContext.AddFact` 互斥串行化（无数据竞争）。
 
+### Telemetry（可观测性，agent/telemetry）
+
+`RunContext.Telemetry` 提供显式传递的 span 契约（对齐 PI pi-telemetry，无全局 current-span）：
+平台注入适配器（OpenTelemetry / 自研）后，驱动自动为 `driver.turn` / `llm.request` /
+`tool.execute` 打 span（携带 turn / tool / call_id 等属性）；未注入时内部降级 no-op（零开销）。
+SDK 内置内存参考实现 `Recorder` 供本地调试，并提供 `Conformance` 契约测试供平台适配器复用：
+
+```go
+import (
+	"hegq.net/mos/agent/telemetry"
+	"hegq.net/mos/agent/driver/react"
+)
+
+rec := telemetry.NewRecorder() // 参考实现：内存 span 树（本地调试/测试）
+rt := &driver.RunContext{Tools: reg, Planner: planner.NewReAct(model), Telemetry: rec}
+a := react.New(rt)
+
+// 平台实现 TelemetryContext 后，在其测试中验证契约：
+// telemetry.Conformance(t, myAdapter)
+```
+
 ## 开箱即用的智能体（assistant + CLI 示例）
 
 `assistant` 包提供组装好的智能体：**模型对象、工具集与框架概念全部由调用方注入**（安全策略 / 规划器 / 审计器 / 记忆 / 观察，为 nil 时使用框架默认实现），可直接作为库集成到其他工程。框架只认 `llm.ChatModel` 模型对象与 `[]tool.Tool` 工具集，不预设默认工具、不关心模型接入配置——但**随框架分发工具包并分类**：`tool/builtin` 内置工具包（时间 / 文件读写检索 / 网页抓取 / shell 命令执行，纯标准库实现，`builtin.Default()` 一键装配）+ `tool/extension` 扩展工具包（web_search 搜索提供商，需依赖注入）：

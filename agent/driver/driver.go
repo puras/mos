@@ -13,6 +13,7 @@ import (
 	"hegq.net/mos/agent/event"
 	"hegq.net/mos/agent/hook"
 	"hegq.net/mos/agent/session"
+	"hegq.net/mos/agent/telemetry"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/memory"
 	"hegq.net/mos/planner"
@@ -75,6 +76,11 @@ type RunContext struct {
 	// MaxToolParallel 是单轮批量工具调用的并发上限（架构 v2 §3.9；<=0 用默认 4）。
 	// 批量路径：preflight 串行决策 → 有界并发执行 → 结果按模型顺序回填。
 	MaxToolParallel int
+	// Telemetry 是显式传递的 span 工厂（架构 v2 §3.11，对齐 PI pi-telemetry）。
+	// 可选：nil 时驱动内部降级 no-op（零开销）；平台注入适配器（OpenTelemetry / 自研）
+	// 后，driver 回合 / llm 请求 / 工具执行自动打 span（model/provider 属性由平台
+	// 在模型适配器/包装层补充）。
+	Telemetry telemetry.TelemetryContext
 
 	// factMu 串行化审计事实写入：批量工具并发执行时多个 goroutine 同时写
 	// 同一 Session.State.Facts（auditHook 内 AddFact），锁保证无数据竞争。
