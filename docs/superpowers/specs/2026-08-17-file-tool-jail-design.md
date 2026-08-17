@@ -23,7 +23,7 @@ DSH / PI 对照（来自源码调研）：
 | --- | --- | --- |
 | 动机 | 对齐 DSH Capability Seam 一等公民 | MoS 当前缺此能力；与现有 `tool.Sandbox` 平级 |
 | 范围 | 新建 `tool/fs` 包 + 新增 SeamRegistry `Kind` | 与 DSH 三 seam 同形；M4 远程沙箱换实现无 API 改动 |
-| WorkDir 来源 | `ctx.fs` 优先 → `DefaultPolicy.FileAccess.WorkspaceRoot` fallback → **未显式配置 FileAccess（即零值 `JailReads=false, JailWrites=false`）= 保持开放**（向后兼容，老用户无感） | 与现有 `SandboxFrom` ctx 注入模式一致；policy fallback 与 shell policy 共根；零值=开放避免破坏现有使用方 |
+| WorkDir 来源 | `ctx.fs`（**始终注入**，来源 = `DefaultPolicy.FileAccess.WorkspaceRoot`）→ **WorkspaceRoot 必须显式配置，零值 = `assistant.New` 启动失败（fail-closed）** | 与 DSH Profile/Bundle 显式 cwd 一致；拒绝隐式 `os.Getwd()` 兜底（避免多环境部署下根目录漂移） |
 | 路径语义 | **严格模式**：Clean+Abs+realpath 后必须以 workspaceRoot 为前缀 | DSH lexical + 实体双层校验，避免 symlink TOCTOU |
 | 读 / 写 | **DSH 不等价拆分**：read unconfined，write fenced；通过 `FileAccess{JailReads, JailWrites}` 双 bool 暴露 | 单机本地默认 `JailWrites=true, JailReads=false`（DSH 一致）；SaaS 默认 `JailReads=true, JailWrites=true`（多租户隔离）；platform 装配 preset |
 | 共享根 | `writableRoots(policy) []string` = `[workspaceRoot, "/tmp", os.TempDir()]`；fs sandbox 与 bash Seatbelt 等价层共用 | 对齐 DSH 防两子系统配置漂移 |
@@ -47,10 +47,9 @@ import (
 type Mode string
 
 const (
-    ModePermissive    Mode = "permissive"     // 不 jail（仅诊断模式使用，平台层一般不开）
-    ModeLocalJailed   Mode = "local-jailed"   // 单机：写 jail，读开放
-    ModeSaaSJailed    Mode = "saas-jailed"    // SaaS：读写都 jail
-    ModeDangerFull    Mode = "danger-full"    // 不推荐；调试/迁移专用，需显式开启
+    ModeLocalJailed Mode = "local-jailed"   // DSH workspace-write：写 jail，读开放
+    ModeSaaSJailed  Mode = "saas-jailed"    // DSH read-only / SaaS 默认：读写都 jail
+    ModeDangerFull  Mode = "danger-full"    // 显式全开放（用户主动设置，非默认值；诊断/迁移专用）
 )
 
 // FileSystem 是 fs 能力 seam 的抽象（DSH FileSystem 对位）。
@@ -97,8 +96,8 @@ func (e *PathDeniedError) Error() string {
 ### 3.2 两个内置实现（与 DSH `LocalFileSystem` / `SandboxedFileSystem` 对位）
 
 ```go
-// tool/fs/local.go —— 透传模式（Op 不做 jail；用于 ModePermissive / ModeDangerFull）。
-type Local struct{ Mode Mode /* 默认 ModePermissive */ }
+// tool/fs/local.go —— 透传模式（Op 不做 jail；仅 ModeDangerFull 使用）。
+type Local struct{ Mode Mode /* 仅 ModeDangerFull */ }
 
 // tool/fs/sandboxed.go —— 沙箱模式（按 Mode 应用 JailReads/JailWrites）；
 // 与 tool.Sandbox 并存而非替换（Sandbox 仍管 shell 执行；fs 只管文件工具）。
@@ -124,21 +123,22 @@ type Config struct {
 }
 
 type FileAccessConfig struct {
-    WorkspaceRoot string // 缺省 = os.Getwd()（保持向后兼容）
-    JailReads     bool   // 缺省 false（DSH 单机默认）
-    JailWrites    bool   // 缺省 true（DSH 单机默认）
+    WorkspaceRoot string // 必填；空值 → assistant.New 返回 error（fail-closed）
+    JailReads     bool   // 缺省 true
+    JailWrites    bool   // 缺省 true
     // WritableExtra []string  // 可选：附加可写根（默认 ["/tmp", os.TempDir()] 已包含）
 }
 
 // assistant/policy_file.go —— 升级：基于 FileAccessConfig 推导 Mode 并注册 fs seam。
 func (p *DefaultPolicy) Mode() fs.Mode {
+    // WorkspaceRoot 为空已在 assistant.New 校验过（fail-closed），此处不重复检查。
     if !p.FileAccess.JailReads && !p.FileAccess.JailWrites {
-        return fs.ModePermissive
+        return fs.ModeDangerFull // 显式全开放（用户主动设置，非默认值）
     }
-    if p.FileAccess.JailReads && p.FileAccess.JailWrites {
-        return fs.ModeSaaSJailed
+    if p.FileAccess.JailReads && !p.FileAccess.JailWrites {
+        return fs.ModeLocalJailed // DSH workspace-write：仅写 jail，读开放
     }
-    return fs.ModeLocalJailed
+    return fs.ModeSaaSJailed // DSH read-only / SaaS 默认：读写都 jail
 }
 
 // assistant.New 自动按 Config 装配 fs seam（注册到 RunContext.FS）：
@@ -153,8 +153,10 @@ func (p *DefaultPolicy) Mode() fs.Mode {
 func WritableRoots(p *FileAccessPolicy) []string {
     roots := []string{p.WorkspaceRoot}
     if !p.JailWrites {
-        return roots // ModePermissive：只允许 workspace（DSH read-only 行为）
+        // ModeDangerFull：可写任意路径（用户显式选择）；不附加 /tmp / tmpdir
+        return roots
     }
+    // 任何 Jail 模式：workspace + /tmp + os.TempDir()
     roots = append(roots, "/tmp", os.TempDir())
     if len(p.WritableExtra) > 0 {
         roots = append(roots, p.WritableExtra...)
@@ -171,10 +173,9 @@ func WritableRoots(p *FileAccessPolicy) []string {
 // tool/builtin/file.go（ReadFile / WriteFile）
 func (ReadFile) Execute(ctx context.Context, args json.RawMessage) (any, error) {
     p, _ := tool.Parse[readFileParams](args)
-    fsys := fs.FromContext(ctx) // 未注入时 nil → fallback 到 Local{ModePermissive}（向后兼容）
-    if fsys == nil {
-        fsys = &fs.Local{Mode: fs.ModePermissive}
-    }
+    fsys := fs.FromContext(ctx) // 必须注入；未注入 → 返回 *fs.NotConfiguredError
+    // 不再有 fallback。fsys 在 assistant.New 装配时已保证非 nil；
+    // 此处不再判 nil，直接调用 fsys.Resolve。
     r, err := fsys.Resolve(ctx, fs.Request{Path: p.Path, Op: fs.OpRead, Session: sessionOf(ctx)})
     if err != nil {
         return nil, err // *PathDeniedError 直接冒泡；其他错误 wrap
@@ -194,7 +195,7 @@ func WithFileSystem(ctx context.Context, fsys FileSystem) context.Context
 func FromContext(ctx context.Context) FileSystem // 未注入返回 nil
 ```
 
-`assistant.New` 装配时：若 Config 显式 `FileAccess != zero`，则 `RunContext.FS = fs.NewSandboxed(...)`；否则 nil（保持向后兼容：4 个工具 fallback 到 `Local{ModePermissive}`）。
+`assistant.New` 装配时：**始终**注入 `RunContext.FS = fs.NewSandboxed(p.Mode(), ...)`（Config 校验阶段已要求 `FileAccess.WorkspaceRoot` 必填）。4 个内置工具**不再有 fallback**——ctx 未注入 fs 视为配置错误，工具 Execute 入口返回 `*fs.NotConfiguredError`（与 `Policy` 缺失时的 fail-closed 处理对齐）。
 
 ## 4. 数据流
 
@@ -209,14 +210,9 @@ agent/driver react.go → executor.Run → tool.Execute(ctx, args)
    │                                  │ Execute 入口  │
    │                                  └───────┬───────┘
    │                                          │
-   │                                  fs.FromContext(ctx)
+   │                                  fs.FromContext(ctx)  // 必须注入；未注入返回 NotConfiguredError
    │                                          │
-   │            ┌─────────────────────────────┼─────────────────────┐
-   │            ▼                             ▼                     ▼
-   │   ctx 未注入 FS → fallback        ctx 注入 Sandbox         ctx 注入 Local
-   │   Local{ModePermissive}            Sandboxed{Policy}       (平台显式)
-   │   （向后兼容：当前用户无感）         (JailReads/JailWrites)
-   │                                          │
+   │                                          ▼
    │                                  Resolve(path, op)
    │                                          │
    │                          ┌───────────────┼───────────────┐
@@ -264,10 +260,14 @@ agent/driver react.go → executor.Run → tool.Execute(ctx, args)
 | `agent/seam/seam.go` | 新增 `KindFileSystem = "filesystem"` 常量 |
 | `assistant.New` | 装配时注册 fs seam + 注入 RunContext.FS |
 
-**纯增量**：新包 `tool/fs` 不影响任何既有调用路径（fallback `Local{ModePermissive}` 保持原行为）。向后兼容保证：未配置 `FileAccess` 时，`FileAccessConfig{}` 零值 → `JailReads=false, JailWrites=false` → `ModePermissive`；当前 4 个工具无 ctx 注入时 fallback `Local{ModePermissive}` 仍开放，老用户无感。
+**破坏性变更**：本设计**明确不保留向后兼容**——
+
+- `FileAccessConfig.WorkspaceRoot` 必填，零值 → `assistant.New` 启动失败（fail-closed）；不再隐式默认 `os.Getwd()`（避免多环境部署下根目录漂移）
+- 4 个内置文件工具**不再有 fallback**；ctx 未注入 fs → `*fs.NotConfiguredError`（fail-closed）
+- 现有使用 `tool/builtin.ReadFile/WriteFile/FindFiles/Grep` 的代码：升级时**必须**为 `assistant.Config.FileAccess.WorkspaceRoot` 显式赋值，否则升级后立即启动失败
 
 **回归保护**：
-- 现有 `assistant/assistant_test.go` 全量通过（fallback 路径不变）
+- `assistant/assistant_test.go` 新增 fail-closed 用例（空 WorkspaceRoot 启动失败）
 - 新增 `tool/fs` 包内 contract test（与 `agent/telemetry` 的 `Conformance` 同形）
 - shell policy 单元测试改用 `WritableRoots` 后应等价（同一断言集合）
 
@@ -276,11 +276,11 @@ agent/driver react.go → executor.Run → tool.Execute(ctx, args)
 | 层 | 内容 |
 | --- | --- |
 | `tool/fs/resolve_test.go` | Lexical 校验全分支（`..`、绝对路径、相对路径、空）；realpath 实体比对（mock fs.MakeSyscallChanges）；Op=Read 不需 realpath；Op=Write 必 realpath |
-| `tool/fs/sandboxed_test.go` | ModeLocalJailed：读开放、写 jail；ModeSaaSJailed：读写都 jail；ModePermissive：全开放 |
+| `tool/fs/sandboxed_test.go` | ModeLocalJailed：写 jail 读开放；ModeSaaSJailed：读写都 jail；ModeDangerFull：全开放 |
 | `tool/fs/roots_test.go` | `WritableRoots`：去重、规范化、缺省值、追加 WritableExtra |
-| `tool/builtin/file_jail_test.go` | 4 工具接到 ctx 注入的 Sandboxed 后越界返回 `*PathDeniedError`；未注入时维持原行为 |
+| `tool/builtin/file_jail_test.go` | 4 工具接到 ctx 注入的 Sandboxed 后越界返回 `*PathDeniedError`；ctx 未注入时返回 `*fs.NotConfiguredError` |
 | `assistant/policy_shell_test.go` | `rm` 等受限命令校验用 `WritableRoots`；与原 `withinDir` 等价（同一断言集合） |
-| `assistant/assistant_test.go` | 回归：`FileAccess{}` 零值 → ModeLocalJailed + 无 ctx 注入 → Local 透传；既有测试无修改通过 |
+| `assistant/assistant_test.go` | **新增** fail-closed 用例：空 `WorkspaceRoot` → `assistant.New` 返回 error；既有测试需为 `FileAccess.WorkspaceRoot` 显式赋值才能继续通过 |
 | 集成 | 真模型跑"读 /etc/passwd"、"写 /tmp/x"两条路径，确认 fail-closed 与升级提示出现在同一 Turn |
 
 ## 8. 范围外（v1 明确不做）
