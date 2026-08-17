@@ -1,0 +1,24 @@
+package fs
+
+import (
+	"context"
+	"path/filepath"
+)
+
+// Local 是 FileSystem 的透传实现（仅 ModeDangerFull 使用）。
+// 不做任何 jail 校验；路径原样返回。
+type Local struct {
+	Mode Mode
+}
+
+// Resolve 实现 FileSystem.Resolve：filepath.Abs 后直接返回。
+func (l *Local) Resolve(ctx context.Context, req Request) (*Resolved, error) {
+	abs, err := filepath.Abs(req.Path)
+	if err != nil {
+		return nil, err
+	}
+	return &Resolved{
+		DisplayPath: abs,
+		TargetKey:   abs,
+	}, nil
+}
