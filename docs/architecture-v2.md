@@ -1,4 +1,4 @@
-# MoS 架构演进规划（v2.18）
+# MoS 架构演进规划（v2.19）
 
 > 状态：设计规划（未实施）｜ 参考：DeepSeek Harness（dsh）+ Cordis 插件框架
 > 目标：让 MoS 支持**多智能体循环类型（ReAct / Plan&Execute / Reflection）、环节可改写、提供者可替换、运行期装配**，采用 Go SDK 惯用法（编译期注册 + 运行期选择），不设向后兼容负担（未发布）。
@@ -8,6 +8,7 @@
 
 | 日期 | 版本 | 更新内容 |
 | --- | --- | --- |
+| 2026-08-17 | v2.19 | 实施：`request_human_input` 人工介入工具落地——配置 Approval 时自动注册；首次调用经 `Approval.Request` 挂起（checkpoint 落库），resume 后经 ctx 决策表读取人类回答（`ApprovalDecision.Content`）返回给模型；同步确认器经 `Immediate` 不挂起直接返回；新增 `tool.WithCallID` ctx 注入 + `approval.WithApproval`/`WithResumeDecisions` 上下文辅助 + `DefaultPolicy` 放行 + E2E 测试（人类作答路径）；M2.8 全部完成 |
 | 2026-08-17 | v2.18 | 实施：M2.8 异步审批 + Checkpointer + AgentHandle 全量落地——新包 `agent/approval`（Approval Request/Resolve + SuspendError + InMemApproval + ConfirmerAdapter/Immediate，对齐 PI SuspendedOperation）、`agent/checkpoint`（Checkpoint + Store seam：内存/文件后端，数据库由业务层注入）、`agent/handle`（AgentHandle + Registry + ValidateMissing，对齐 dsh AgentRegistry）；策略检查器改返回 `*approval.RequiredError`，policyGuard 发起审批、批量 preflight 守卫先行日志后置、挂起整批中止；`session.Persistence` 增 `SaveState/LoadState`（TaskState 持久化）、`Session.DropInterruptedForTurn`；事件目录新增 approval/request+resolve、checkpoint/save+restore、agent/created+disposed+status、subagent/start、agent/inbox；修 `RunContext.Bus` 始终 nil 缺陷（默认 EventBus）；§5.2 第 11 项落地 |
 | 2026-08-17 | v2.17 | 实施：新能力 `agent/telemetry`（Telemetry seam 契约：TelemetryContext/TelemetrySpan + Noop + WithSpan 回调生命周期 + Recorder 参考实现 + Conformance 契约测试，对齐 PI pi-telemetry）；RunContext.Telemetry 注入（nil 降级 no-op）；ReAct 驱动自动打点 driver.turn / llm.request / tool.execute span；§5.2 第 10 项落地，v2 重构 10 项全部完成 |
 | 2026-08-17 | v2.16 | 文档修正：§5.2 实施顺序第 7、8 项状态同步为已落地（PlanExecute/Reflection/DriverRouter、SeamRegistry + 声明式配置此前已提交，标记遗留为规划中） |
@@ -566,7 +567,7 @@ README 路线图中未实现的里程碑（M2.8 ~ M5）按三类归位：**v2 �
 
 | 路线图项 | 承载机制 |
 | --- | --- |
-| M2.8 `request_human_input` 工具 + 升级策略 | ✅ 已落地：`tool/pre-execute` 审批守卫（策略返回 `*approval.RequiredError` → `Approval.Request` → 挂起）。`request_human_input` 内置工具为 follow-up（普通工具 + SuspendError，机制已就绪） |
+| M2.8 `request_human_input` 工具 + 升级策略 | ✅ 已落地：`tool/pre-execute` 审批守卫（策略返回 `*approval.RequiredError` → `Approval.Request` → 挂起）+ `request_human_input` 工具（配置 Approval 时自动注册；首次调用挂起 → 平台作答 `Content` → Resume 续跑返回回答；同步确认器经 `Immediate` 不挂起直接返回） |
 | M2.8 Checkpointer（interrupt-before 断点） | ✅ 已落地：`agent/checkpoint.Store`（内存/文件，数据库业务层注入）+ `AgentHandle.Resume`（会话重放 + 决策注入 + 挂起轮续跑）+ `session.Persistence.SaveState/LoadState` |
 | M3 Coordinator 路由 | `DriverRouter`（规则 + LLM 混合路由，已设计） |
 | M3 双阶段 Plan&Solve | `PlanExecuteDriver`（实施顺序 6） |

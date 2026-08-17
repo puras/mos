@@ -28,9 +28,12 @@ type ApprovalRequest struct {
 
 // ApprovalDecision 是一次审批回填的决策（approval/resolve 事件载荷 + Checkpoint.Decisions 值）。
 // Approved=true 时驱动放行；false 时该工具调用显式失败回填（fail-closed 默认拒绝）。
+// Content 承载人类自由文本回答（request_human_input 工具：回答即工具结果）；普通确认（放行/拒绝）
+// 仅用 Approved/Reason。
 type ApprovalDecision struct {
 	Approved  bool      `json:"approved"`
 	Reason    string    `json:"reason,omitempty"`
+	Content   string    `json:"content,omitempty"` // request_human_input 的回答
 	DecidedBy string    `json:"decided_by,omitempty"`
 	DecidedAt time.Time `json:"decided_at"`
 }
@@ -69,6 +72,35 @@ var ErrUnknownID = errors.New("approval: unknown id")
 
 // ErrAlreadyResolved 标识同一 ID 的二次 Resolve（one-shot 被破坏）。
 var ErrAlreadyResolved = errors.New("approval: already resolved")
+
+// ---- 上下文辅助（request_human_input 等工具经 ctx 读取审批通道与 resume 决策）----
+
+type approvalCtxKey struct{}
+
+// WithApproval 将审批通道放入上下文（驱动在工具执行前注入）。
+func WithApproval(ctx context.Context, a Approval) context.Context {
+	return context.WithValue(ctx, approvalCtxKey{}, a)
+}
+
+// ApprovalFrom 从上下文读取审批通道（未注入时 ok=false）。
+func ApprovalFrom(ctx context.Context) (Approval, bool) {
+	a, ok := ctx.Value(approvalCtxKey{}).(Approval)
+	return a, ok
+}
+
+type resumeDecisionsCtxKey struct{}
+
+// WithResumeDecisions 将 resume 决策表（tool call ID → 决策）放入上下文，
+// 供 request_human_input 工具恢复时读取人类回答。
+func WithResumeDecisions(ctx context.Context, decisions map[string]ApprovalDecision) context.Context {
+	return context.WithValue(ctx, resumeDecisionsCtxKey{}, decisions)
+}
+
+// ResumeDecisions 从上下文读取 resume 决策表（未注入时 nil）。
+func ResumeDecisions(ctx context.Context) map[string]ApprovalDecision {
+	m, _ := ctx.Value(resumeDecisionsCtxKey{}).(map[string]ApprovalDecision)
+	return m
+}
 
 // SuspendError 是 driver 抛出的挂起信号（架构 v2 §3.4 异步 approval）：
 // 携带审批 ID + 请求上下文 + 钩子点 + 重放位置（turn/step）+ 挂起工具调用 ID。

@@ -57,6 +57,7 @@ MoS 是 SDK，不参与服务化能力范畴：Web UI / API 网关 / 任务调�
 - **异步 Approval（M2.8）**：`agent/approval`——`Approval` 接口（Request/Resolve）+ `SuspendError` 驱动挂起 + `InMemApproval`（内存通道）+ `ConfirmerAdapter`（旧同步确认器桥接，`Immediate` 接口保留 CLI y/N）；策略检查器对需确认操作返回 `*approval.RequiredError`，驱动 `policyGuard` 发起审批、批量 preflight 守卫先行日志后置、挂起整批中止（fail-closed：未配置 Approval 时需确认操作拒绝）
 - **Checkpoint 断点恢复（M2.8）**：`agent/checkpoint`——`Checkpoint` 快照（挂起轮工具批 + 审批请求 + TaskState 快照）+ `Store` seam（内存 / 文件默认后端，sqlite 等数据库由业务层注入）；`AgentHandle.Resume(decision)` 注入决策表从挂起轮续跑；`approval/request|resolve`、`checkpoint/save|restore` 事件落会话日志（durable 审计）
 - **AgentHandle / Registry（M2.8）**：`agent/handle`——create/resume/dispose 生命周期句柄 + 会话级注册表（对齐 dsh AgentRegistry）；`Resume` = 会话重放 + checkpoint 挂载 + 资源校验（`ValidateMissing`：会话事件引用的工具须存在于 RunContext.Tools）；`assistant.CreateHandle` / `assistant.Handle(sessionID)` 装配入口；`session.Persistence.SaveState/LoadState` 持久化 TaskState（目标 / 已验证事实 / 状态机）
+- **`request_human_input` 工具（M2.8）**：模型主动请求人类输入/确认/授权——配置 Approval 时自动注册；首次调用经 `Approval.Request` 挂起（checkpoint 落库），人类在平台作答（`ApprovalDecision.Content`），`Handle.Resume` 续跑后工具返回回答给模型；拒绝时原因回填模型；`assistant.RequestHumanInput` 亦可显式加入工具集
 - **审计式任务状态（M2.1 + M2.2）**：`TaskState`（目标 / 已验证事实 / 状态机）独立于消息历史；`Auditor` 审计门只接受环境可验证事实（默认白名单只读工具，可 `Trust` 扩展），模型自述不算数
 - **fresh-context 压缩（M2.5）**：超 `KeepRecent` 触发，不切断 ToolCall-Result 对；摘要直接采用 `TaskState.Snapshot()`
 - **Doom Loop 检测（M2.5）**：相同工具 + 参数连续 N 次 → 单调守卫拦截（`DoomLoopGuard`），上下文利用率 40% 告警线事件广播
@@ -114,7 +115,7 @@ SDK 零第三方依赖（仅依赖本地协议库 `hegq.net/mogo`）。
 ### 5.3 已知问题与风险
 - **v2 重构全部落地**：LoopDriver 生态（ReAct / Plan&Execute / Reflection + DriverRouter）+ SeamRegistry + 声明式配置（YAML）+ Scope + 会话持久化（JSONL）+ ConcurrentExecutor 批量执行 + Telemetry seam + M2.8（Approval / Checkpoint / AgentHandle）已全部实现
 - **待办缺口**：token 预算上限、上下文重置与跨 Session handoff、模型分级路由、异常恢复、可恢复运行目录（M4）等仍为空
-- **M2.8 后续**：`request_human_input` 内置工具（机制已就绪，普通工具 + SuspendError）；Approval TTL 自动超时、checkpoint 加密/签名、多句柄并发恢复（业务层职责）
+- **M2.8 后续**：Approval TTL 自动超时、checkpoint 加密/签名、多句柄并发恢复（业务层职责）
 - **路线图条目**：M2.9 / M2.10 / M3 条目内容详实但均为规划，实现前需按实际落地情况修订
 
 ## 6. 快速验证

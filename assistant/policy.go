@@ -45,14 +45,15 @@ type DefaultPolicy struct {
 func NewDefaultPolicy(shellAllowed []string, workDir string) *DefaultPolicy {
 	p := &DefaultPolicy{ShellAllowed: shellAllowed, WorkDir: workDir}
 	p.checkers = map[string]Checker{
-		"shell":        p.checkShell,
-		"read_file":    p.checkFileField("path"),
-		"write_file":   p.checkWrite,
-		"find_files":   p.checkFileField("root"),
-		"grep":         p.checkFileField("root"),
-		"web_fetch":    p.checkWebFetch,
-		"web_search":   p.checkWebSearch,
-		"current_time": allow,
+		"shell":              p.checkShell,
+		"read_file":          p.checkFileField("path"),
+		"write_file":         p.checkWrite,
+		"find_files":         p.checkFileField("root"),
+		"grep":               p.checkFileField("root"),
+		"web_fetch":          p.checkWebFetch,
+		"web_search":         p.checkWebSearch,
+		"current_time":       allow,
+		"request_human_input": allow, // 自证/只读：无副作用，人工介入工具放行
 	}
 	return p
 }

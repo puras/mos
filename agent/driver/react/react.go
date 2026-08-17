@@ -426,6 +426,15 @@ func execBatchTools(ctx context.Context, rt *driver.RunContext, sess *session.Se
 		return true, nil
 	}
 	execute := func(ctx context.Context, call *llm.ToolCall) (toolOutcome, error) {
+		// 注入工具执行上下文（request_human_input 等人工介入工具读取）：
+		// 当前调用 ID + 审批通道 + resume 决策表。
+		ctx = tool.WithCallID(ctx, call.ID)
+		if rt.Approval != nil {
+			ctx = approval.WithApproval(ctx, rt.Approval)
+		}
+		if rt.ResumeCheckpoint != nil {
+			ctx = approval.WithResumeDecisions(ctx, rt.ResumeCheckpoint.Decisions)
+		}
 		var out toolOutcome
 		err := telemetry.WithSpan(ctx, rt.Telemetry, telemetry.SpanToolExec,
 			map[string]string{"tool": call.Name, "call_id": call.ID, "turn": strconv.Itoa(turn)},

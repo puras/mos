@@ -201,3 +201,117 @@ func hasEvent(events []session.SessionEvent, typ string) bool {
 	}
 	return false
 }
+
+// containsStr 报告 slice 是否包含指定元素。
+func containsStr(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+// humanInputModel 模拟 request_human_input 场景：第一次调用发起 request_human_input，
+// 恢复后的第二次调用（历史含工具结果回答）复述回答。
+type humanInputModel struct{ wantAnswer string }
+
+func (m humanInputModel) Capabilities() llm.Capability { return llm.CapFunctionCalling }
+func (m humanInputModel) Chat(_ context.Context, req *llm.Request) (*llm.Response, error) {
+	var toolMsgs int
+	var answer string
+	for _, msg := range req.Messages {
+		if msg.Role == llm.RoleTool {
+			toolMsgs++
+			answer = msg.Content
+		}
+	}
+	if toolMsgs == 0 {
+		args := `{"question":"目标目录里最大的文件是哪个？","context":"需要人类查看"}`
+		return &llm.Response{Message: llm.Message{
+			Role:      llm.RoleAssistant,
+			Content:   "我来问人类",
+			ToolCalls: []llm.ToolCall{{ID: "h1", Name: "request_human_input", Args: args}},
+		}}, nil
+	}
+	return &llm.Response{Message: llm.Message{
+		Role:    llm.RoleAssistant,
+		Content: "人类回答是: " + answer,
+	}}, nil
+}
+func (humanInputModel) ChatStream(context.Context, *llm.Request, func(llm.StreamChunk) error) (*llm.Response, error) {
+	return nil, llm.ErrUnsupported
+}
+
+// TestE2E_RequestHumanInput 验证 request_human_input 工具端到端：
+// 模型主动请求人类输入 → 工具发起审批 → 挂起（checkpoint 落库）→ 平台作答 →
+// Handle.Resume 续跑 → 工具返回人类回答 → 模型基于回答继续。
+func TestE2E_RequestHumanInput(t *testing.T) {
+	persist, err := session.NewJSONL(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewJSONL: %v", err)
+	}
+	ap := approval.NewInMemApproval()
+	store := checkpoint.NewMemStore()
+	pol := NewDefaultPolicy(nil, t.TempDir())
+	pol.Approval = ap
+
+	a, err := New(humanInputModel{wantAnswer: "X"}, nil, Config{
+		Policy:         pol,
+		Approval:       ap,
+		CheckpointStore: store,
+		Persistence:    persist,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// request_human_input 自动注册（配置 Approval 时）
+	if !containsStr(a.ToolNames(), "request_human_input") {
+		t.Fatal("request_human_input 未自动注册")
+	}
+
+	sess := a.NewSession()
+	_, err = a.Run(context.Background(), sess, "查目标目录里最大的文件")
+	var suspend *approval.SuspendError
+	if !errors.As(err, &suspend) {
+		t.Fatalf("err = %v, want *approval.SuspendError", err)
+	}
+	if suspend.Request.ToolName != "request_human_input" || suspend.Request.Command == "" {
+		t.Fatalf("suspend = %+v", suspend)
+	}
+
+	// 人类作答：Content 即回答
+	if err := ap.Resolve(context.Background(), suspend.ID, approval.ApprovalDecision{
+		Approved: true, Content: "report.tar.gz (2.4GB)", DecidedBy: "human@console",
+		DecidedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	h, err := a.Handle(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	reply, err := h.Resume(context.Background(), approval.ApprovalDecision{
+		Approved: true, Content: "report.tar.gz (2.4GB)", DecidedBy: "human@console",
+		DecidedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if !strings.Contains(reply, "report.tar.gz") {
+		t.Fatalf("reply = %q，应包含人类回答", reply)
+	}
+	// 工具结果含回答（模型可见）
+	var toolResultSeen bool
+	for _, msg := range h.Session.Messages() {
+		if msg.Role == llm.RoleTool && strings.Contains(msg.Content, "report.tar.gz") {
+			toolResultSeen = true
+		}
+	}
+	if !toolResultSeen {
+		t.Fatal("工具结果应包含人类回答")
+	}
+	if h.Session.State.Status != session.StatusCompleted {
+		t.Fatalf("status = %v, want completed", h.Session.State.Status)
+	}
+}

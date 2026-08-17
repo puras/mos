@@ -99,6 +99,13 @@ func New(model llm.ChatModel, tools []tool.Tool, cfg Config) (*Assistant, error)
 	if cfg.Approval == nil && cfg.Confirm != nil {
 		cfg.Approval = approval.NewConfirmerAdapter(confirmBridge{inner: cfg.Confirm})
 	}
+	// 配置了审批通道时自动注册 request_human_input（人工介入工具，M2.8）：
+	// 模型可主动请求人类输入/确认/授权（挂起 → 平台作答 → Resume 续跑）。
+	if cfg.Approval != nil {
+		if err := reg.Register(RequestHumanInput{}); err != nil {
+			return nil, fmt.Errorf("assistant: 注册 request_human_input 失败: %w", err)
+		}
+	}
 	// 策略侧 Approval 与驱动侧一致（检查器据此返回 *approval.RequiredError）。
 	if p, ok := cfg.Policy.(*DefaultPolicy); ok {
 		p.Approval = cfg.Approval
