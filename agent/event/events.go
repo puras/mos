@@ -25,6 +25,9 @@ const (
 	SessionEventPlanStart         = "plan/start"
 	SessionEventPlanStep          = "plan/step"
 	SessionEventPlanEnd           = "plan/end"
+	SessionEventScriptStart       = "script/start"
+	SessionEventScriptStep        = "script/step"
+	SessionEventScriptEnd         = "script/end"
 	SessionEventReflectionStart   = "reflection/start"
 	SessionEventReflectionReview  = "reflection/review"
 	SessionEventReflectionEnd     = "reflection/end"
@@ -148,6 +151,29 @@ type PlanStepData struct {
 type PlanEndData struct {
 	Turn   int    `json:"turn"`
 	Status string `json:"status"` // completed / failed
+	Detail string `json:"detail,omitempty"`
+}
+
+// ScriptStartData 脚本阶段开始（Scripted 驱动）：目标 + 步骤数。
+type ScriptStartData struct {
+	Turn  int    `json:"turn"`
+	Goal  string `json:"goal"`
+	Steps int    `json:"steps"`
+}
+
+// ScriptStepData 脚本中一步的状态迁移（pending → running → done/failed/denied/skipped）。
+type ScriptStepData struct {
+	Turn   int    `json:"turn"`
+	StepID string `json:"step_id"`
+	Tool   string `json:"tool"`
+	Status string `json:"status"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// ScriptEndData 脚本阶段结束：completed 或 failed。
+type ScriptEndData struct {
+	Turn   int    `json:"turn"`
+	Status string `json:"status"`
 	Detail string `json:"detail,omitempty"`
 }
 

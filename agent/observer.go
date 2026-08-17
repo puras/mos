@@ -35,6 +35,8 @@ const (
 	EventPlan
 	// EventReflection 评审结果（Basic Reflection）：Content 为问题摘要文本。
 	EventReflection
+	// EventScript 脚本产出（Scripted 驱动）：Content 为脚本摘要文本。
+	EventScript
 	// EventResume 从 checkpoint 恢复（M2.8）：Content 为恢复说明（挂起轮续跑）。
 	EventResume
 	// EventDisposed 句柄释放（M2.8）：AgentHandle.Dispose 广播。
