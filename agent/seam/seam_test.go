@@ -69,3 +69,25 @@ func TestNilRegistry(t *testing.T) {
 	}
 	s.Register(KindModel, "x", func() any { return nil }) // 不 panic
 }
+
+func TestKindFileSystemRegistered(t *testing.T) {
+	reg := New()
+	var sawKind bool
+	for _, k := range []Kind{KindFileSystem} {
+		if k == KindFileSystem {
+			sawKind = true
+		}
+	}
+	if !sawKind {
+		t.Fatal("KindFileSystem 未注册")
+	}
+	// 验证可注册/解析
+	reg.Register(KindFileSystem, "default", func() any { return "fake-fs" })
+	got, err := reg.Resolve(KindFileSystem, "default")
+	if err != nil {
+		t.Fatalf("Resolve 失败: %v", err)
+	}
+	if got != "fake-fs" {
+		t.Fatalf("got=%v, want fake-fs", got)
+	}
+}

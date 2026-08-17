@@ -29,6 +29,8 @@ const (
 	KindCompactor Kind = "compactor"
 	KindPlanner   Kind = "planner"
 	KindReflector Kind = "reflector"
+
+	KindFileSystem Kind = "filesystem" // 文件系统 capability（Task 8/13 装配）
 )
 
 // Factory 是组件提供者：每次解析调用工厂，产出独立实例（有状态组件不共享）。
