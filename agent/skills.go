@@ -69,25 +69,29 @@ func LoadSkills(dir string) ([]Skill, error) {
 	return out, nil
 }
 
+// skillFrontmatter 是 SKILL.md frontmatter 的 YAML schema，与 Skill 共享 yaml tag。
+// 升级字段时同时改两处：Skill（Go 字段）+ skillFrontmatter（yaml 镜像）。
+type skillFrontmatter struct {
+	Name          string   `yaml:"name"`
+	Description   string   `yaml:"description"`
+	SchemaVersion string   `yaml:"schema_version"`
+	WhenToUse     string   `yaml:"when_to_use"`
+	AllowedTools  []string `yaml:"allowed-tools"`
+	References    []string `yaml:"references"`
+	Paths         []string `yaml:"paths"`
+	Source        string   `yaml:"source"`
+	UserInvocable bool     `yaml:"user-invocable"`
+}
+
 // parseSkillFile 解析单个 SKILL.md，返回技能（缺少 frontmatter 的 name 时不识别）。
 func parseSkillFile(path string) (Skill, bool) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return Skill{}, false
 	}
-	// SKILL.md = `---<yaml>---\n<markdown body>`
-	// 用 yaml.Unmarshal 解析首段 frontmatter（遇到非键值对行停止）
-	meta := struct {
-		Name          string   `yaml:"name"`
-		Description   string   `yaml:"description"`
-		SchemaVersion string   `yaml:"schema_version"`
-		WhenToUse     string   `yaml:"when_to_use"`
-		AllowedTools  []string `yaml:"allowed-tools"`
-		References    []string `yaml:"references"`
-		Paths         []string `yaml:"paths"`
-		Source        string   `yaml:"source"`
-		UserInvocable bool     `yaml:"user-invocable"`
-	}{}
+	// SKILL.md = `---<yaml>---\n<markdown body>`：先抽出 `---` 之间的 YAML 块，
+	// 再交给 yaml.Unmarshal 解析（避免正文被 yaml 误吃）。
+	var meta skillFrontmatter
 	if err := yaml.Unmarshal(extractFrontmatter(b), &meta); err != nil {
 		return Skill{}, false
 	}
