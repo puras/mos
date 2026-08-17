@@ -7,10 +7,14 @@ import (
 	"github.com/google/uuid"
 
 	"hegq.net/mos/agent"
+	"hegq.net/mos/agent/approval"
+	"hegq.net/mos/agent/checkpoint"
 	"hegq.net/mos/agent/driver"
 	"hegq.net/mos/agent/driver/planexecute"
 	"hegq.net/mos/agent/driver/react"
 	"hegq.net/mos/agent/driver/reflection"
+	"hegq.net/mos/agent/event"
+	"hegq.net/mos/agent/handle"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/planner"
@@ -24,6 +28,12 @@ type Assistant struct {
 	config Config
 	tools  *tool.Registry
 	policy driver.Policy
+
+	model        llm.ChatModel    // 供新会话重建 RunContext（Handle.Create / Registry）
+	persistence  session.Persistence
+	checkpoints  checkpoint.Store
+	bus          *event.EventBus
+	registry     *handle.Registry // 会话句柄注册表（Handle 入口）
 }
 
 // DefaultSystemPrompt 是框架内置的默认系统引导词，开箱即用。
@@ -85,8 +95,41 @@ func New(model llm.ChatModel, tools []tool.Tool, cfg Config) (*Assistant, error)
 	if cfg.SystemPrompt == "" {
 		cfg.SystemPrompt = DefaultSystemPrompt
 	}
+	// 同步确认器经 ConfirmerAdapter 桥接为异步 Approval（保留 CLI y/N 体验）。
+	if cfg.Approval == nil && cfg.Confirm != nil {
+		cfg.Approval = approval.NewConfirmerAdapter(confirmBridge{inner: cfg.Confirm})
+	}
+	// 策略侧 Approval 与驱动侧一致（检查器据此返回 *approval.RequiredError）。
+	if p, ok := cfg.Policy.(*DefaultPolicy); ok {
+		p.Approval = cfg.Approval
+	}
+	// 修复 RunContext.Bus 始终为 nil 的旧缺陷：未显式注入时创建默认 EventBus。
+	if cfg.Bus == nil {
+		cfg.Bus = event.NewEventBus()
+	}
 	// Auditor / Truncator / Compactor 由 react.New 默认装配（nil 时使用默认实现）。
 
+	rt := buildRunContext(model, reg, cfg)
+	ag, err := assembleDriver(cfg, rt)
+	if err != nil {
+		return nil, err
+	}
+	a := &Assistant{
+		agent:       ag,
+		config:      cfg,
+		tools:       reg,
+		policy:      cfg.Policy,
+		model:       model,
+		persistence: cfg.Persistence,
+		checkpoints: cfg.CheckpointStore,
+		bus:         cfg.Bus,
+	}
+	a.registry = handle.NewRegistry(a.newAgentForSession, cfg.CheckpointStore, cfg.Bus)
+	return a, nil
+}
+
+// buildRunContext 从配置装配共享 RunContext（供 New 与会话句柄重建复用）。
+func buildRunContext(model llm.ChatModel, reg *tool.Registry, cfg Config) *driver.RunContext {
 	rt := &driver.RunContext{
 		Tools:               reg,
 		Planner:             cfg.Planner,
@@ -105,6 +148,9 @@ func New(model llm.ChatModel, tools []tool.Tool, cfg Config) (*Assistant, error)
 		DoomLoopMaxRepeat:   cfg.DoomLoopMaxRepeat,
 		PlanPlanner:         cfg.PlanPlanner,
 		Reflector:           cfg.Reflector,
+		Approval:            cfg.Approval,
+		Checkpoints:         cfg.CheckpointStore,
+		Bus:                 cfg.Bus,
 	}
 	// M2.6 系统提示词：显式组装器优先；配置了项目指令/技能目录时自动构建默认组装器；
 	// 否则回退到 SystemPrompt 静态引导（既有行为不变）。
@@ -120,12 +166,7 @@ func New(model llm.ChatModel, tools []tool.Tool, cfg Config) (*Assistant, error)
 	default:
 		rt.SystemPrompt = cfg.SystemPrompt
 	}
-
-	ag, err := assembleDriver(cfg, rt)
-	if err != nil {
-		return nil, err
-	}
-	return &Assistant{agent: ag, config: cfg, tools: reg, policy: cfg.Policy}, nil
+	return rt
 }
 
 // assembleDriver 按配置装配驱动（架构 v2 §3.5 按名选组件）：
@@ -156,8 +197,61 @@ func (a *Assistant) Config() Config { return a.config }
 func (a *Assistant) Policy() driver.Policy { return a.policy }
 
 // NewSession 创建一个新会话（默认生成 UUID 作为会话 ID，供多会话持久化与恢复）。
-// 需要自定义 ID 时可直接 session.NewSession(id)。
-func (a *Assistant) NewSession() *session.Session { return session.NewSession(uuid.NewString()) }
+// 需要自定义 ID 时可直接 session.NewSession(id)。配置了 Persistence 时自动挂载
+// （事件同步落盘，日志即事实）。
+func (a *Assistant) NewSession() *session.Session {
+	sess := session.NewSession(uuid.NewString())
+	if a.persistence != nil {
+		sess.Persistence = a.persistence
+	}
+	return sess
+}
+
+// newAgentForSession 为指定会话重建绑定的智能体实例与 RunContext
+// （复用当前装配的驱动/工具/策略/审批/checkpoint 等共享设施，替换 Session）。
+// 供 handle.Registry 的 Create / Resume 使用。
+func (a *Assistant) newAgentForSession(sess *session.Session) (*driver.Agent, *driver.RunContext, error) {
+	if a == nil {
+		return nil, nil, fmt.Errorf("assistant: nil assistant")
+	}
+	if sess == nil {
+		return nil, nil, fmt.Errorf("assistant: nil session")
+	}
+	if sess.Persistence == nil && a.persistence != nil {
+		sess.Persistence = a.persistence
+	}
+	rt := buildRunContext(a.model, a.tools, a.config)
+	rt.Session = sess
+	ag, err := assembleDriver(a.config, rt)
+	if err != nil {
+		return nil, nil, err
+	}
+	return ag, rt, nil
+}
+
+// CreateHandle 创建新会话句柄（M2.8）：注册进 Registry，可 Run / 挂起 / Resume。
+func (a *Assistant) CreateHandle(ctx context.Context) (*handle.AgentHandle, error) {
+	return a.registry.Create(ctx, a.NewSession())
+}
+
+// Handle 返回指定会话的句柄（M2.8）：从持久化恢复会话 + checkpoint 挂载，
+// 供平台对已挂起（SuspendError）的会话执行 Resume(decision) 续跑。
+func (a *Assistant) Handle(ctx context.Context, sessionID string) (*handle.AgentHandle, error) {
+	if a.persistence == nil {
+		return nil, fmt.Errorf("assistant: handle requires Persistence configured")
+	}
+	sess, err := session.Restore(a.persistence, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("assistant: restore %s: %w", sessionID, err)
+	}
+	if sess.Persistence == nil {
+		sess.Persistence = a.persistence
+	}
+	return a.registry.Resume(ctx, sess)
+}
+
+// Registry 返回会话句柄注册表（供平台遍历/释放全部句柄）。
+func (a *Assistant) Registry() *handle.Registry { return a.registry }
 
 // Run 在会话上执行一次任务。
 func (a *Assistant) Run(ctx context.Context, sess *session.Session, input string) (string, error) {
@@ -172,3 +266,15 @@ func (a *Assistant) RunStream(ctx context.Context, sess *session.Session, input 
 
 // ToolNames 返回已注册的工具名列表。
 func (a *Assistant) ToolNames() []string { return a.tools.Names() }
+
+// confirmBridge 将旧 assistant.Confirmer（assistant.ConfirmRequest 参数）桥接为
+// approval.Confirmer（approval.ConfirmRequest 参数）——两者字段同构。
+type confirmBridge struct{ inner Confirmer }
+
+func (c confirmBridge) Confirm(ctx context.Context, req approval.ConfirmRequest) (bool, error) {
+	return c.inner.Confirm(ctx, ConfirmRequest{
+		ToolName: req.ToolName,
+		Command:  req.Command,
+		Reason:   req.Reason,
+	})
+}

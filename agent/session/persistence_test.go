@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -176,5 +177,53 @@ func TestRestoreEmptySession(t *testing.T) {
 	}
 	if sess.ID != "missing" || len(sess.Events) != 0 {
 		t.Fatalf("sess = %+v", sess)
+	}
+}
+
+func TestSaveLoadStateRoundTrip(t *testing.T) {
+	j, _ := NewJSONL(t.TempDir())
+	defer j.Close()
+
+	if _, err := j.LoadState("s"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("load missing state err = %v, want ErrNotFound", err)
+	}
+	st := TaskState{
+		Goal:  "write a file",
+		Facts: []Fact{{Summary: "read file X", Evidence: "contents", Tool: "read_file"}},
+		Status: StatusRunning,
+	}
+	if err := j.SaveState("s", st); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	got, err := j.LoadState("s")
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if got.Goal != "write a file" || got.Status != StatusRunning || len(got.Facts) != 1 {
+		t.Fatalf("got = %+v", got)
+	}
+	if got.Facts[0].Summary != "read file X" {
+		t.Fatalf("fact not preserved: %+v", got.Facts[0])
+	}
+}
+
+func TestRestoreLoadsState(t *testing.T) {
+	dir := t.TempDir()
+	j, _ := NewJSONL(dir)
+	defer j.Close()
+
+	sess := NewSession("s-state")
+	sess.Persistence = j
+	sess.State = TaskState{Goal: "g", Facts: []Fact{{Summary: "f", Tool: "read_file"}}, Status: StatusRunning}
+	if err := j.SaveState("s-state", sess.State); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+
+	restored, err := Restore(j, "s-state")
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if restored.State.Goal != "g" || len(restored.State.Facts) != 1 {
+		t.Fatalf("restored state = %+v, want Goal=facts preserved", restored.State)
 	}
 }

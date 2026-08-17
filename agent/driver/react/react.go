@@ -9,8 +9,11 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"hegq.net/mos/agent"
+	"hegq.net/mos/agent/approval"
+	"hegq.net/mos/agent/checkpoint"
 	"hegq.net/mos/agent/driver"
 	"hegq.net/mos/agent/event"
 	"hegq.net/mos/agent/executor"
@@ -66,7 +69,7 @@ func NewReAct(rt *driver.RunContext) driver.LoopDriver {
 	rt.Hooks.On(hook.HookToolPostExecute, truncateHook(rt))
 	rt.Hooks.On(hook.HookToolPostExecute, auditHook(rt))
 	if rt.Policy != nil {
-		rt.Guards.Add(policyGuard(rt.Policy))
+		rt.Guards.Add(policyGuard(rt))
 	}
 	// Doom Loop 检测以单调守卫注册（tool/pre-execute 阶段、Policy 之后）：
 	// 相同工具连续相同参数调用达到阈值即中断任务（状态 blocked），见 agent/doomloop.go。
@@ -102,6 +105,7 @@ func (d *ReActDriver) Run(ctx context.Context, rt *driver.RunContext, input stri
 	ctx = tool.WithSandbox(ctx, rt.Sandbox)
 
 	// 任务状态初始化：首次运行记录原始目标，进入 running。
+	// （resume 路径由 Handle.Resume 预加载持久化的 TaskState，Goal 已非空。）
 	if sess.State.Goal == "" {
 		sess.State.Goal = input
 	}
@@ -109,12 +113,18 @@ func (d *ReActDriver) Run(ctx context.Context, rt *driver.RunContext, input stri
 		sess.State.Status = session.StatusRunning
 	}
 
+	// M2.8 resume：从挂起轮续跑，不追加 turn/start 与 user/message
+	// （该轮事件已在挂起前落库；turn 计数器沿用挂起轮）。
 	firstTurn := sess.NextTurn()
-	if err := sess.Append(event.SessionEventTurnStart, event.TurnData{Turn: firstTurn, Reason: "user"}); err != nil {
-		return "", fmt.Errorf("agent: append turn/start: %w", err)
-	}
-	if err := sess.AppendUserMessage(input, "user"); err != nil {
-		return "", fmt.Errorf("agent: append user/message: %w", err)
+	if ckpt := rt.ResumeCheckpoint; ckpt != nil {
+		firstTurn = ckpt.Turn
+	} else {
+		if err := sess.Append(event.SessionEventTurnStart, event.TurnData{Turn: firstTurn, Reason: "user"}); err != nil {
+			return "", fmt.Errorf("agent: append turn/start: %w", err)
+		}
+		if err := sess.AppendUserMessage(input, "user"); err != nil {
+			return "", fmt.Errorf("agent: append user/message: %w", err)
+		}
 	}
 
 	history := sess.Messages() // 不含 system（system 每轮注入，不写日志）
@@ -157,6 +167,11 @@ func (d *ReActDriver) runTurn(ctx context.Context, rt *driver.RunContext, sess *
 // runTurnInner 是一轮循环的实现（pre-step → 规划 → 工具/作答 → 停止裁决）。
 func (d *ReActDriver) runTurnInner(ctx context.Context, rt *driver.RunContext, sess *session.Session, turn int, history []session.InternalMessage) (string, bool, error) {
 	const step = 1
+
+	// M2.8 resume：从挂起轮直接进入工具批量执行（跳过 LLM 调用与日志重放）。
+	if ckpt := rt.ResumeCheckpoint; ckpt != nil && ckpt.Turn == turn {
+		return d.runResumeTurn(ctx, rt, sess, turn, step, ckpt)
+	}
 
 	// 每轮刷新系统提示词：状态槽位随 TaskState 进度更新（M2.6 动态组装）
 	sysText, err := rt.AssembleSystem(ctx)
@@ -223,8 +238,46 @@ func (d *ReActDriver) runTurnInner(ctx context.Context, rt *driver.RunContext, s
 	}
 
 	// 工具调用：批量执行（并发 + 按源序回填，架构 v2 §3.9 ConcurrentExecutor 三阶段）
-	outs := execBatchTools(ctx, rt, sess, turn, step, calls)
+	outs, suspend := execBatchTools(ctx, rt, sess, turn, step, calls)
+	if suspend != nil {
+		// M2.8 挂起：审批待决，写 checkpoint 后冒泡（不 append step/end / turn/end）。
+		if err := d.saveCheckpoint(ctx, rt, sess, turn, step, calls, suspend); err != nil {
+			return "", false, fmt.Errorf("agent: save checkpoint: %w", err)
+		}
+		return "", false, suspend
+	}
 
+	return d.finalizeToolBatch(ctx, rt, sess, turn, step, calls, &action, outs)
+}
+
+// runResumeTurn 是 M2.8 恢复路径：跳过 LLM 调用与日志，从 checkpoint 重新执行
+// 挂起轮的工具批量（Calls），决策表（Decisions）经 rt.ResumeCheckpoint 注入
+// approval guard 放行。二次挂起时重写 checkpoint 并冒泡。
+func (d *ReActDriver) runResumeTurn(ctx context.Context, rt *driver.RunContext, sess *session.Session, turn, step int, ckpt *checkpoint.Checkpoint) (string, bool, error) {
+	calls := ckpt.Calls
+	_ = sess.Append(event.SessionEventCheckpointRestore, event.CheckpointData{
+		Turn: turn, Step: step,
+		HookKind:   string(ckpt.HookKind),
+		DecisionOK: ckpt.ResolvedAt != nil,
+	})
+	rt.Notify(agent.Event{Type: agent.EventResume, SessionID: sess.ID, Turn: turn, Content: "resume from checkpoint"})
+
+	outs, suspend := execBatchTools(ctx, rt, sess, turn, step, calls)
+	if suspend != nil {
+		// 二次挂起（resume 决策未覆盖或新审批）：重写 checkpoint 并冒泡。
+		if err := d.saveCheckpoint(ctx, rt, sess, turn, step, calls, suspend); err != nil {
+			return "", false, fmt.Errorf("agent: save checkpoint: %w", err)
+		}
+		return "", false, suspend
+	}
+	resumeAction := planner.Action{Content: "", ToolCalls: calls}
+	return d.finalizeToolBatch(ctx, rt, sess, turn, step, calls, &resumeAction, outs)
+}
+
+// finalizeToolBatch 收尾一轮工具批量：Doom Loop 致命检查 → 按源序回填
+// （tool/result 日志 + 观测；挂起工具结果错误冒泡）→ step/end → 停止裁决 → 完成。
+// 普通路径与 resume 路径共用（架构 v2 §3.9 finalize 阶段）。
+func (d *ReActDriver) finalizeToolBatch(ctx context.Context, rt *driver.RunContext, sess *session.Session, turn, step int, calls []llm.ToolCall, action *planner.Action, outs []executor.Outcome[*llm.ToolCall, toolOutcome]) (string, bool, error) {
 	// Doom Loop 是致命守卫错误：任务中断（状态 blocked），不回填工具结果
 	for _, out := range outs {
 		var doomErr *hook.DoomLoopError
@@ -247,6 +300,16 @@ func (d *ReActDriver) runTurnInner(ctx context.Context, rt *driver.RunContext, s
 			// preflight 阶段的非守卫错误（如 tool/call 落日志失败）：终止任务
 			return "", false, fmt.Errorf("agent: tool preflight: %w", out.Err)
 		}
+		// 工具执行路径抛出的挂起（request_human_input 等工具内发起审批）：写 checkpoint 并冒泡
+		if out.Output.err != nil {
+			var suspend *approval.SuspendError
+			if errors.As(out.Output.err, &suspend) {
+				if err := d.saveCheckpoint(ctx, rt, sess, turn, step, calls, suspend); err != nil {
+					return "", false, fmt.Errorf("agent: save checkpoint: %w", err)
+				}
+				return "", false, suspend
+			}
+		}
 		_ = sess.AppendToolResult(turn, call, out.Output.result, out.Output.text, out.Output.err)
 		rt.Notify(agent.Event{Type: agent.EventToolResult, SessionID: sess.ID, Turn: turn, ToolCall: call, ToolResult: out.Output.result})
 	}
@@ -256,7 +319,7 @@ func (d *ReActDriver) runTurnInner(ctx context.Context, rt *driver.RunContext, s
 	// 外部停止裁决（对齐 PI shouldStopAfterTurn）：每轮工具执行后调用，
 	// 返回 true 时任务以 completed 收尾（reason "stopped"）。
 	if rt.ShouldStopAfterTurn != nil {
-		stop, err := rt.ShouldStopAfterTurn(ctx, sess, turn, &action)
+		stop, err := rt.ShouldStopAfterTurn(ctx, sess, turn, action)
 		if err != nil {
 			return "", false, fmt.Errorf("agent: shouldStopAfterTurn turn %d: %w", turn, err)
 		}
@@ -314,14 +377,17 @@ type toolOutcome struct {
 }
 
 // execBatchTools 批量执行工具调用（架构 v2 §3.9 三阶段，对齐 PI executeToolCallsParallel）：
-//   - preflight（串行）：tool/call 落日志 + 观测；单调守卫决策，拒绝 = 拦截集合（显式失败回填）；
+//   - preflight（串行）：单调守卫决策（**先于** tool/call 日志——挂起时不落日志），
+//     拒绝 = 拦截集合（显式失败回填）；挂起（*approval.SuspendError）= 整批中止（返回第二返回值）；
 //   - execute（有界并发）：pre-execute → execute → post-execute 钩子链；任一工具声明
 //     SequentialTool 时整批回退串行（对齐 PI per-tool executionMode）；
 //   - finalize（调用方）：结果按模型调用顺序回填（本函数只产出按源序的 Outcome）。
 //
 // 守卫拒绝返回 *ToolDeniedError（非致命，结果反馈给模型）；DoomLoop 致命错误原样返回
 // （调用方终止任务）；其余错误视为运行期失败，进各自 Outcome。
-func execBatchTools(ctx context.Context, rt *driver.RunContext, sess *session.Session, turn, step int, calls []llm.ToolCall) []executor.Outcome[*llm.ToolCall, toolOutcome] {
+// 返回第二个值 *approval.SuspendError：非 nil 表示有审批待决，整批已中止、未执行任何工具
+// （已通过守卫并落日志的先行工具可能留下孤儿 tool/call，不影响模型面投影）。
+func execBatchTools(ctx context.Context, rt *driver.RunContext, sess *session.Session, turn, step int, calls []llm.ToolCall) ([]executor.Outcome[*llm.ToolCall, toolOutcome], *approval.SuspendError) {
 	items := make([]executor.Item[*llm.ToolCall], len(calls))
 	for i := range calls {
 		items[i] = executor.Item[*llm.ToolCall]{Input: &calls[i]}
@@ -331,19 +397,32 @@ func execBatchTools(ctx context.Context, rt *driver.RunContext, sess *session.Se
 			}
 		}
 	}
+
+	// 挂起信号经闭包捕获 + 取消传播：批内任一工具触发审批即中止整批。
+	var batchSuspend *approval.SuspendError
+	bctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	preflight := func(ctx context.Context, call *llm.ToolCall) (bool, error) {
-		if err := sess.AppendToolCall(turn, call); err != nil {
-			return false, err // 日志写失败：终止任务（非拦截回填）
-		}
-		rt.Notify(agent.Event{Type: agent.EventToolCall, SessionID: sess.ID, Turn: turn, ToolCall: call})
 		ev := &hook.HookEvent{Kind: hook.HookToolPreExecute, ToolCall: call, Turn: turn, Step: step}
 		if err := rt.Guards.Allow(ctx, ev); err != nil {
+			var s *approval.SuspendError
+			if errors.As(err, &s) {
+				batchSuspend = s
+				cancel() // 中止后续 preflight / execute
+				return false, err
+			}
 			var doomErr *hook.DoomLoopError
 			if errors.As(err, &doomErr) {
 				return false, err // 致命守卫错误：循环层终止任务（状态 blocked）
 			}
 			return false, &ToolDeniedError{Reason: err.Error()}
 		}
+		// 守卫放行后才落日志 + 观测（挂起/拒绝的工具不产生 tool/call 日志）。
+		if err := sess.AppendToolCall(turn, call); err != nil {
+			return false, err // 日志写失败：终止任务（非拦截回填）
+		}
+		rt.Notify(agent.Event{Type: agent.EventToolCall, SessionID: sess.ID, Turn: turn, ToolCall: call})
 		return true, nil
 	}
 	execute := func(ctx context.Context, call *llm.ToolCall) (toolOutcome, error) {
@@ -357,7 +436,8 @@ func execBatchTools(ctx context.Context, rt *driver.RunContext, sess *session.Se
 			})
 		return out, err
 	}
-	return executor.Run(ctx, items, rt.MaxToolParallel, preflight, execute)
+	outs := executor.Run(bctx, items, rt.MaxToolParallel, preflight, execute)
+	return outs, batchSuspend
 }
 
 // executeTool 执行单条工具调用的钩子链：tool/pre-execute（可改写/拒绝）→
@@ -381,15 +461,105 @@ func executeTool(ctx context.Context, rt *driver.RunContext, call *llm.ToolCall,
 	return toolOutcome{result: execEv.Result, text: postEv.ResultText, err: postEv.Err}, nil
 }
 
+// saveCheckpoint 落库挂起点（M2.8，架构 v2 §3.8/§10.6）：
+//   - approval/request 事件（durable 审计观测）；
+//   - checkpoint 写入 rt.Checkpoints（含挂起轮工具批 + 审批请求 + TaskState 快照）；
+//   - 任务状态经 Session.Persistence.SaveState 落盘（跨进程 Resume 还原 Facts）。
+//
+// 未配置 rt.Checkpoints 时仅记录 approval/request 事件（SuspendError 仍冒泡，无法跨进程恢复）。
+func (d *ReActDriver) saveCheckpoint(ctx context.Context, rt *driver.RunContext, sess *session.Session, turn, step int, calls []llm.ToolCall, suspend *approval.SuspendError) error {
+	_ = sess.Append(event.SessionEventApprovalRequest, event.ApprovalRequestData{
+		ID:       string(suspend.ID),
+		ToolName: suspend.Request.ToolName,
+		Command:  suspend.Request.Command,
+		Reason:   suspend.Request.Reason,
+		Args:     suspend.Request.Args,
+		HookKind: string(suspend.HookKind),
+	})
+	if rt.Checkpoints != nil {
+		ckpt := &checkpoint.Checkpoint{
+			SessionID:       sess.ID,
+			Turn:            turn,
+			Step:            step,
+			HookKind:        suspend.HookKind,
+			Calls:           calls,
+			Request:         suspend.Request,
+			ApprovalID:      suspend.ID,
+			SuspendedCallID: suspend.CallID,
+			Decisions:       make(map[string]approval.ApprovalDecision),
+			Snapshot:        sess.State,
+			CreatedAt:       time.Now(),
+		}
+		if err := rt.Checkpoints.Save(ctx, ckpt); err != nil {
+			return fmt.Errorf("agent: save checkpoint: %w", err)
+		}
+		_ = sess.Append(event.SessionEventCheckpointSave, event.CheckpointData{
+			Turn: turn, Step: step, HookKind: string(suspend.HookKind),
+		})
+	}
+	if p := sess.Persistence; p != nil {
+		if err := p.SaveState(sess.ID, sess.State); err != nil {
+			return fmt.Errorf("agent: save state: %w", err)
+		}
+	}
+	return nil
+}
+
 // ---- 默认钩子/守卫 ----
 
 // policyGuard 将 Policy 注入单调守卫链（工具调用前裁决，不可被 hook 改写绕过）。
-func policyGuard(p driver.Policy) hook.Guard {
+// 兼承载 M2.8 异步审批：策略返回 *approval.RequiredError（需人工确认）时，
+// 走 Approval.Request → 挂起（*approval.SuspendError）/ 立即决策（Immediate）/
+// resume 决策表放行（Checkpoint.Decisions[call.ID]）。未配置 Approval 时
+// 对需确认操作 fail-closed 拒绝（保持旧版无确认器语义）。
+func policyGuard(rt *driver.RunContext) hook.Guard {
 	return func(ctx context.Context, ev *hook.HookEvent) error {
-		if ev.ToolCall == nil {
+		call := ev.ToolCall
+		if call == nil {
 			return nil
 		}
-		return p.Allow(ctx, ev.ToolCall)
+		err := rt.Policy.Allow(ctx, call)
+		if err == nil {
+			return nil
+		}
+		var reqErr *approval.RequiredError
+		if !errors.As(err, &reqErr) {
+			return err // 硬拒绝（路径越界等）
+		}
+		// 需要人工确认
+		if rt.Approval == nil {
+			return fmt.Errorf("工具 %q 需要人工确认，但未配置 Approval（fail-closed）", call.Name)
+		}
+		// resume 决策表：该调用已有回填决策 → 直接应用（不重新发起审批）
+		if ckpt := rt.ResumeCheckpoint; ckpt != nil {
+			if d, ok := ckpt.Decisions[call.ID]; ok {
+				if !d.Approved {
+					return &ToolDeniedError{Reason: fmt.Sprintf("用户拒绝执行 %s: %s", call.Name, d.Reason)}
+				}
+				return nil // 已审批放行
+			}
+		}
+		id, err := rt.Approval.Request(ctx, reqErr.Request)
+		if err != nil {
+			return err
+		}
+		// 立即决策（同步确认器适配）：直接应用、不挂起
+		if im, ok := rt.Approval.(approval.Immediate); ok {
+			if d, found := im.Decision(ctx, id); found {
+				if !d.Approved {
+					return &ToolDeniedError{Reason: "用户拒绝执行 " + call.Name}
+				}
+				return nil
+			}
+		}
+		return &approval.SuspendError{
+			ID:         id,
+			Request:    reqErr.Request,
+			CallID:     call.ID,
+			HookKind:   hook.HookToolPreExecute,
+			ReplayTurn: ev.Turn,
+			ReplayStep: ev.Step,
+		}
 	}
 }
 

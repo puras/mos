@@ -292,6 +292,27 @@ func (s *Session) AppendToolCall(turn int, call *llm.ToolCall) error {
 	})
 }
 
+// DropInterruptedForTurn 移除 RepairInterrupted 为指定 turn 合成的
+// turn/end{reason: interrupted}（M2.8 刻意挂起恢复用）：挂起轮的 turn/end 应在
+// 续跑完成时才写入，不应由崩溃恢复逻辑提前合成。调用方应仅在确认该 turn 确有
+// checkpoint（刻意挂起）时使用；崩溃恢复场景不调用。
+func DropInterruptedForTurn(s *Session, turn int) {
+	if s == nil {
+		return
+	}
+	out := make([]SessionEvent, 0, len(s.Events))
+	for _, ev := range s.Events {
+		if ev.Type == event.SessionEventTurnEnd {
+			var d event.TurnData
+			if json.Unmarshal(ev.Data, &d) == nil && d.Turn == turn && d.Reason == "interrupted" {
+				continue
+			}
+		}
+		out = append(out, ev)
+	}
+	s.Events = out
+}
+
 func (s *Session) AppendToolResult(turn int, call *llm.ToolCall, result any, text string, err error) error {
 	if call == nil {
 		return nil

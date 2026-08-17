@@ -28,6 +28,32 @@ const (
 	SessionEventReflectionStart   = "reflection/start"
 	SessionEventReflectionReview  = "reflection/review"
 	SessionEventReflectionEnd     = "reflection/end"
+
+	// ---- Agent 域（live，编排与生命周期；架构 v2 §4.2）----
+
+	// SessionEventApprovalRequest 异步审批发起（serial 决策 / emit 观测）：
+	// 钩子（tool/pre-execute 或工具内）触发 Approval.Request 后写入；后续
+	// Approval.Resolve(id, decision) 回填 decision → 驱动从 checkpoint 恢复。
+	SessionEventApprovalRequest = "approval/request"
+	// SessionEventApprovalResolve 异步审批回填（emit 观测）：决策结果落地，
+	// 不影响权威状态（驱动续跑以 checkpoint.Decision 字段为准）。
+	SessionEventApprovalResolve = "approval/resolve"
+	// SessionEventCheckpointSave checkpoint 落库（durable）：driver 在任意钩子点
+	// 抛 SuspendError 前写入；事件载荷含快照 + 钩子点 + 待定决策。
+	SessionEventCheckpointSave = "checkpoint/save"
+	// SessionEventCheckpointRestore checkpoint 恢复（durable）：Handle.Resume
+	// 加载 checkpoint 后写入，标记续跑起点（ReplayTurn/ReplayStep）。
+	SessionEventCheckpointRestore = "checkpoint/restore"
+	// SessionEventAgentCreated Agent 句柄创建（emit，Registry.Create）。
+	SessionEventAgentCreated = "agent/created"
+	// SessionEventAgentDisposed Agent 句柄释放（emit，Handle.Dispose 走 Scope.Close）。
+	SessionEventAgentDisposed = "agent/disposed"
+	// SessionEventAgentStatus Agent 状态迁移（emit）：running / idle / blocked / suspended。
+	SessionEventAgentStatus = "agent/status"
+	// SessionEventSubagentStart SubAgent 生命周期开始（M3 规划，本里程碑仅占位）。
+	SessionEventSubagentStart = "subagent/start"
+	// SessionEventAgentInbox Agent 输入入队/claim（M3 Inbox 规划，本里程碑仅占位）。
+	SessionEventAgentInbox = "agent/inbox"
 )
 
 // ---- 事件载荷（typed payload）----
@@ -147,6 +173,47 @@ type ReflectionEndData struct {
 	Iteration int    `json:"iteration"`
 	Status    string `json:"status"`
 	Detail    string `json:"detail,omitempty"`
+}
+
+// ---- M2.8 Agent 域 / Approval / Checkpoint 载荷 ----
+
+// ApprovalRequestData 异步审批发起载荷（approval/request 事件）。
+// ID 由 Approval.Request 生成，平台侧 Resolve 时回传；HookKind 指明发起位置
+// （如 tool/pre-execute），便于审计与 UI 分组。
+type ApprovalRequestData struct {
+	ID       string `json:"id"`
+	ToolName string `json:"tool_name"`
+	Command  string `json:"command"`
+	Reason   string `json:"reason"`
+	Args     string `json:"args,omitempty"`
+	HookKind string `json:"hook_kind"` // hook.HookKind 字符串值
+}
+
+// ApprovalResolveData 异步审批回填载荷（approval/resolve 事件）。
+// 仅作观测/审计；权威状态以 checkpoint.Decision 字段为准（持久化在 Store 里）。
+type ApprovalResolveData struct {
+	ID        string `json:"id"`
+	Approved  bool   `json:"approved"`
+	Reason    string `json:"reason,omitempty"`
+	DecidedBy string `json:"decided_by,omitempty"`
+}
+
+// CheckpointData checkpoint 落库/恢复事件载荷（checkpoint/save 与 checkpoint/restore 共用）。
+// 持久化由 agent/checkpoint.Store 负责；事件作为 durable 观测索引。
+type CheckpointData struct {
+	Turn       int    `json:"turn"`
+	Step       int    `json:"step"`
+	HookKind   string `json:"hook_kind"`
+	DecisionOK bool   `json:"decision_ok,omitempty"` // restore 时携带 Resolve 结果
+}
+
+// AgentHandleData Agent 句柄生命周期事件载荷（agent/created / agent/disposed / agent/status）。
+// Status 字段取值：created / running / idle / blocked / suspended / disposed。
+type AgentHandleData struct {
+	HandleID  string `json:"handle_id"`
+	SessionID string `json:"session_id"`
+	Status    string `json:"status,omitempty"` // agent/status 专用
+	Reason    string `json:"reason,omitempty"`
 }
 
 // MarshalData 将载荷序列化为 SessionEvent.Data。

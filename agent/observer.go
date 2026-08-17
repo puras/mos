@@ -35,6 +35,10 @@ const (
 	EventPlan
 	// EventReflection 评审结果（Basic Reflection）：Content 为问题摘要文本。
 	EventReflection
+	// EventResume 从 checkpoint 恢复（M2.8）：Content 为恢复说明（挂起轮续跑）。
+	EventResume
+	// EventDisposed 句柄释放（M2.8）：AgentHandle.Dispose 广播。
+	EventDisposed
 )
 
 // Event 是运行时向外广播的事件，用于流式输出、中间过程观测等。

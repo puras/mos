@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"hegq.net/mos/agent/approval"
 )
 
 // checkShell 校验 shell 命令：绝对危险拒绝 → 白名单 → 受限危险（路径受限 + 确认）。
@@ -38,20 +40,16 @@ func (p *DefaultPolicy) checkShell(ctx context.Context, argsJSON string) error {
 		if err := p.checkPathsInWorkDir(cmd); err != nil {
 			return fmt.Errorf("命令 %q 的路径超出工作目录: %w", cmd, err)
 		}
-		if p.Confirm == nil {
-			return fmt.Errorf("命令包含受限危险操作 %q，需人工确认但未配置确认器，已拒绝", bad)
+		if p.Approval == nil {
+			return fmt.Errorf("命令包含受限危险操作 %q，需人工确认但未配置 Approval，已拒绝", bad)
 		}
-		ok, err := p.Confirm.Confirm(ctx, ConfirmRequest{
+		// 异步审批（M2.8）：由驱动层 policyGuard 发起 Approval.Request（挂起 / 立即决策）。
+		return &approval.RequiredError{Request: approval.ApprovalRequest{
 			ToolName: "shell",
 			Command:  cmd,
 			Reason:   "受限危险操作: " + bad,
-		})
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return fmt.Errorf("用户拒绝执行命令 %q", cmd)
-		}
+			Args:     argsJSON,
+		}}
 	}
 	return nil
 }

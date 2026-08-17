@@ -25,6 +25,12 @@ type Persistence interface {
 	Append(sessionID string, ev SessionEvent) error
 	// Load 读取会话全部事件（按 Seq 升序）。
 	Load(sessionID string) ([]SessionEvent, error)
+	// SaveState 持久化任务状态（TaskState：目标/已验证事实/状态机，M2.8）。
+	// 崩溃恢复（RepairInterrupted 之外）与挂起-恢复时还原任务进度。实现可复用
+	// 会话后端目录，存独立文件（如 <sid>.state.json），原子写。
+	SaveState(sessionID string, st TaskState) error
+	// LoadState 读取任务状态；无记录返回 ErrNotFound。
+	LoadState(sessionID string) (TaskState, error)
 	// Close 关闭后端（刷盘/释放资源）。
 	Close() error
 }
@@ -32,7 +38,9 @@ type Persistence interface {
 // Restore 从持久化后端重放事件重建会话（架构 v2 §3.2：恢复 = 日志重放）。
 // 崩溃恢复语义（§10.3 crash recovery）：重载到孤儿 turn/start（无配对 turn/end）
 // 时不截断，追加合成 turn/end{reason: interrupted} 平衡日志。
-// 恢复后的会话可直接传给 Driver.Run 继续执行；如需继续落盘，设置 Persistence 字段。
+// 任务状态（TaskState，M2.8）若后端有持久化记录则一并恢复（目标/已验证事实/状态机）；
+// 无记录时按空状态重建。恢复后的会话可直接传给 Driver.Run 继续执行；
+// 如需继续落盘，设置 Persistence 字段。
 func Restore(p Persistence, sessionID string) (*Session, error) {
 	if p == nil {
 		return nil, fmt.Errorf("agent: restore: nil persistence")
@@ -54,7 +62,14 @@ func Restore(p Persistence, sessionID string) (*Session, error) {
 	if h.Version == 0 {
 		h.Version = sessionFormatVersion
 	}
-	return &Session{ID: sessionID, Events: events, Header: h}, nil
+	sess := &Session{ID: sessionID, Events: events, Header: h}
+	// 任务状态恢复（M2.8）：有持久化记录则覆盖默认空状态；无记录保持空（按 events 重建）。
+	if st, err := p.LoadState(sessionID); err == nil {
+		sess.State = st
+	} else if !errors.Is(err, ErrNotFound) {
+		return nil, fmt.Errorf("agent: restore: load state: %w", err)
+	}
+	return sess, nil
 }
 
 // RepairInterrupted 修复孤儿 turn/start（无配对 turn/end）：追加合成

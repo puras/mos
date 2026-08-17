@@ -10,6 +10,8 @@ import (
 	"sync"
 
 	"hegq.net/mos/agent"
+	"hegq.net/mos/agent/approval"
+	"hegq.net/mos/agent/checkpoint"
 	"hegq.net/mos/agent/event"
 	"hegq.net/mos/agent/hook"
 	"hegq.net/mos/agent/session"
@@ -81,6 +83,17 @@ type RunContext struct {
 	// 后，driver 回合 / llm 请求 / 工具执行自动打 span（model/provider 属性由平台
 	// 在模型适配器/包装层补充）。
 	Telemetry telemetry.TelemetryContext
+	// Approval 是异步审批通道（架构 v2 §3.4，对齐 PI SuspendedOperation）。
+	// 可选：nil 时 policyGuard 对需要确认的操作 fail-closed 拒绝（等价旧版无确认器行为）。
+	// 策略检查器返回 *approval.RequiredError 后由 policyGuard 发起 Approval.Request；
+	// 未实现 approval.Immediate 时驱动抛 SuspendError 挂起，平台 Resolve → Handle.Resume 续跑。
+	Approval approval.Approval
+	// Checkpoints 是 checkpoint 存储（架构 v2 §3.8，参考 LangChain checkpointer）。
+	// 可选：nil 时挂起点不落盘（SuspendError 仍冒泡，但无法跨进程恢复）。
+	Checkpoints checkpoint.Store
+	// ResumeCheckpoint 是 Handle.Resume 注入的恢复点：driver 从挂起轮直接进入
+	// 工具批量执行（跳过 LLM 调用与日志），approval guard 按 Decisions[call.ID] 查表放行。
+	ResumeCheckpoint *checkpoint.Checkpoint
 
 	// factMu 串行化审计事实写入：批量工具并发执行时多个 goroutine 同时写
 	// 同一 Session.State.Facts（auditHook 内 AddFact），锁保证无数据竞争。

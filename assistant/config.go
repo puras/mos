@@ -10,7 +10,10 @@ import (
 	"context"
 
 	"hegq.net/mos/agent"
+	"hegq.net/mos/agent/approval"
+	"hegq.net/mos/agent/checkpoint"
 	"hegq.net/mos/agent/driver"
+	"hegq.net/mos/agent/event"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/memory"
 	"hegq.net/mos/planner"
@@ -89,4 +92,24 @@ type Config struct {
 	// DoomLoopMaxRepeat Doom Loop 检测（M2.5）：相同工具连续 maxRepeat 次相同参数
 	// 调用时判定为循环，任务中断（状态 blocked）。为 0 时不检测。
 	DoomLoopMaxRepeat int
+
+	// ---- M2.8 异步审批 / Checkpoint / 持久化 ----
+
+	// Approval 异步审批通道（架构 v2 §3.4）：策略返回 *approval.RequiredError 后
+	// 由驱动层发起 Approval.Request → 挂起（SuspendError）→ 平台 Resolve → Resume 续跑。
+	// nil 时对需要确认的操作 fail-closed 拒绝。旧同步确认器经 approval.NewConfirmerAdapter
+	// 桥接为 Approval。
+	Approval approval.Approval
+	// Confirm 旧同步确认器（Deprecated: M2.8 起使用 Approval；本字段设置后自动经
+	// approval.NewConfirmerAdapter 桥接为 Approval，保留 CLI y/N 同步体验）。
+	Confirm Confirmer
+	// CheckpointStore checkpoint 存储（架构 v2 §3.8，参考 LangChain checkpointer）。
+	// nil 时挂起点不落盘（SuspendError 仍冒泡，但无法跨进程恢复）。
+	CheckpointStore checkpoint.Store
+	// Persistence 会话事件日志后端（架构 v2 §10.3，backend 可换）。nil 时会话仅内存。
+	// 配置后 NewSession 自动挂载，事件同步落盘（日志即事实）。
+	Persistence session.Persistence
+	// Bus 事件总线（Agent 域事件广播：agent/created 等）。nil 时装配层创建默认 EventBus
+	// （修复 RunContext.Bus 始终为 nil 的旧缺陷，Notify 经此广播）。
+	Bus *event.EventBus
 }

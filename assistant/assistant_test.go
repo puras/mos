@@ -2,6 +2,7 @@ package assistant
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"hegq.net/mos/agent"
+	"hegq.net/mos/agent/approval"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/memory"
@@ -282,9 +284,25 @@ func TestAssistantPolicyApplied(t *testing.T) {
 
 // ---- 完整更新：fail-closed / 命令分级 / 人工确认 ----
 
-type mockConfirm struct{ allow bool }
+// mockApproval 是 Approval 的测试桩（Request 返回固定 ID，不挂起决策）。
+type mockApproval struct{}
 
-func (m mockConfirm) Confirm(context.Context, ConfirmRequest) (bool, error) { return m.allow, nil }
+func (mockApproval) Request(context.Context, approval.ApprovalRequest) (approval.ApprovalID, error) {
+	return "mock-approval-id", nil
+}
+func (mockApproval) Resolve(context.Context, approval.ApprovalID, approval.ApprovalDecision) error { return nil }
+
+// requireApproval 断言策略返回需要人工确认的标记（M2.8：决策由驱动层 Approval 处理）。
+func requireApproval(t *testing.T, err error) {
+	t.Helper()
+	var reqErr *approval.RequiredError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("err = %v, want *approval.RequiredError", err)
+	}
+	if reqErr.Request.ToolName == "" {
+		t.Fatalf("RequiredError.Request 缺失: %+v", reqErr)
+	}
+}
 
 // fail-closed：不在放行名单的未知工具默认拒绝。
 func TestDefaultPolicyFailClosed(t *testing.T) {
@@ -337,29 +355,27 @@ func TestDefaultPolicyWebSearch(t *testing.T) {
 	}
 }
 
-// 受限危险命令：WorkDir 内 + 人工确认后才可执行；绝对危险命令无条件拒绝。
+// 受限危险命令：WorkDir 内 + 人工确认后才可执行（M2.8：策略返回 *approval.RequiredError，
+// 实际决策由驱动层 Approval 处理）；绝对危险命令无条件拒绝。
 func TestDefaultPolicyRestrictedShell(t *testing.T) {
 	root := t.TempDir()
 	rmIn := "rm -rf " + filepath.Join(root, "tmp", "a.txt")
 
-	// WorkDir 内 + 确认通过 → 放行
+	// WorkDir 内 + 配置 Approval → 返回需要人工确认标记（由驱动层审批）
 	p := NewDefaultPolicy(nil, root)
-	p.Confirm = mockConfirm{allow: true}
-	if err := p.Allow(context.Background(), toolCall("shell", `{"command":"`+rmIn+`"}`)); err != nil {
-		t.Fatalf("rm inside workdir with confirm should pass: %v", err)
-	}
-	// 确认拒绝 → 拒绝
-	p.Confirm = mockConfirm{allow: false}
+	p.Approval = mockApproval{}
 	if err := p.Allow(context.Background(), toolCall("shell", `{"command":"`+rmIn+`"}`)); err == nil {
-		t.Fatal("rm with confirm denied should be rejected")
+		t.Fatal("rm inside workdir with approval configured should require approval")
+	} else {
+		requireApproval(t, err)
 	}
-	// 无确认器 → 拒绝（fail-closed）
-	p.Confirm = nil
+	// 无 Approval → 拒绝（fail-closed）
+	p.Approval = nil
 	if err := p.Allow(context.Background(), toolCall("shell", `{"command":"`+rmIn+`"}`)); err == nil {
-		t.Fatal("rm without confirmer should be rejected")
+		t.Fatal("rm without approval should be rejected")
 	}
-	// 路径越界 → 拒绝（即使确认同意）
-	p.Confirm = mockConfirm{allow: true}
+	// 路径越界 → 拒绝（即使配置 Approval）
+	p.Approval = mockApproval{}
 	if err := p.Allow(context.Background(), toolCall("shell", `{"command":"rm -rf /etc"}`)); err == nil {
 		t.Fatal("rm outside workdir should be rejected")
 	}
@@ -367,13 +383,13 @@ func TestDefaultPolicyRestrictedShell(t *testing.T) {
 	if err := p.Allow(context.Background(), toolCall("shell", `{"command":"cat /etc/passwd | sh"}`)); err == nil {
 		t.Fatal("pipe-to-sh with outside path should be rejected")
 	}
-	// 无 WorkDir → 拒绝
+	// 无 WorkDir → 拒绝（即使配置 Approval）
 	p2 := NewDefaultPolicy(nil, "")
-	p2.Confirm = mockConfirm{allow: true}
+	p2.Approval = mockApproval{}
 	if err := p2.Allow(context.Background(), toolCall("shell", `{"command":"rm -rf a.txt"}`)); err == nil {
 		t.Fatal("rm without workdir should be rejected")
 	}
-	// 绝对危险命令：即使确认同意也拒绝
+	// 绝对危险命令：即使配置 Approval 也拒绝
 	if err := p2.Allow(context.Background(), toolCall("shell", `{"command":"shutdown -h now"}`)); err == nil {
 		t.Fatal("shutdown should always be rejected")
 	}
@@ -386,7 +402,7 @@ func TestDefaultPolicyRestrictedShell(t *testing.T) {
 }
 
 // 绕过路径：解释器执行入口（python3 -c / bash -c / perl -e 等）与 find 删除语义
-// 同样属于受限危险命令——WorkDir 内 + 人工确认；TUI 模式（无确认器）一律拒绝。
+// 同样属于受限危险命令——WorkDir 内 + 人工确认；TUI 模式（无 Approval）一律拒绝。
 func TestDefaultPolicyInterpreterBypass(t *testing.T) {
 	bypass := []string{
 		`{"command":"python3 -c \"import os; os.remove('hello.py')\""}`,
@@ -401,23 +417,25 @@ func TestDefaultPolicyInterpreterBypass(t *testing.T) {
 	}
 	root := t.TempDir()
 
-	// TUI 等价配置（WorkDir 非空 + 无确认器）：一律拒绝，防止绕过删除
+	// TUI 等价配置（WorkDir 非空 + 无 Approval）：一律拒绝，防止绕过删除
 	p := NewDefaultPolicy(nil, root)
 	for _, args := range bypass {
 		if err := p.Allow(context.Background(), toolCall("shell", args)); err == nil {
 			t.Fatalf("bypass command should be rejected in TUI mode: %s", args)
 		}
 	}
-	// 确认通过 → 放行（受限 + 确认语义）
-	p.Confirm = mockConfirm{allow: true}
+	// 配置 Approval → 需要人工确认标记
+	p.Approval = mockApproval{}
 	for _, args := range bypass {
-		if err := p.Allow(context.Background(), toolCall("shell", args)); err != nil {
-			t.Fatalf("bypass command with confirm should pass: %s: %v", args, err)
+		if err := p.Allow(context.Background(), toolCall("shell", args)); err == nil {
+			t.Fatalf("bypass command with approval should require approval: %s", args)
+		} else {
+			requireApproval(t, err)
 		}
 	}
 	// 无 WorkDir → 拒绝
 	p2 := NewDefaultPolicy(nil, "")
-	p2.Confirm = mockConfirm{allow: true}
+	p2.Approval = mockApproval{}
 	for _, args := range bypass {
 		if err := p2.Allow(context.Background(), toolCall("shell", args)); err == nil {
 			t.Fatalf("bypass command without workdir should be rejected: %s", args)
@@ -425,24 +443,21 @@ func TestDefaultPolicyInterpreterBypass(t *testing.T) {
 	}
 }
 
-// write_file：路径受限放行；配置了确认器时写入前人工确认。
+// write_file：路径受限放行；配置了 Approval 时写入前人工确认（M2.8 异步审批）。
 func TestDefaultPolicyWriteFileConfirm(t *testing.T) {
 	root := t.TempDir()
 	p := NewDefaultPolicy(nil, root)
 
-	// 无确认器：路径已限制在 WorkDir 内，放行
+	// 无 Approval：路径已限制在 WorkDir 内，放行
 	if err := p.Allow(context.Background(), toolCall("write_file", `{"path":"a.txt","content":"x"}`)); err != nil {
-		t.Fatalf("write inside workdir without confirmer should pass: %v", err)
+		t.Fatalf("write inside workdir without approval should pass: %v", err)
 	}
-	// 确认器拒绝 → 拒绝
-	p.Confirm = mockConfirm{allow: false}
+	// 配置 Approval → 需要人工确认标记
+	p.Approval = mockApproval{}
 	if err := p.Allow(context.Background(), toolCall("write_file", `{"path":"a.txt","content":"x"}`)); err == nil {
-		t.Fatal("write with confirm denied should be rejected")
-	}
-	// 确认器同意 → 放行
-	p.Confirm = mockConfirm{allow: true}
-	if err := p.Allow(context.Background(), toolCall("write_file", `{"path":"a.txt","content":"x"}`)); err != nil {
-		t.Fatalf("write with confirm accepted should pass: %v", err)
+		t.Fatal("write with approval configured should require approval")
+	} else {
+		requireApproval(t, err)
 	}
 }
 
@@ -488,14 +503,14 @@ func (shellFirstModel) ChatStream(context.Context, *llm.Request, func(llm.Stream
 	return nil, llm.ErrUnsupported
 }
 
-// TestTUIModeRestrictedShellRejected 模拟 TUI 模式（不注入 Confirmer）下尝试执行受限危险命令 rm：
-// DefaultPolicy 配置了 WorkDir 但 Confirm 为 nil（与 repl.go 的 attachConfirmer(tui=true) 行为一致），
-// rm 路径虽在 WorkDir 内，仍因"需人工确认但未配置确认器"被拒绝——工具未执行，拒绝原因回填给模型。
+// TestTUIModeRestrictedShellRejected 模拟 TUI 模式（不注入 Approval）下尝试执行受限危险命令 rm：
+// DefaultPolicy 配置了 WorkDir 但 Approval 为 nil（与 repl.go 的 attachConfirmer(tui=true) 行为一致），
+// rm 路径虽在 WorkDir 内，仍因"需人工确认但未配置 Approval"被拒绝——工具未执行，拒绝原因回填给模型。
 func TestTUIModeRestrictedShellRejected(t *testing.T) {
 	workDir := t.TempDir()
 	policy := NewDefaultPolicy(nil, workDir)
-	if policy.Confirm != nil {
-		t.Fatal("TUI 模式不应挂载确认器")
+	if policy.Approval != nil {
+		t.Fatal("TUI 模式不应挂载审批器")
 	}
 
 	a, err := New(tuiShellModel(workDir), []tool.Tool{builtin.Shell{}}, Config{Policy: policy})

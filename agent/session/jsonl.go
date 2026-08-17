@@ -94,11 +94,51 @@ func (j *JSONL) Load(sessionID string) ([]SessionEvent, error) {
 	return events, err
 }
 
+// SaveState 持久化任务状态到独立文件 <dir>/<sessionID>.state.json（M2.8）。
+// 原子写：tmp + Rename，崩溃不产生半写文件。
+func (j *JSONL) SaveState(sessionID string, st TaskState) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	b, err := json.Marshal(st)
+	if err != nil {
+		return fmt.Errorf("agent: jsonl: marshal state: %w", err)
+	}
+	path := j.statePath(sessionID)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return fmt.Errorf("agent: jsonl: write state tmp: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("agent: jsonl: rename state: %w", err)
+	}
+	return nil
+}
+
+// LoadState 读取任务状态；无记录返回 ErrNotFound。
+func (j *JSONL) LoadState(sessionID string) (TaskState, error) {
+	b, err := os.ReadFile(j.statePath(sessionID))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return TaskState{}, ErrNotFound
+		}
+		return TaskState{}, fmt.Errorf("agent: jsonl: read state: %w", err)
+	}
+	var st TaskState
+	if err := json.Unmarshal(b, &st); err != nil {
+		return TaskState{}, fmt.Errorf("agent: jsonl: unmarshal state: %w", err)
+	}
+	return st, nil
+}
+
 // Close 实现 Persistence（JSONL 无长期资源，no-op）。
 func (j *JSONL) Close() error { return nil }
 
 func (j *JSONL) path(sessionID string) string {
 	return filepath.Join(j.dir, sessionID+".jsonl")
+}
+
+func (j *JSONL) statePath(sessionID string) string {
+	return filepath.Join(j.dir, sessionID+".state.json")
 }
 
 // read 读取文件：返回事件列表与头部（文件不存在视为空会话）。

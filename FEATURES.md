@@ -1,13 +1,14 @@
 # MoS 功能说明
 
-> 生成日期：2026-08-15 ｜ 对应提交：`307063e`（v2 API 全量落地后重生成）
-> 状态：**M1 ~ M2.7 已完成**；M2.8 部分落地（Confirmer）；M2.9 / M2.10 / M3 / M4 / M5 规划中
+> 生成日期：2026-08-17 ｜ 对应提交：`5a31e28`（v2.18 M2.8 全量落地后）
+> 状态：**M1 ~ M2.8 已完成**；M2.9 / M2.10 / M3 / M4 / M5 规划中
 > 本文件按 v2 架构（`docs/architecture-v2.md`）重写，API 以 `README.md`、`docs/architecture-v2.md`、`docs/sdk-contracts.md` 为准。
 
 ## 更新记录
 
 | 日期 | 版本 | 更新内容 |
 | --- | --- | --- |
+| 2026-08-17 | v2.18 | M2.8 全量落地：异步 Approval（`agent/approval`）+ Checkpointer（`agent/checkpoint`）+ AgentHandle/Registry（`agent/handle`）+ TaskState 持久化；Confirmer 改废弃（桥接为 Approval） |
 | 2026-08-15 | v2 | 按 v2 架构重写全文件：删除 v1 API（`WithXxx` 选项 / 命令式 run / `agent.New(model, reg, ...)`）描述，改为 RunContext + LoopDriver + HookBus + 事件日志体系；补充 policy 拆分后结构 |
 
 ## 1. 项目定位
@@ -53,6 +54,9 @@ MoS 是 SDK，不参与服务化能力范畴：Web UI / API 网关 / 任务调�
 - **`agent/scope` 注册作用域**：per-agent/per-session 回收容器，按注册逆序回滚（`Close` 幂等），`On` 返回可单独撤销的 disposer（对齐 Cordis registrations are reversible）
 - **批量工具执行（并发）**：`agent/executor` 三阶段（preflight 串行决策 → 有界并发 → 按源序回填，对齐 PI `executeToolCallsParallel`）；守卫拦截集合显式失败回填；`tool.SequentialTool` 整批串行回退；`MaxToolParallel` 并发上限；审计经 `AddFact` 串行化
 - **Telemetry seam**：`agent/telemetry` 显式 span 契约（TelemetryContext/TelemetrySpan + Noop + WithSpan 回调生命周期，对齐 PI pi-telemetry）；`RunContext.Telemetry` 注入后驱动自动打 `driver.turn` / `llm.request` / `tool.execute` span；`Recorder` 内存参考实现 + `Conformance` 契约测试（平台适配器复用）
+- **异步 Approval（M2.8）**：`agent/approval`——`Approval` 接口（Request/Resolve）+ `SuspendError` 驱动挂起 + `InMemApproval`（内存通道）+ `ConfirmerAdapter`（旧同步确认器桥接，`Immediate` 接口保留 CLI y/N）；策略检查器对需确认操作返回 `*approval.RequiredError`，驱动 `policyGuard` 发起审批、批量 preflight 守卫先行日志后置、挂起整批中止（fail-closed：未配置 Approval 时需确认操作拒绝）
+- **Checkpoint 断点恢复（M2.8）**：`agent/checkpoint`——`Checkpoint` 快照（挂起轮工具批 + 审批请求 + TaskState 快照）+ `Store` seam（内存 / 文件默认后端，sqlite 等数据库由业务层注入）；`AgentHandle.Resume(decision)` 注入决策表从挂起轮续跑；`approval/request|resolve`、`checkpoint/save|restore` 事件落会话日志（durable 审计）
+- **AgentHandle / Registry（M2.8）**：`agent/handle`——create/resume/dispose 生命周期句柄 + 会话级注册表（对齐 dsh AgentRegistry）；`Resume` = 会话重放 + checkpoint 挂载 + 资源校验（`ValidateMissing`：会话事件引用的工具须存在于 RunContext.Tools）；`assistant.CreateHandle` / `assistant.Handle(sessionID)` 装配入口；`session.Persistence.SaveState/LoadState` 持久化 TaskState（目标 / 已验证事实 / 状态机）
 - **审计式任务状态（M2.1 + M2.2）**：`TaskState`（目标 / 已验证事实 / 状态机）独立于消息历史；`Auditor` 审计门只接受环境可验证事实（默认白名单只读工具，可 `Trust` 扩展），模型自述不算数
 - **fresh-context 压缩（M2.5）**：超 `KeepRecent` 触发，不切断 ToolCall-Result 对；摘要直接采用 `TaskState.Snapshot()`
 - **Doom Loop 检测（M2.5）**：相同工具 + 参数连续 N 次 → 单调守卫拦截（`DoomLoopGuard`），上下文利用率 40% 告警线事件广播
@@ -74,12 +78,13 @@ MoS 是 SDK，不参与服务化能力范畴：Web UI / API 网关 / 任务调�
   - 受限危险命令（rm / sudo / chmod / mv / kill / 解释器 `-c/-e` 入口 / find 删除语义）须 WorkDir 内 + 人工确认
   - 路径越界防护（withinDir）+ 命令前缀白名单 + fail-closed（未知工具默认拒绝）
 - `Sandbox` 执行中隔离：工作目录 jail + 超时 + 输出上限 + 进程资源限制 + 环境裁剪 + 网络控制
-- `Confirmer` 人工确认器（M2.8 轻量雏形）：CLI 纯文本 y/N 确认；未配置确认器时 fail-closed 拒绝
+- 异步人工确认（M2.8）：`agent/approval`——需确认操作由策略返回 `*approval.RequiredError`，驱动 `policyGuard` 发起 `Approval.Request` → `SuspendError` 挂起 → 平台 `Resolve` → `AgentHandle.Resume` 续跑（one-shot，默认拒绝 fail-closed）；旧 `Confirmer`（CLI y/N）经 `approval.NewConfirmerAdapter` 桥接保留（`Immediate` 立即决策，不挂起）
 
 ### 3.7 组装层（`assistant/`）
 - `assistant.New`：注入模型对象 + 工具集 + 运行配置（`assistant.Config`），nil 时用框架默认（策略 / 规划器 / 审计器 / 记忆 / 观察）
-- `DefaultPolicy`：默认安全策略（shell 白名单 + WorkDir 限制 + Confirmer 人工确认）
-- `Run` / `RunStream` 统一入口；`NewSession` 按 UUID 创建独立会话
+- `DefaultPolicy`：默认安全策略（shell 白名单 + WorkDir 限制 + 异步 Approval 人工确认）
+- `Run` / `RunStream` 统一入口；`NewSession` 按 UUID 创建独立会话（配置 Persistence 时自动挂载）
+- `CreateHandle` / `Handle(sessionID)`：M2.8 会话句柄（挂起-恢复 + 跨进程 Resume）
 
 ## 4. 架构组成
 
@@ -89,24 +94,27 @@ MoS 是 SDK，不参与服务化能力范畴：Web UI / API 网关 / 任务调�
 | `tool/` | 工具注册与执行、内置 / 扩展工具包、沙箱 |
 | `planner/` | Planner 接口与 ReAct 默认实现、装饰器 |
 | `agent/` | v2 核心：EventBus / HookBus / GuardBus / LoopDriver / Session 事件日志 / 审计 / 状态 / 压缩 / DoomLoop / 系统提示词 / RAG / 截断 |
+| `agent/approval/` | 异步审批（M2.8）：Approval 接口 / SuspendError / InMem / ConfirmerAdapter |
+| `agent/checkpoint/` | 断点快照 + Store seam（M2.8）：内存 / 文件后端 |
+| `agent/handle/` | AgentHandle / Registry 生命周期（M2.8）：create / resume / dispose + 资源校验 |
 | `memory/` | 记忆接口（Memory + Retriever 扩展点）、装饰器 |
-| `assistant/` | 组装层、默认策略（policy 三文件）、确认器 |
+| `assistant/` | 组装层、默认策略（policy 三文件）、异步审批装配、会话句柄入口 |
 
 SDK 零第三方依赖（仅依赖本地协议库 `hegq.net/mogo`）。
 
 ## 5. 完整性评估
 
 ### 5.1 对照路线图
-- ✅ **已完成（10 项）**：M1、M1.5、M1.6、M2.1 ~ M2.7；v2 架构（EventBus / HookBus / LoopDriver / Session 事件日志）已落地
-- 🔶 **部分完成（1 项）**：M2.8 仅落地 `Confirmer` 轻量雏形；`request_human_input` 工具、Checkpointer 断点恢复未实现
+- ✅ **已完成（11 项）**：M1、M1.5、M1.6、M2.1 ~ M2.8；v2 架构（EventBus / HookBus / LoopDriver / Session 事件日志）+ M2.8 异步审批 / Checkpointer / AgentHandle 已落地
 - ❌ **未开始（5 项）**：M2.9 经验记忆、M2.10 工具规模化、M3 多智能体编排、M4 生产化、M5 自我进化
 
 ### 5.2 质量现状
-- 测试：SDK 全部测试通过（agent / assistant / tool / planner / llm 等），含 llm 适配器 httptest 协议模拟
+- 测试：SDK 全部测试通过（agent / assistant / tool / planner / llm 等），含 llm 适配器 httptest 协议模拟；M2.8 新增 approval / checkpoint / handle / session 状态持久化 / 端到端挂起-恢复（含拒绝路径）测试
 
 ### 5.3 已知问题与风险
-- **v2 重构全部落地**：LoopDriver 生态（ReAct / Plan&Execute / Reflection + DriverRouter）+ SeamRegistry + 声明式配置（YAML）+ Scope + 会话持久化（JSONL）+ ConcurrentExecutor 批量执行 + Telemetry seam 已全部实现
+- **v2 重构全部落地**：LoopDriver 生态（ReAct / Plan&Execute / Reflection + DriverRouter）+ SeamRegistry + 声明式配置（YAML）+ Scope + 会话持久化（JSONL）+ ConcurrentExecutor 批量执行 + Telemetry seam + M2.8（Approval / Checkpoint / AgentHandle）已全部实现
 - **待办缺口**：token 预算上限、上下文重置与跨 Session handoff、模型分级路由、异常恢复、可恢复运行目录（M4）等仍为空
+- **M2.8 后续**：`request_human_input` 内置工具（机制已就绪，普通工具 + SuspendError）；Approval TTL 自动超时、checkpoint 加密/签名、多句柄并发恢复（业务层职责）
 - **路线图条目**：M2.9 / M2.10 / M3 条目内容详实但均为规划，实现前需按实际落地情况修订
 
 ## 6. 快速验证

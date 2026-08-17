@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"hegq.net/mos/agent/approval"
 	"hegq.net/mos/llm"
 )
 
@@ -22,13 +23,19 @@ type Checker func(ctx context.Context, args string) error
 //   - shell 命令分级防御：
 //     ① 绝对危险命令（shutdown/mkfs/dd 等）：无条件拒绝，不提供确认放行；
 //     ② 受限危险命令（rm/sudo/chmod/mv/kill/管道 shell）：路径受限在 WorkDir 内，
-//     且须经 Confirmer 人工确认后才可执行；
+//     且须经 Approval 人工确认后才可执行；
 //     ③ 普通命令：可配置命令前缀白名单（ShellAllowed）。
 //   - 未知工具默认拒绝（fail-closed）：未注册检查器的工具一律拒绝。
+//   - 人工确认改为异步 Approval（M2.8）：检查器对需确认的操作返回 *approval.RequiredError，
+//     由驱动层 policyGuard 发起 Approval.Request（挂起 / 立即决策）；未配置 Approval 时
+//     fail-closed（shell 受限拒绝，write_file 路径受限放行——保持旧版行为）。
 type DefaultPolicy struct {
-	ShellAllowed []string  // 命令前缀白名单；空表示仅基础防御
-	WorkDir      string    // 文件/受限危险命令的操作根目录；空表示受限危险命令一律拒绝
-	Confirm      Confirmer // 危险操作确认器；nil 表示无法确认，受限危险命令拒绝
+	ShellAllowed []string // 命令前缀白名单；空表示仅基础防御
+	WorkDir      string   // 文件/受限危险命令的操作根目录；空表示受限危险命令一律拒绝
+	// Approval 异步审批通道（M2.8）：检查器返回 *approval.RequiredError 后由驱动处理；
+	// nil 表示无法确认，受限危险命令 fail-closed 拒绝。旧 Confirmer 经
+	// approval.NewConfirmerAdapter 桥接为 Approval。
+	Approval approval.Approval
 
 	mu       sync.RWMutex
 	checkers map[string]Checker // 工具名 → 检查器；未注册默认拒绝（fail-closed）
@@ -84,20 +91,9 @@ func (p *DefaultPolicy) checkWrite(ctx context.Context, argsJSON string) error {
 	if err := p.checkFile(argsJSON, "path"); err != nil {
 		return err
 	}
-	// 路径已限制在 WorkDir 内，破坏面可控；配置了确认器时写入前再人工确认一次。
-	return p.confirmWrite(ctx, argsJSON)
-}
-
-// checkFileField 返回按指定参数字段做路径校验的检查器（read_file: path / find_files|grep: root）。
-func (p *DefaultPolicy) checkFileField(field string) Checker {
-	return func(_ context.Context, argsJSON string) error {
-		return p.checkFile(argsJSON, field)
-	}
-}
-
-// confirmWrite 写入前的人工确认（配置了 Confirmer 时触发；否则范围受限放行）。
-func (p *DefaultPolicy) confirmWrite(ctx context.Context, argsJSON string) error {
-	if p.Confirm == nil {
+	// 路径已限制在 WorkDir 内，破坏面可控；配置了 Approval 时写入前再人工确认一次。
+	// 未配置 Approval 时路径受限放行（保持旧版无确认器行为）。
+	if p.Approval == nil {
 		return nil
 	}
 	var args struct {
@@ -106,18 +102,19 @@ func (p *DefaultPolicy) confirmWrite(ctx context.Context, argsJSON string) error
 	if json.Unmarshal([]byte(argsJSON), &args) != nil || args.Path == "" {
 		return nil
 	}
-	ok, err := p.Confirm.Confirm(ctx, ConfirmRequest{
+	return &approval.RequiredError{Request: approval.ApprovalRequest{
 		ToolName: "write_file",
 		Command:  args.Path,
 		Reason:   "写入文件（已限制在工作目录内，执行前确认）",
-	})
-	if err != nil {
-		return err
+		Args:     argsJSON,
+	}}
+}
+
+// checkFileField 返回按指定参数字段做路径校验的检查器（read_file: path / find_files|grep: root）。
+func (p *DefaultPolicy) checkFileField(field string) Checker {
+	return func(_ context.Context, argsJSON string) error {
+		return p.checkFile(argsJSON, field)
 	}
-	if !ok {
-		return fmt.Errorf("用户拒绝写入文件 %q", args.Path)
-	}
-	return nil
 }
 
 // checkWebFetch 校验抓取协议：仅 http/https。

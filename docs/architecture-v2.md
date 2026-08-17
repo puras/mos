@@ -1,12 +1,14 @@
-# MoS 架构演进规划（v2.3）
+# MoS 架构演进规划（v2.18）
 
 > 状态：设计规划（未实施）｜ 参考：DeepSeek Harness（dsh）+ Cordis 插件框架
 > 目标：让 MoS 支持**多智能体循环类型（ReAct / Plan&Execute / Reflection）、环节可改写、提供者可替换、运行期装配**，采用 Go SDK 惯用法（编译期注册 + 运行期选择），不设向后兼容负担（未发布）。
+> 注：自 v2.17 起实施顺序 1-11 全部落地，本文档逐步从"规划"转为"落地记录 + 遗留规划"（M2.9/M2.10/M3/M4/M5）。
 
 ## 更新记录
 
 | 日期 | 版本 | 更新内容 |
 | --- | --- | --- |
+| 2026-08-17 | v2.18 | 实施：M2.8 异步审批 + Checkpointer + AgentHandle 全量落地——新包 `agent/approval`（Approval Request/Resolve + SuspendError + InMemApproval + ConfirmerAdapter/Immediate，对齐 PI SuspendedOperation）、`agent/checkpoint`（Checkpoint + Store seam：内存/文件后端，数据库由业务层注入）、`agent/handle`（AgentHandle + Registry + ValidateMissing，对齐 dsh AgentRegistry）；策略检查器改返回 `*approval.RequiredError`，policyGuard 发起审批、批量 preflight 守卫先行日志后置、挂起整批中止；`session.Persistence` 增 `SaveState/LoadState`（TaskState 持久化）、`Session.DropInterruptedForTurn`；事件目录新增 approval/request+resolve、checkpoint/save+restore、agent/created+disposed+status、subagent/start、agent/inbox；修 `RunContext.Bus` 始终 nil 缺陷（默认 EventBus）；§5.2 第 11 项落地 |
 | 2026-08-17 | v2.17 | 实施：新能力 `agent/telemetry`（Telemetry seam 契约：TelemetryContext/TelemetrySpan + Noop + WithSpan 回调生命周期 + Recorder 参考实现 + Conformance 契约测试，对齐 PI pi-telemetry）；RunContext.Telemetry 注入（nil 降级 no-op）；ReAct 驱动自动打点 driver.turn / llm.request / tool.execute span；§5.2 第 10 项落地，v2 重构 10 项全部完成 |
 | 2026-08-17 | v2.16 | 文档修正：§5.2 实施顺序第 7、8 项状态同步为已落地（PlanExecute/Reflection/DriverRouter、SeamRegistry + 声明式配置此前已提交，标记遗留为规划中） |
 | 2026-08-17 | v2.15 | 边界声明：MoS 不操作数据库——持久化只提供接口（`Persistence`）与内存/JSONL 轻量默认；sqlite/postgres 等数据库后端由业务层实现接口并注入（§1.2 边界、§3.5 示意、§10.3、§12.4、README 同步） |
@@ -68,7 +70,7 @@
 | PI 批量工具执行三阶段（preflight → 并发执行 → 按序回填）+ per-tool sequential | ✅ 已落地 | `agent/executor.Run` + ReAct 批量路径（见 3.9） |
 | PI `TelemetryContext/TelemetrySpan` 显式契约 + no-op + conformance tests | ✅ 已落地 | `agent/telemetry` + 驱动自动打点（见 3.11） |
 | PI 动态凭据 `getApiKey`（短期 OAuth 刷新） | ✅ | `CredentialResolver` seam（见 11，规划） |
-| PI `SuspendedOperation`（deferred 挂起 + missing 资源校验） | ✅ | approval 异步化 + 会话恢复资源校验（见 3.4/3.8，规划） |
+| PI `SuspendedOperation`（deferred 挂起 + missing 资源校验） | ✅ | approval 异步化 + 会话恢复资源校验（见 3.4/3.8，已落地：`SuspendError` + `agent/handle.ValidateMissing`） |
 | PI steer/followUp/nextRun 三队列 + QueueMode | ✅ | `Inbox` 三队列（见 3.10，规划） |
 | PI `pi-protocol` 权威快照 vs transient 事件原则 | ✅ 原则 | 写入 `docs/sdk-contracts.md`（平台渲染约束） |
 | PI 手动驱动（peekAction/executeAction，drive manual） | ⚠️ | 预留 driver action 事件抽象（见 5.2，可选） |
@@ -262,7 +264,11 @@ dispatch，见 §4.3），不迁入守卫。
 （`FinishReason` ∈ length / max_tokens）时，已产出的工具调用可能不完整——循环层不执行、逐个显式失败回填
 （`tool/result` 错误事件），模型下一轮看到失败原因后调整，杜绝"已声明调用但模型面无回填"的静默丢弃。
 
-**Approval（人工确认）one-shot 语义**（对齐 dsh `ctx.approval`）：确认是**一次性**的（allowed-once，同一确认不重复生效）；确认通道不可用或未回答时**默认拒绝**（fail-closed）。`approval/request` 发起 → `approval/resolve` 回填（one-shot 标记）→ 守卫放行一次。
+**Approval（人工确认）one-shot 语义**（✅ 已落地，对齐 dsh `ctx.approval` + PI `SuspendedOperation`）：确认是**一次性**的（allowed-once，同一确认不重复生效）；确认通道不可用或未回答时**默认拒绝**（fail-closed）。异步化落地（M2.8）：
+- `agent/approval`：`Approval` 接口（`Request(ctx, req) (ID, error)` + `Resolve(ctx, id, decision)`）+ `SuspendError`（driver 挂起信号）+ `InMemApproval`（内存通道）+ `ConfirmerAdapter`（旧同步确认器桥接，`Immediate` 接口保留 CLI y/N 体验）；
+- 驱动集成：策略检查器对需确认操作返回 `*approval.RequiredError`，`policyGuard` 识别后 `Approval.Request` → 抛 `SuspendError`；批量 preflight **守卫先行、日志后置**，挂起即整批中止不落日志；
+- 恢复：`approval/request` 发起 → checkpoint 落盘（`agent/checkpoint.Store`）→ 平台 `Resolve` → `AgentHandle.Resume(decision)` 注入决策表从挂起轮续跑 → 守卫按 call ID 查表放行/拒绝；
+- 事件：`approval/request` / `approval/resolve` / `checkpoint/save` / `checkpoint/restore` 均落会话日志（durable 审计）。
 
 ### 3.5 组件注册表（`SeamRegistry`）
 
@@ -316,9 +322,13 @@ func (s *Scope) On(kind HookKind, h Hook) func() // 返回 disposer
 func (s *Scope) Close()                          // 按注册逆序回滚
 ```
 
-### 3.8 Agent 生命周期（`AgentRegistry` + `AgentHandle`）
+### 3.8 Agent 生命周期（`AgentRegistry` + `AgentHandle`）——✅ 已落地（M2.8）
 
-对齐 dsh `AgentHandle`（create/resume/dispose）。`Scope` 绑定到句柄生命周期，agent 销毁时注册全部回滚：
+对齐 dsh `AgentHandle`（create/resume/dispose）。`Scope` 绑定到句柄生命周期，agent 销毁时注册全部回滚。
+落地形态（`agent/handle` 包）：`AgentHandle{ID, Session, Agent, RT, Scope, Store}` + `Registry{Create/Resume/Get/DisposeAll}`；
+`assistant.CreateHandle` / `assistant.Handle(sessionID)` 装配入口；`Resume` 路径 = 会话重放（`session.Restore`）+
+checkpoint 挂载（`rt.ResumeCheckpoint`）+ 资源校验（`ValidateMissing`：会话事件引用的工具须存在于 RunContext.Tools）。
+挂起轮续跑时移除 `RepairInterrupted` 合成的 `turn/end{interrupted}`（刻意挂起非崩溃，续跑完成才写 turn/end）。
 
 ```go
 type AgentHandle struct {
@@ -448,13 +458,14 @@ func WithSpan(ctx context.Context, tc TelemetryContext, name string, attrs map[s
 
 | 事件 | 模式 | 职责 |
 | --- | --- | --- |
-| `agent/created` / `agent/disposed` | emit | Agent 创建/销毁（AgentRegistry 生命周期） |
-| `agent/status` | emit | running / idle / blocked 状态迁移 |
+| `agent/created` / `agent/disposed` | emit | Agent 创建/销毁（AgentRegistry 生命周期，M2.8 已落地） |
+| `agent/status` | emit | running / idle / blocked 状态迁移（M2.8 已落地：resumed 等） |
 | `agent/error` | emit | 运行期错误（持久化写失败等） |
-| `agent/inbox` | emit | 输入入队/claim（Inbox 观测） |
-| `subagent/start` / `subagent/end` | emit | SubAgent 生命周期观测 |
+| `agent/inbox` | emit | 输入入队/claim（Inbox 观测，M3 规划，常量已占位） |
+| `subagent/start` / `subagent/end` | emit | SubAgent 生命周期观测（M3 规划，常量已占位） |
 | `agent/request-error` | waterfall | 模型请求失败：检测→处理→恢复（M4 异常处理） |
-| `approval/request` / `approval/resolve` | serial / emit | 人工确认发起与回填（one-shot，默认拒绝） |
+| `approval/request` / `approval/resolve` | emit | 人工确认发起与回填（M2.8 已落地：异步 one-shot + 决策回填；会话日志 durable） |
+| `checkpoint/save` / `checkpoint/restore` | emit | 挂起点落库 / 恢复点标记（M2.8 已落地：会话日志 durable） |
 
 ### 4.3 运行期钩子（live，waterfall/serial）
 
@@ -504,6 +515,11 @@ func WithSpan(ctx context.Context, tc TelemetryContext, name string, attrs map[s
 8. **`SeamRegistry` + 声明式配置加载器**（新能力，平台装配入口）——✅ 已落地
 9. **`Scope` + 会话日志持久化后端接口**（新能力）——✅ 已落地
 10. **`telemetry` seam**（span 契约 + no-op + 适配器，见 3.11）——✅ 已落地（P0）
+11. **Approval 异步化 + Checkpointer + AgentHandle**（M2.8，见 3.4/3.8）——✅ 已落地
+    - `agent/approval`（Request/Resolve + SuspendError + InMem + ConfirmerAdapter）
+    - `agent/checkpoint`（Checkpoint + Store seam：内存 / 文件 / 业务层数据库后端）
+    - `agent/handle`（AgentHandle + Registry + ValidateMissing）
+    - `session.Persistence.SaveState/LoadState`（TaskState 持久化）+ `rt.Bus` 默认 EventBus 修复
 
 ### 5.3 验收
 
@@ -550,8 +566,8 @@ README 路线图中未实现的里程碑（M2.8 ~ M5）按三类归位：**v2 �
 
 | 路线图项 | 承载机制 |
 | --- | --- |
-| M2.8 `request_human_input` 工具 + 升级策略 | 普通工具 + `tool/pre-execute` 的 **approval 环节**（对齐 dsh `ctx.approval`：钩子发起确认 → 异步回填 → 放行/拒绝） |
-| M2.8 Checkpointer（interrupt-before 断点） | `Session.Events` 日志持久化（实施顺序 8）：事件可落库，恢复 = 日志重放 |
+| M2.8 `request_human_input` 工具 + 升级策略 | ✅ 已落地：`tool/pre-execute` 审批守卫（策略返回 `*approval.RequiredError` → `Approval.Request` → 挂起）。`request_human_input` 内置工具为 follow-up（普通工具 + SuspendError，机制已就绪） |
+| M2.8 Checkpointer（interrupt-before 断点） | ✅ 已落地：`agent/checkpoint.Store`（内存/文件，数据库业务层注入）+ `AgentHandle.Resume`（会话重放 + 决策注入 + 挂起轮续跑）+ `session.Persistence.SaveState/LoadState` |
 | M3 Coordinator 路由 | `DriverRouter`（规则 + LLM 混合路由，已设计） |
 | M3 双阶段 Plan&Solve | `PlanExecuteDriver`（实施顺序 6） |
 | M3 Basic Reflection | `ReflectionDriver`（实施顺序 6） |
@@ -625,6 +641,7 @@ README 路线图中未实现的里程碑（M2.8 ~ M5）按三类归位：**v2 �
 - **crash recovery**：重载到孤儿 `turn/start`（无 `turn/end`）**不截断**，追加合成 `turn/end{reason: interrupted}` 平衡日志——✅ 已落地（`RepairInterrupted`，按 turn 号集合求差）
 - **header 分离**：format version / cwd / lineage / seed 存 `SessionHeader`，不进事件日志——✅ 已落地
 - **backend 可换**：同一 `Persistence` 接口可换后端——✅ 接口已落地（jsonl 由 SDK 内置；sqlite / postgres 等数据库后端由**业务层实现并注入**，SDK 不操作数据库）
+- **TaskState 持久化**（M2.8）：`Persistence.SaveState/LoadState`，jsonl 后端落 `<sid>.state.json`（原子写）；`Restore` 后按能力加载覆盖 `Session.State`——✅ 已落地
 
 ### 10.4 明确不借鉴（复核后确认）
 
@@ -835,8 +852,11 @@ flowchart LR
 | --- | --- | --- | --- |
 | `SubAgent` | agents-as-tools：子代理作为工具被调用；Session fork lineage（ParentID + SeedSeq） | agent/subagent（规划） | 🧱 规划中 |
 | `MCP` 适配器 | MCP 服务器接入，归一为 `tool.Tool` | agent/mcp（规划） | 🧱 规划中 |
-| `Approval` | 人工确认 one-shot 语义：发起 → 异步回填 → 放行一次；默认拒绝（fail-closed） | agent/approval（规划） | 🧱 规划中 |
-| `Confirmer` | 现有同步确认接口（CLI y/N）；v2 扩展为异步确认通道 | assistant | 🔧 现有·演进 |
+| `Approval` | 人工确认 one-shot 语义：发起（Request）→ 异步回填（Resolve）→ 放行一次；默认拒绝（fail-closed） | agent/approval | ✅ 已实现（M2.8） |
+| `SuspendError` | 驱动挂起信号：审批待决时抛错退出 Run，checkpoint 落库 | agent/approval | ✅ 已实现（M2.8） |
+| `Checkpoint` / `Store` | 断点快照 + 可换后端（内存/文件内置；数据库业务层注入） | agent/checkpoint | ✅ 已实现（M2.8） |
+| `AgentHandle` / `Registry` | create/resume/dispose 生命周期 + 会话级句柄管理 + missing 校验 | agent/handle | ✅ 已实现（M2.8） |
+| `Confirmer` | 旧同步确认接口（CLI y/N）；经 ConfirmerAdapter 桥接为 Approval（Deprecated） | assistant | 🔧 现有·废弃 |
 | `ConfirmRequest` | 确认请求载荷（待确认动作与上下文） | assistant | ✅ 现有 |
 
 ### 12.4 基础设施层（agent/event、agent/session、agent/hook、agent/seam、agent/scope、agent/inbox、agent/executor）
