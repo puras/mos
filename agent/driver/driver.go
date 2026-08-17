@@ -57,7 +57,10 @@ type RunContext struct {
 	PlanPlanner planner.PlanPlanner
 	// Reflector 是 Reflection 驱动的评审器（架构 v2 §3.3，Basic Reflection）；
 	// ReAct/PlanExecute 驱动不使用，nil 时 reflection 驱动拒绝运行。
-	Reflector         planner.Reflector
+	Reflector planner.Reflector
+	// ScriptPlanner 是 Scripted 驱动的脚本生成器（架构 v2 §3.3，PTC 模式）。
+	// ReAct/PlanExecute/Reflection 驱动不使用，nil 时 scripted 驱动拒绝运行（对齐 reflection 的 fail-closed）。
+	ScriptPlanner     planner.ScriptPlanner
 	Truncator         agent.ResultTruncator // 工具结果截断（模型可见文本瘦身）
 	Compactor         agent.Compactor       // fresh-context 压缩（两轮之间）
 	ContextBudget     int                   // 模型上下文 token 预算（利用率监控，>0 启用）
