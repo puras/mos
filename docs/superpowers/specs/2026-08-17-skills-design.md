@@ -158,6 +158,7 @@ type SkillLoadData struct {
 type SkillMeta struct {
     Name          string   `json:"name"`
     Description   string   `json:"description"`
+    SchemaVersion string   `json:"schema_version,omitempty"`
     WhenToUse     string   `json:"when_to_use,omitempty"`
     AllowedTools  []string `json:"allowed_tools,omitempty"`
     References    []string `json:"references,omitempty"`
