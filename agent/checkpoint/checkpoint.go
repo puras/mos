@@ -13,6 +13,7 @@ import (
 	"hegq.net/mos/agent/hook"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
+	"hegq.net/mos/planner"
 )
 
 // Checkpoint 是一次挂起点的不可变快照（序列化落盘，恢复时反序列化）：
@@ -38,6 +39,11 @@ type Checkpoint struct {
 
 	// Snapshot 是挂起时刻的 TaskState（已验证事实 / 状态机），resume 恢复任务进度。
 	Snapshot session.TaskState `json:"snapshot"`
+
+	// ScriptState 脚本执行状态快照（Scripted 驱动专用，可选）：
+	// 脚本 + 已完成步骤输出 + 每步状态。resume 恢复 outputs/status 续跑。
+	// 老 checkpoint（react/planexecute 等）无此字段，照常可读、恢复语义不变。
+	ScriptState *planner.ScriptState `json:"script_state,omitempty"`
 
 	CreatedAt  time.Time  `json:"created_at"`
 	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
