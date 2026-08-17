@@ -7,6 +7,7 @@
 
 | 日期 | 版本 | 更新内容 |
 | --- | --- | --- |
+| 2026-08-17 | v2.15 | 边界声明：MoS 不操作数据库——持久化只提供接口（`Persistence`）与内存/JSONL 轻量默认；sqlite/postgres 等数据库后端由业务层实现接口并注入（§1.2 边界、§3.5 示意、§10.3、§12.4、README 同步） |
 | 2026-08-16 | v2.14 | 实施：新能力 `agent/executor`（三阶段批量执行 `executor.Run`：preflight 串行决策 → 有界并发/sequential 回退 → 按源序回填，语义中立零上层依赖）；ReAct 工具路径接入批量执行（多 ToolCall 并发、拦截集合显式失败回填、`tool.SequentialTool` 整批串行回退、`RunContext.MaxToolParallel`、审计经 `AddFact` 串行化）；单调用路径统一走批量路径（N=1 特例），ToolResult 观测移至 finalize 按源序回填 |
 | 2026-08-16 | v2.13 | 实施：新能力 `agent/scope`（Scope 注册作用域：按注册逆序回滚、On 返回可单独撤销 disposer、Close 幂等、关闭后注册立即执行、并发安全）+ 会话日志持久化（`agent/session.Persistence` 接口：SaveHeader/LoadHeader/Append/Load/Close，backend 可换；`JSONL` 后端：每会话一文件、首行 header、追加写、容忍尾部半行；`Session.Append` 同步落盘 fail-fast 保"日志即事实"不变式；`Restore` 重放重建 + `RepairInterrupted` 孤儿 turn 合成 interrupted，会话不存在按空会话恢复） |
 | 2026-08-16 | v2.12 | 实施：新能力 `agent/seam`（SeamRegistry 组件注册表：按 kind+name 注册工厂、按名解析，工厂返回 any 消费端断言，注册表零上层依赖）+ `agent/config`（声明式配置：YAML → 按名解析组件 → assistant 装配）；assistant.Config 新增 `Driver`/`DriverFactory`/`PlanPlanner`/`Reflector` 按名选驱动；引入 yaml.v3 |
@@ -40,6 +41,7 @@
 
 - **不做** Cordis 式运行期插件热加载/卸载/依赖注入容器——Go 无反射 DI 生态，平台需要的是"装配时选组件"而非"运行中换插件"
 - **不做** 产品层（Web UI / API 网关 / 任务调度 / 多租户）——SaaS 平台负责（见 `docs/sdk-contracts.md`）
+- **不操作数据库**：SDK 不内置数据库驱动 / 迁移 / 连接管理；会话日志持久化只提供接口（`Persistence`）与内存 / JSONL 轻量默认实现，SQLite / Postgres 等数据库后端由业务层实现接口并注入（未注入时行为不变）
 - **未发布、无外部兼容负担**：公开 API 与数据结构可自由演进，直接按目标架构落地，不设兼容层
 - **旧实现直接废弃**：`Session.History` 快照、命令式 `run`、`WithXxx` 选项等将被新机制替代的实现，一次性废弃删除，不留双轨过渡代码
 
@@ -275,7 +277,7 @@ type SeamRegistry struct {
 	subagents    map[string]SubAgentFactory   // SubAgent 执行后端（子代理 seam）
 	mcps         map[string]MCPFactory        // MCP 服务器接入
 	attachments  map[string]AttachmentFactory // 二进制附件存储（文件上传）
-	persistence  map[string]PersistenceFactory // 会话日志持久化（jsonl/sqlite）
+	persistence  map[string]PersistenceFactory // 会话日志持久化（jsonl 内置；sqlite 等数据库后端由业务层注册注入）
 	compactors   map[string]CompactorFactory   // 压缩能力（能力 seam，Provider 可换）
 }
 
@@ -285,7 +287,7 @@ cfg := assistant.Config{
 	Sandbox: "docker",   // SeamRegistry 解析
 	Memory:  "postgres",
 	Model:   "fast/slow", // 分级路由：按任务复杂度选档
-	Persistence: "sqlite", // 会话日志持久化后端
+	Persistence: "sqlite", // 会话日志持久化后端（业务层注册的 sqlite 实现；SDK 不内置数据库）
 }
 ```
 
@@ -614,7 +616,7 @@ README 路线图中未实现的里程碑（M2.8 ~ M5）按三类归位：**v2 �
 - **flush checkpoint**：事件按批落盘（首个 pending 事件开启批处理窗口，`session/flush` 显式排空）；写失败保留事件、暂停自动重试、显式 flush 报告错误——规划中（当前为逐条同步落盘 fail-fast）
 - **crash recovery**：重载到孤儿 `turn/start`（无 `turn/end`）**不截断**，追加合成 `turn/end{reason: interrupted}` 平衡日志——✅ 已落地（`RepairInterrupted`，按 turn 号集合求差）
 - **header 分离**：format version / cwd / lineage / seed 存 `SessionHeader`，不进事件日志——✅ 已落地
-- **backend 可换**：jsonl / sqlite 实现同一 `Persistence` 接口——✅ 接口已落地（jsonl 已实现，sqlite 可后续补充）
+- **backend 可换**：同一 `Persistence` 接口可换后端——✅ 接口已落地（jsonl 由 SDK 内置；sqlite / postgres 等数据库后端由**业务层实现并注入**，SDK 不操作数据库）
 
 ### 10.4 明确不借鉴（复核后确认）
 
@@ -849,8 +851,8 @@ flowchart LR
 | `isTruncatedFinish` | 截断停止原因判定（length / max_tokens） | agent | ✅ 已实现 |
 | `llm.Response.FinishReason` | 模型停止原因透传（openai stop/length/tool_calls；anthropic end_turn/max_tokens/tool_use；gemini 小写化） | llm | ✅ 已实现 |
 | `Scope` | per-agent 注册作用域；按注册逆序回滚，`On` 返回可单独撤销的 disposer，`Close` 幂等（registrations are reversible） | agent/scope | ✅ 已实现 |
-| `Persistence` | 会话日志持久化后端接口（SaveHeader / LoadHeader / Append / Load / Close，backend 可换）；`Restore` 重放重建会话（无记录=空会话），`RepairInterrupted` 孤儿 turn 合成 interrupted | agent/session | ✅ 已实现 |
-| `JSONL` | 默认持久化后端：每会话一个 `<dir>/<sessionID>.jsonl`，首行 header + 逐行事件（追加写）；`Session.Append` 同步落盘 fail-fast，崩溃截断的尾部半行容忍跳过 | agent/session | ✅ 已实现 |
+| `Persistence` | 会话日志持久化后端接口（SaveHeader / LoadHeader / Append / Load / Close，backend 可换）；`Restore` 重放重建会话（无记录=空会话），`RepairInterrupted` 孤儿 turn 合成 interrupted。数据库后端（sqlite/postgres）由业务层实现注入，SDK 不内置 | agent/session | ✅ 已实现 |
+| `JSONL` | SDK 内置轻量默认后端（纯文件，非数据库）：每会话一个 `<dir>/<sessionID>.jsonl`，首行 header + 逐行事件（追加写）；`Session.Append` 同步落盘 fail-fast，崩溃截断的尾部半行容忍跳过 | agent/session | ✅ 已实现 |
 | `Inbox` | 输入队列 / 唤醒：异步消息入队，队列非空唤醒 driver | agent/inbox（规划） | 🧱 规划中 |
 | `ConcurrentExecutor` | 三阶段批量执行（`executor.Run`）：preflight 串行决策 → 有界并发/sequential 回退 → 按源序回填；拦截集合显式失败回填 | agent/executor | ✅ 已实现 |
 | `Observer` / `Event` / `EventType` | 观测回调与事件类型（现有事件流保留，挂到会话事件/钩子的 emit 投影） | agent | ✅ 现有（保留） |

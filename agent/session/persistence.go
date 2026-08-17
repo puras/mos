@@ -13,7 +13,8 @@ import (
 var ErrNotFound = errors.New("session not found")
 
 // Persistence 是会话事件日志持久化后端（架构 v2 §10.3，对齐 dsh SessionPersistence）：
-// backend 可换（jsonl / sqlite ...），事件日志是唯一事实来源，恢复 = 日志重放。
+// backend 可换——jsonl 由 SDK 内置（纯文件）；sqlite / postgres 等数据库后端由业务层
+// 实现本接口并注入（MoS 不操作数据库）。事件日志是唯一事实来源，恢复 = 日志重放。
 // Header 与事件日志分离存储（格式版本 / cwd / lineage / seed 不进事件流）。
 type Persistence interface {
 	// SaveHeader 写入会话头部元数据（首次落盘时调用一次）。

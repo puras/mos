@@ -158,6 +158,10 @@ sess.Persistence = j // 挂上持久化后端：此后 Append 同步落盘
 restored, err := session.Restore(j, "demo")
 ```
 
+> 边界：MoS 不操作数据库——`Persistence` 只提供接口 + 内存/JSONL 轻量默认；
+> SQLite / Postgres 等数据库后端由**业务层实现接口并注入**（如经 `agent/seam` 注册），
+> 未注入时行为不变（纯内存）。
+
 `agent/scope` 提供 per-agent/per-session 注册作用域：`On(dispose)` 注册回收器，
 生命周期结束时 `Close()` 按注册逆序统一回滚（registrations are reversible），
 返回的 disposer 可单独撤销某项注册，重复 Close 幂等：
