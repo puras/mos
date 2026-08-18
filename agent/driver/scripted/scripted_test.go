@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -203,26 +204,11 @@ func (m *mockApproval) Request(_ context.Context, _ approval.ApprovalRequest) (a
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls++
-	return approval.ApprovalID("ap-" + itoaSmall(m.calls)), nil
+	return approval.ApprovalID("ap-" + strconv.Itoa(m.calls)), nil
 }
 
 func (m *mockApproval) Resolve(_ context.Context, _ approval.ApprovalID, _ approval.ApprovalDecision) error {
 	return nil
-}
-
-// itoaSmall 是小型整数→字符串（避免测试文件引 strconv）。
-func itoaSmall(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var buf [16]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(buf[i:])
 }
 
 // TestScriptedDriverSuspendResumeEndToEnd 钉住 M2.8 脚本驱动挂起→恢复完整流：
@@ -243,7 +229,7 @@ func TestScriptedDriverSuspendResumeEndToEnd(t *testing.T) {
 
 	ap := &mockApproval{}
 	store := checkpoint.NewMemStore()
-	sess := session.NewSession("s")
+	sess := newSession("s")
 
 	plan := planner.ScriptedPlan{
 		Goal: "g",
