@@ -183,3 +183,61 @@ func TestRestoreStateDeepCopyOutputs(t *testing.T) {
 		t.Fatalf("Status[a] mutated across loads: got %q, want %q", got, "done")
 	}
 }
+
+// TestRestoreStateDeepCopyNestedOutputsMemStore 钉住 restoreState 对 Outputs 中
+// 嵌套容器（map[string]any）的深拷贝：MemStore.Load 是 cp := *ckpt 浅拷贝，路径上
+// 复用 maps 会与存储的 ScriptState 共享内存，resume 续跑时 mutate 嵌套元素会
+// 改写 checkpoint，跨进程 Resume 读到旧值。本测试走 MemStore + 嵌套 map（不走
+// JSON 反序列化的 FileStore），并 mutate Outputs["a"].(map[string]any)["k"]，
+// 然后重新 Load 断言存储值未被污染。去掉 restoreState 内的 deepCopyValue 调用
+// 后本测试必 RED（顶标量替换路径 FileStore 测试无法区分）。
+func TestRestoreStateDeepCopyNestedOutputsMemStore(t *testing.T) {
+	store := checkpoint.NewMemStore()
+	plan := &planner.ScriptedPlan{
+		Steps: []planner.ScriptStep{{ID: "a", Tool: "noop"}},
+	}
+	originalNested := map[string]any{"k": "v1"}
+	ss := &planner.ScriptState{
+		Plan: *plan,
+		Outputs: map[string]any{
+			"a": originalNested,
+		},
+		Status: map[string]string{"a": "done"},
+	}
+	ckpt := &checkpoint.Checkpoint{SessionID: "s", ScriptState: ss}
+	if err := store.Save(context.Background(), ckpt); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	loaded, err := store.Load(context.Background(), "s")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if loaded.ScriptState == nil {
+		t.Fatal("loaded ScriptState nil")
+	}
+	st := restoreState(plan, loaded.ScriptState)
+	// 续跑期 mutate 嵌套容器：必须切掉与 checkpoint 共享的引用。
+	nested, ok := st.Outputs["a"].(map[string]any)
+	if !ok {
+		t.Fatalf("Outputs[a] is not a map: %T", st.Outputs["a"])
+	}
+	nested["k"] = "mutated"
+
+	// 重新 Load：存储的 Outputs["a"]["k"] 仍应为 "v1"（深拷贝守住内存隔离）。
+	reloaded, err := store.Load(context.Background(), "s")
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	reloadedNested, ok := reloaded.ScriptState.Outputs["a"].(map[string]any)
+	if !ok {
+		t.Fatalf("reloaded Outputs[a] is not a map: %T", reloaded.ScriptState.Outputs["a"])
+	}
+	if got := reloadedNested["k"]; got != "v1" {
+		t.Fatalf("nested Outputs[a][k] mutated across loads: got %q, want %q", got, "v1")
+	}
+	// 哨兵：原 constructed map 也未被续跑侧污染（与 reloaded 不再是同一对象）。
+	if originalNested["k"] != "v1" {
+		t.Fatalf("original nested map leaked alias: got %q, want %q", originalNested["k"], "v1")
+	}
+}
