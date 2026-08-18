@@ -136,12 +136,13 @@ func (d *ScriptedDriver) Run(ctx context.Context, rt *driver.RunContext, input s
 	}
 
 	// 执行阶段（分波）
+	var report *scriptReport
 	var suspend *approval.SuspendError
 	var execErr error
 	_ = telemetry.WithSpan(ctx, rt.Telemetry, telemetry.SpanDriverTurn,
 		map[string]string{"turn": strconv.Itoa(firstTurn), "driver": "scripted"},
 		func(ctx context.Context) error {
-			_, suspend, execErr = executeWaves(ctx, rt, sess, firstTurn, &plan, st, resumeCalls)
+			report, suspend, execErr = executeWaves(ctx, rt, sess, firstTurn, &plan, st, resumeCalls)
 			return nil
 		})
 	if suspend != nil {
@@ -154,7 +155,13 @@ func (d *ScriptedDriver) Run(ctx context.Context, rt *driver.RunContext, input s
 		return "", execErr
 	}
 
-	_ = sess.Append(event.SessionEventScriptEnd, event.ScriptEndData{Turn: firstTurn, Status: "completed"})
+	// script/end 携带执行报告：每步状态 + 命名输出摘要（架构 v2 §6 契约）
+	scriptEnd := event.ScriptEndData{Turn: firstTurn, Status: "completed"}
+	if report != nil {
+		scriptEnd.Steps = report.Status
+		scriptEnd.Outputs = report.Outputs
+	}
+	_ = sess.Append(event.SessionEventScriptEnd, scriptEnd)
 	_ = sess.Append(event.SessionEventStepEnd, event.StepData{Turn: firstTurn, Step: 1})
 	_ = sess.Append(event.SessionEventTurnEnd, event.TurnData{Turn: firstTurn, Reason: "done"})
 

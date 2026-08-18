@@ -2,10 +2,12 @@ package scripted
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"hegq.net/mos/agent/driver"
+	"hegq.net/mos/agent/event"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/planner"
@@ -84,6 +86,26 @@ func TestScriptedDriverEndToEnd(t *testing.T) {
 		if !containsStr(logs, want) {
 			t.Fatalf("log missing %q: %v", want, logs)
 		}
+	}
+	// script/end 载荷含执行报告：每步状态 + 命名输出摘要（架构 v2 §6 契约）
+	var scriptEnd event.ScriptEndData
+	for _, ev := range sess.Events {
+		if ev.Type != "script/end" {
+			continue
+		}
+		if err := json.Unmarshal(ev.Data, &scriptEnd); err != nil {
+			t.Fatalf("unmarshal script/end: %v", err)
+		}
+		break
+	}
+	if scriptEnd.Steps["a"] != "done" || scriptEnd.Steps["b"] != "done" {
+		t.Fatalf("script/end Steps = %v, want a=done, b=done", scriptEnd.Steps)
+	}
+	if got := scriptEnd.Outputs["a"]; got != "result-t1" {
+		t.Fatalf("script/end Outputs[a] = %#v, want result-t1", got)
+	}
+	if got := scriptEnd.Outputs["b"]; got != "result-t2" {
+		t.Fatalf("script/end Outputs[b] = %#v, want result-t2", got)
 	}
 }
 

@@ -177,11 +177,14 @@ type ScriptStepData struct {
 	Detail string `json:"detail,omitempty"`
 }
 
-// ScriptEndData 脚本阶段结束：completed 或 failed。
+// ScriptEndData 脚本阶段结束：completed / failed + 每步状态 + 命名输出摘要（架构 v2 §6）。
+// Steps / Outputs 是脚本执行报告（scriptReport）的可观测投影，UI 与审计可直接读取。
 type ScriptEndData struct {
-	Turn   int    `json:"turn"`
-	Status string `json:"status"`
-	Detail string `json:"detail,omitempty"`
+	Turn    int               `json:"turn"`
+	Status  string            `json:"status"`
+	Detail  string            `json:"detail,omitempty"`
+	Steps   map[string]string `json:"steps,omitempty"`   // stepID → done/failed/skipped/denied
+	Outputs map[string]any    `json:"outputs,omitempty"` // stepID → 命名输出
 }
 
 // ReflectionStartData 反思循环开始（Basic Reflection）：目标 + 最大迭代次数。
