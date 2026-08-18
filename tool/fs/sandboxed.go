@@ -2,7 +2,6 @@ package fs
 
 import (
 	"context"
-	"errors"
 	"path/filepath"
 	"strings"
 )
@@ -59,4 +58,3 @@ func (s *Sandboxed) Resolve(ctx context.Context, req Request) (*Resolved, error)
 }
 
 var _ FileSystem = (*Sandboxed)(nil)
-var _ = errors.New // 占位，避免 imports 报错（本 task 暂未用）
