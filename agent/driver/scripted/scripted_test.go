@@ -3,9 +3,14 @@ package scripted
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
+	"hegq.net/mos/agent/approval"
+	"hegq.net/mos/agent/checkpoint"
 	"hegq.net/mos/agent/driver"
 	"hegq.net/mos/agent/event"
 	"hegq.net/mos/agent/session"
@@ -155,4 +160,196 @@ func containsStr(ss []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// ---- M2.8 suspend → saveCheckpoint → resume E2E ----
+
+// countedTool 记录 Execute 调用次数（钉住 "已挂起步骤不重跑" 不变量）。
+type countedTool struct {
+	name  string
+	calls atomic.Int32
+}
+
+func (c *countedTool) Name() string        { return c.name }
+func (c *countedTool) Description() string { return c.name }
+func (c *countedTool) Parameters() any     { return struct{}{} }
+func (c *countedTool) Execute(_ context.Context, _ json.RawMessage) (any, error) {
+	c.calls.Add(1)
+	return "result-" + c.name, nil
+}
+
+// requirePolicy 是按工具名触发 *approval.RequiredError 的策略（仅对指定工具名）。
+// 其他工具直接放行，模拟 "只有特定危险工具需审批" 的真实场景。
+type requirePolicy struct{ toolName string }
+
+func (p requirePolicy) Allow(_ context.Context, call *llm.ToolCall) error {
+	if call.Name == p.toolName {
+		return &approval.RequiredError{
+			Request: approval.ApprovalRequest{ToolName: call.Name, Reason: "needs approval"},
+		}
+	}
+	return nil
+}
+
+// mockApproval 是 approval.Approval 的最小内存实现：每次 Request 分配 ID。
+// 不实现 Immediate（Decision 返回 (_, false)），policyGuard 在第一轮走挂起路径。
+// resume 轮靠 rt.ResumeCheckpoint.Decisions 优先放行，Approval.Request 不再被调用。
+type mockApproval struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (m *mockApproval) Request(_ context.Context, _ approval.ApprovalRequest) (approval.ApprovalID, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls++
+	return approval.ApprovalID("ap-" + itoaSmall(m.calls)), nil
+}
+
+func (m *mockApproval) Resolve(_ context.Context, _ approval.ApprovalID, _ approval.ApprovalDecision) error {
+	return nil
+}
+
+// itoaSmall 是小型整数→字符串（避免测试文件引 strconv）。
+func itoaSmall(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [16]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
+}
+
+// TestScriptedDriverSuspendResumeEndToEnd 钉住 M2.8 脚本驱动挂起→恢复完整流：
+//   - 3 步脚本 (a → b → c)；策略对工具 a 触发 *approval.RequiredError，
+//     policyGuard 发起 Approval.Request → 无 Immediate 决策 → SuspendError；
+//   - 第一次 Run 返回 SuspendError，checkpoint 落 MemStore，工具 a 未真正执行；
+//   - 第二次 Run 注入 ResumeCheckpoint + Decisions[step:a]=allow，
+//     resume 路径跳过 LLM 调用（不重发 script/start），直接重放挂起波后
+//     续跑 b/c，最终脚本 a/b/c 均 done，tool/call+tool/result 只落一次。
+func TestScriptedDriverSuspendResumeEndToEnd(t *testing.T) {
+	aTool := &countedTool{name: "a"}
+	reg := tool.NewRegistry()
+	for _, tl := range []tool.Tool{aTool, orderTool{name: "b"}, orderTool{name: "c"}} {
+		if err := reg.Register(tl); err != nil {
+			t.Fatalf("register: %v", err)
+		}
+	}
+
+	ap := &mockApproval{}
+	store := checkpoint.NewMemStore()
+	sess := session.NewSession("s")
+
+	plan := planner.ScriptedPlan{
+		Goal: "g",
+		Steps: []planner.ScriptStep{
+			{ID: "a", Tool: "a"},
+			{ID: "b", Tool: "b", DependsOn: []string{"a"}},
+			{ID: "c", Tool: "c", DependsOn: []string{"b"}},
+		},
+	}
+	rt := &driver.RunContext{
+		Tools:         reg,
+		Planner:       planner.NewReAct(&synthModel{reply: "全部完成"}),
+		ScriptPlanner: &fakePlanner{plan: plan},
+		Policy:        requirePolicy{toolName: "a"},
+		Approval:      ap,
+		Checkpoints:   store,
+	}
+	ag := New(rt)
+
+	// ---- 第一次 Run：挂起 ----
+	_, err := ag.Run(context.Background(), sess, "g")
+	var suspendErr *approval.SuspendError
+	if !errors.As(err, &suspendErr) {
+		t.Fatalf("first Run err = %v, want SuspendError", err)
+	}
+	// 工具 a 在挂起点尚未真正执行
+	if got := aTool.calls.Load(); got != 0 {
+		t.Fatalf("after suspend: tool a Execute count = %d, want 0", got)
+	}
+	// checkpoint 落库
+	saved, loadErr := store.Load(context.Background(), "s")
+	if loadErr != nil {
+		t.Fatalf("checkpoint not saved: %v", loadErr)
+	}
+	if saved.ScriptState == nil || len(saved.Calls) == 0 {
+		t.Fatalf("checkpoint payload incomplete: ScriptState=%v Calls=%d", saved.ScriptState, len(saved.Calls))
+	}
+	// 挂起点脚本状态：step a 仍未 done（status=running，outputs 为空）
+	if got := saved.ScriptState.Status["a"]; got == "done" {
+		t.Fatalf("checkpoint ScriptState.Status[a] = %q, want non-done (still in-flight)", got)
+	}
+
+	// ---- 第二次 Run：从 checkpoint 恢复 ----
+	saved.Decisions = map[string]approval.ApprovalDecision{
+		"step:a": {Approved: true, DecidedBy: "test"},
+	}
+	rt.ResumeCheckpoint = saved
+
+	reply, err := ag.Run(context.Background(), sess, "g")
+	if err != nil {
+		t.Fatalf("resume Run: %v", err)
+	}
+	if !strings.Contains(reply, "全部完成") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+
+	// 工具 a 跨两次 Run 仅调用一次（resume 不重放已完成/已挂起步骤）
+	if got := aTool.calls.Load(); got != 1 {
+		t.Fatalf("tool a Execute count across both runs = %d, want 1", got)
+	}
+
+	// script/start 仅在首次 Run 发出（resume 不重发）
+	var scriptStarts int
+	for _, ev := range sess.Events {
+		if ev.Type == event.SessionEventScriptStart {
+			scriptStarts++
+		}
+	}
+	if scriptStarts != 1 {
+		t.Fatalf("script/start count = %d, want 1 (resume should not re-emit)", scriptStarts)
+	}
+
+	// script/end Steps 全部 done；Outputs 含三步命名结果
+	var scriptEnd event.ScriptEndData
+	var foundEnd bool
+	for _, ev := range sess.Events {
+		if ev.Type != event.SessionEventScriptEnd {
+			continue
+		}
+		if err := json.Unmarshal(ev.Data, &scriptEnd); err != nil {
+			t.Fatalf("unmarshal script/end: %v", err)
+		}
+		foundEnd = true
+	}
+	if !foundEnd {
+		t.Fatal("script/end not found after resume")
+	}
+	for _, id := range []string{"a", "b", "c"} {
+		if got := scriptEnd.Steps[id]; got != "done" {
+			t.Fatalf("script/end Steps[%q] = %q, want done", id, got)
+		}
+	}
+	for _, id := range []string{"a", "b", "c"} {
+		if _, ok := scriptEnd.Outputs[id]; !ok {
+			t.Fatalf("script/end Outputs[%q] missing (have %v)", id, scriptEnd.Outputs)
+		}
+	}
+
+	// checkpoint/restore 事件落在 resume 路径
+	var restoreCount int
+	for _, ev := range sess.Events {
+		if ev.Type == event.SessionEventCheckpointRestore {
+			restoreCount++
+		}
+	}
+	if restoreCount != 1 {
+		t.Fatalf("checkpoint/restore count = %d, want 1", restoreCount)
+	}
 }
