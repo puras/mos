@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -135,6 +136,7 @@ func (a *defaultSystemAssembler) Assemble(ctx context.Context, sess *session.Ses
 		add(SlotSkills, "技能清单", renderSkills(a.skills))
 		// 写 skill/load 事件（durable）：首次扫描后写入一次，把全部 Skill frontmatter
 		// 摘要落 Session Event Log（与 approval/checkpoint 事件同等地位）。
+		// 事件落库失败向上抛（fail-fast），与 session.Restore 一致。
 		metas := make([]event.SkillMeta, 0, len(a.skills))
 		for _, s := range a.skills {
 			metas = append(metas, event.SkillMeta{
@@ -144,7 +146,9 @@ func (a *defaultSystemAssembler) Assemble(ctx context.Context, sess *session.Ses
 				Paths: s.Paths, Source: s.Source, UserInvocable: s.UserInvocable,
 			})
 		}
-		_ = sess.Append(event.SessionEventSkillLoad, event.MarshalData(event.SkillLoadData{Skills: metas}))
+		if err := sess.Append(event.SessionEventSkillLoad, event.MarshalData(event.SkillLoadData{Skills: metas})); err != nil {
+			return out, fmt.Errorf("system assembler: append skill/load: %w", err)
+		}
 	}
 	// 历史摘要：默认关闭（Compactor 已注入消息历史），显式启用时取自 TaskState 快照
 	add(SlotSummary, "历史摘要", sess.State.Snapshot())

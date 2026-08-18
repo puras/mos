@@ -193,7 +193,7 @@ type SkillDeactivateData struct {
 ```
 以下技能按需触发（用 activate_skill 工具激活；激活后正文 + references 路径返回给你）：
 
-可用技能（命中当前路径）：
+可用技能：
 - git-commit-helper: 辅助提交 Git commit（*.go）
 - proto-migration: proto 文件迁移（**/*.proto）
 
