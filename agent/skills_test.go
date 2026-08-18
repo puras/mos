@@ -173,11 +173,48 @@ func TestRenderSkills(t *testing.T) {
 	if !strings.Contains(got, "web-debug") || !strings.Contains(got, "排查抓取失败") {
 		t.Fatalf("render = %q", got)
 	}
-	if !strings.Contains(got, "read_file") || !strings.Contains(got, "懒加载") {
-		t.Fatalf("render should mention lazy loading: %q", got)
+	// 无 paths 字段视为全命中：只渲染可用技能段，且引导用 activate_skill 懒加载
+	if !strings.Contains(got, "可用技能") || !strings.Contains(got, "activate_skill") {
+		t.Fatalf("render should mention activate_skill & matched section: %q", got)
+	}
+	if strings.Contains(got, "未命中路径") {
+		t.Fatalf("render = %q, want no fallback section", got)
 	}
 	if !strings.Contains(got, "- review") {
 		t.Fatalf("render = %q", got)
+	}
+}
+
+func TestRenderSkills_SplitMatched(t *testing.T) {
+	matched := Skill{Name: "git", Description: "git helper", PathMatch: true}
+	unmatched := Skill{Name: "deploy", Description: "deploy helper", PathMatch: false, Paths: []string{"*.sh"}}
+	out := renderSkills([]Skill{matched, unmatched})
+
+	if !strings.Contains(out, "可用技能") {
+		t.Errorf("expected '可用技能' marker, got: %s", out)
+	}
+	if !strings.Contains(out, "- git") {
+		t.Errorf("expected matched skill in available section, got: %s", out)
+	}
+	if !strings.Contains(out, "未命中路径") {
+		t.Errorf("expected '未命中路径' marker, got: %s", out)
+	}
+	if !strings.Contains(out, "- deploy") {
+		t.Errorf("expected unmatched skill in fallback section, got: %s", out)
+	}
+}
+
+func TestRenderSkills_NoPaths_AllMatched(t *testing.T) {
+	s1 := Skill{Name: "a", Description: "A"}
+	s2 := Skill{Name: "b", Description: "B"}
+	out := renderSkills([]Skill{s1, s2})
+
+	// 无 paths 字段视为全命中
+	if strings.Contains(out, "未命中路径") {
+		t.Errorf("expected no fallback section, got: %s", out)
+	}
+	if !strings.Contains(out, "- a") || !strings.Contains(out, "- b") {
+		t.Errorf("expected both skills, got: %s", out)
 	}
 }
 

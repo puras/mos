@@ -127,19 +127,43 @@ func extractFrontmatter(b []byte) []byte {
 	return []byte(rest[:end])
 }
 
-// renderSkills 将技能清单渲染为懒加载目录文本（注入系统提示词的技能槽位）。
-// 提示模型按需触发，正文经 read_file 读取。
+// renderSkills 把技能清单渲染为两段：
+// - 可用技能（命中当前 working dir 的 paths glob）
+// - 未命中路径（paths 未匹配，activate_skill 仍可手动调用）
+// 无 paths 字段视为全命中（不渲染 fallback 段）。
 func renderSkills(skills []Skill) string {
-	var b strings.Builder
-	b.WriteString("以下技能按需触发（技能正文与引用文件经 read_file 懒加载读取）：\n")
+	var matched, unmatched []Skill
 	for _, s := range skills {
-		b.WriteString("- ")
-		b.WriteString(s.Name)
-		if d := strings.TrimSpace(s.Description); d != "" {
-			b.WriteString(": ")
-			b.WriteString(d)
+		if s.PathMatch || len(s.Paths) == 0 {
+			matched = append(matched, s)
+		} else {
+			unmatched = append(unmatched, s)
 		}
-		b.WriteString("\n")
+	}
+	var b strings.Builder
+	b.WriteString("以下技能按需触发（用 activate_skill 工具激活；激活后正文 + references 路径返回给你）：\n")
+	if len(matched) > 0 {
+		b.WriteString("\n可用技能：\n")
+		for _, s := range matched {
+			writeSkillLine(&b, s)
+		}
+	}
+	if len(unmatched) > 0 {
+		b.WriteString("\n未命中路径（模型可手动 activate_skill 调用）：\n")
+		for _, s := range unmatched {
+			writeSkillLine(&b, s)
+		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// writeSkillLine 写入单条技能行：`- name: description`。
+func writeSkillLine(b *strings.Builder, s Skill) {
+	b.WriteString("- ")
+	b.WriteString(s.Name)
+	if d := strings.TrimSpace(s.Description); d != "" {
+		b.WriteString(": ")
+		b.WriteString(d)
+	}
+	b.WriteString("\n")
 }

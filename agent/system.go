@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 
+	"hegq.net/mos/agent/event"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 )
@@ -132,6 +133,18 @@ func (a *defaultSystemAssembler) Assemble(ctx context.Context, sess *session.Ses
 	}
 	if len(a.skills) > 0 {
 		add(SlotSkills, "技能清单", renderSkills(a.skills))
+		// 写 skill/load 事件（durable）：首次扫描后写入一次，把全部 Skill frontmatter
+		// 摘要落 Session Event Log（与 approval/checkpoint 事件同等地位）。
+		metas := make([]event.SkillMeta, 0, len(a.skills))
+		for _, s := range a.skills {
+			metas = append(metas, event.SkillMeta{
+				Name: s.Name, Description: s.Description,
+				SchemaVersion: s.SchemaVersion, WhenToUse: s.WhenToUse,
+				AllowedTools: s.AllowedTools, References: s.References,
+				Paths: s.Paths, Source: s.Source, UserInvocable: s.UserInvocable,
+			})
+		}
+		_ = sess.Append(event.SessionEventSkillLoad, event.MarshalData(event.SkillLoadData{Skills: metas}))
 	}
 	// 历史摘要：默认关闭（Compactor 已注入消息历史），显式启用时取自 TaskState 快照
 	add(SlotSummary, "历史摘要", sess.State.Snapshot())
