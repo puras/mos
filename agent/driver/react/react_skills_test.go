@@ -2,11 +2,14 @@ package react
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"hegq.net/mos/agent"
+	"hegq.net/mos/agent/event"
 	"hegq.net/mos/agent/hook"
+	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 )
 
@@ -47,4 +50,47 @@ func TestSkillAllowListGuard_NoSubset_Noop(t *testing.T) {
 	if err := guard(ctx, ev); err != nil {
 		t.Errorf("expected no-op without subset, got: %v", err)
 	}
+}
+
+// TestEmitSkillDeactivate_WritesEvent 验证 ctx 有激活 Skill 时 emitSkillDeactivate
+// 写 skill/deactivate 事件到 Session Event Log。
+func TestEmitSkillDeactivate_WritesEvent(t *testing.T) {
+	sess := session.NewSession("test-deactivate")
+	ctx := agent.WithActivatedSkills(context.Background(), []agent.Skill{
+		{Name: "git", Description: "git helper"},
+		{Name: "deploy", Description: "deploy helper"},
+	})
+
+	emitSkillDeactivate(ctx, sess)
+
+	if got := lastSkillDeactivateNames(sess); len(got) != 2 || got[0] != "git" || got[1] != "deploy" {
+		t.Errorf("lastSkillDeactivateNames = %v, want [git deploy]", got)
+	}
+}
+
+// TestEmitSkillDeactivate_NoActivatedSkills 验证 ctx 无激活 Skill 时 no-op。
+func TestEmitSkillDeactivate_NoActivatedSkills(t *testing.T) {
+	sess := session.NewSession("test-deactivate-noop")
+
+	emitSkillDeactivate(context.Background(), sess)
+
+	if got := lastSkillDeactivateNames(sess); len(got) != 0 {
+		t.Errorf("expected no event, got %v", got)
+	}
+}
+
+// lastSkillDeactivateNames 扫 Session.Events 提取最后一条 skill/deactivate 的 Names。
+func lastSkillDeactivateNames(sess *session.Session) []string {
+	var names []string
+	for _, e := range sess.Events {
+		if e.Type != event.SessionEventSkillDeactivate {
+			continue
+		}
+		var d event.SkillDeactivateData
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			continue
+		}
+		names = d.Names
+	}
+	return names
 }
