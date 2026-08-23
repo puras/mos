@@ -112,6 +112,29 @@ d, err := r.Select(ctx, input, sess)
 ag := driver.New(rt, d)
 ```
 
+### 脚本化编排（Scripted Orchestration）
+
+`agent/driver/scripted` 提供 **PTC（Programmatic Tool Calling）** 编排：模型产依赖 DAG 脚本 →
+分波有界并发执行（纯工具调用）→ 合成最终回复，全程 **2 次模型调用**。替代长程 ReAct 的
+"模型每步重决策"循环，把多步并行性下放给运行时。脚本经确定性校验（依赖环 / 工具存在 /
+参数名 / 步数上限），校验不过直接拒运行（fail-closed）。共用 `agent/execpath` 通道：
+Policy / Sandbox / Auditor / Doom Loop 与 ReAct 批量路径一致。
+
+```go
+rt := &driver.RunContext{
+	Tools:         reg,
+	Planner:       planner.NewReAct(model),   // 合成轮决策器
+	ScriptPlanner: planner.NewScript(model),  // 脚本规划器（PTC）
+}
+a := scripted.New(rt) // 模型写脚本 → 分波并发执行 → 合成回复（共 2 次模型调用）
+```
+
+**适用判据**：多步可并行 / 步骤间有显式依赖（如"先读再写"）/ 流程可静态表达；
+`WithRule("批量", planner.DriverScripted)` 等显式关键词路由，opt-in（默认不启用）。
+**M2.8 审批断点**：步骤触发 `*approval.RequiredError` 时整批挂起（SuspendError）→
+checkpoint 携带 `ScriptState`（Plan + Outputs + Status）落库 → 平台 Resolve → Resume
+续跑，已完成步骤不重跑。
+
 ### 声明式配置装配（YAML → Agent）
 
 `agent/config` 提供平台装配入口：组件经 `agent/seam` 按名注册后，仅凭 YAML 即可装配
@@ -342,6 +365,8 @@ MoS 现架构已内嵌图概念，Graph Engineering 是显式化而非重构：
 - **生命周期命名 = 图词汇**：`Thread` 已是"DAG 节点路径"，`Session` 可压缩可分叉
 
 图编排的使用判据（LangGraph 的 earns-its-keep）：**分支**（Branching）、**并行**（Parallelism）、**持久性**（Durability，崩溃后可恢复）、**可审计性**（Auditability，逐步解释）。MoS 的单任务顺序循环不满足判据时保持现状；满足时（M3 多智能体、LLMCompiler 并行 DAG）才引入显式图边界——图是可选编排层，不是默认架构。
+
+> LLMCompiler 的单智能体先行版已落地为 `agent/driver/scripted`（脚本化编排，2026-08）；M3 的 LLMCompiler 在此基础上做多智能体化与更完整的 DAG 控制流。
 
 ### Audit Gate：审计式任务状态
 

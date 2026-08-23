@@ -53,6 +53,7 @@ MoS 是 SDK，不参与服务化能力范畴：Web UI / API 网关 / 任务调�
 - **会话日志持久化**：`session.Persistence` 后端接口（backend 可换）+ `JSONL` 实现（每会话一文件、追加写、容忍尾部半行）；`Session.Append` 同步落盘 fail-fast；`Restore` 重放重建 + 孤儿 turn 合成 `interrupted`（崩溃恢复，不截断）
 - **`agent/scope` 注册作用域**：per-agent/per-session 回收容器，按注册逆序回滚（`Close` 幂等），`On` 返回可单独撤销的 disposer（对齐 Cordis registrations are reversible）
 - **批量工具执行（并发）**：`agent/executor` 三阶段（preflight 串行决策 → 有界并发 → 按源序回填，对齐 PI `executeToolCallsParallel`）；守卫拦截集合显式失败回填；`tool.SequentialTool` 整批串行回退；`MaxToolParallel` 并发上限；审计经 `AddFact` 串行化
+- **脚本化编排（PTC）**：`agent/driver/scripted`——模型产依赖 DAG 脚本 → 分波有界并发执行（纯工具调用）→ 合成最终回复（共 2 次模型调用）；脚本校验 fail-closed（依赖环 / 工具存在 / 参数名 / 步数上限）；M2.8 审批断点（checkpoint 携带 ScriptState）；复用 execpath 共享执行通道
 - **Telemetry seam**：`agent/telemetry` 显式 span 契约（TelemetryContext/TelemetrySpan + Noop + WithSpan 回调生命周期，对齐 PI pi-telemetry）；`RunContext.Telemetry` 注入后驱动自动打 `driver.turn` / `llm.request` / `tool.execute` span；`Recorder` 内存参考实现 + `Conformance` 契约测试（平台适配器复用）
 - **异步 Approval（M2.8）**：`agent/approval`——`Approval` 接口（Request/Resolve）+ `SuspendError` 驱动挂起 + `InMemApproval`（内存通道）+ `ConfirmerAdapter`（旧同步确认器桥接，`Immediate` 接口保留 CLI y/N）；策略检查器对需确认操作返回 `*approval.RequiredError`，驱动 `policyGuard` 发起审批、批量 preflight 守卫先行日志后置、挂起整批中止（fail-closed：未配置 Approval 时需确认操作拒绝）
 - **Checkpoint 断点恢复（M2.8）**：`agent/checkpoint`——`Checkpoint` 快照（挂起轮工具批 + 审批请求 + TaskState 快照）+ `Store` seam（内存 / 文件默认后端，sqlite 等数据库由业务层注入）；`AgentHandle.Resume(decision)` 注入决策表从挂起轮续跑；`approval/request|resolve`、`checkpoint/save|restore` 事件落会话日志（durable 审计）
