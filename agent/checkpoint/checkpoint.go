@@ -21,9 +21,9 @@ import (
 //   - Request：触发挂起的审批请求（审计 / 平台展示）；
 //   - SuspendedCallID + Decisions：resume 注入的决策表（approval guard 按 call ID 查表放行）。
 type Checkpoint struct {
-	SessionID string `json:"session_id"`
-	Turn      int    `json:"turn"`
-	Step      int    `json:"step"`
+	SessionID string        `json:"session_id"`
+	Turn      int           `json:"turn"`
+	Step      int           `json:"step"`
 	HookKind  hook.HookKind `json:"hook_kind"`
 
 	// Calls 是挂起轮的工具调用批（来自 assistant/message 的 ToolCalls）。

@@ -135,55 +135,6 @@ func TestExecuteWavesOrderAndSkip(t *testing.T) {
 	}
 }
 
-// TestRestoreStateDeepCopyOutputs 钉住 Task 5 的有意设计选择（Task 3 复审遗留）：
-// MemStore.Load 返回浅拷贝（cp := *ckpt），恢复路径若直接复用原 maps，将与存储的
-// ScriptState 共享内存。resume 续跑时 mutate outputs/status 会改写 checkpoint，
-// 跨进程 Resume 读取旧值时丢状态。restoreState 必须深拷贝 Outputs 与 Status。
-//
-// 走 FileStore（真实 JSON 路径）保证读路径与会话持载路径一致。
-func TestRestoreStateDeepCopyOutputs(t *testing.T) {
-	dir := t.TempDir()
-	store, err := checkpoint.NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
-	plan := &planner.ScriptedPlan{
-		Steps: []planner.ScriptStep{{ID: "a", Tool: "noop"}},
-	}
-	ss := &planner.ScriptState{
-		Plan:    *plan,
-		Outputs: map[string]any{"a": "v1"},
-		Status:  map[string]string{"a": "done"},
-	}
-	ckpt := &checkpoint.Checkpoint{SessionID: "s", ScriptState: ss}
-	if err := store.Save(context.Background(), ckpt); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-
-	loaded, err := store.Load(context.Background(), "s")
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if loaded.ScriptState == nil {
-		t.Fatal("loaded ScriptState nil")
-	}
-	st := restoreState(plan, loaded.ScriptState)
-	// 续跑期 mutate 状态
-	st.Outputs["a"] = "v2"
-	st.Status["a"] = "failed"
-
-	reloaded, err := store.Load(context.Background(), "s")
-	if err != nil {
-		t.Fatalf("reload: %v", err)
-	}
-	if got := reloaded.ScriptState.Outputs["a"]; got != "v1" {
-		t.Fatalf("Outputs[a] mutated across loads: got %#v, want %q", got, "v1")
-	}
-	if got := reloaded.ScriptState.Status["a"]; got != "done" {
-		t.Fatalf("Status[a] mutated across loads: got %q, want %q", got, "done")
-	}
-}
-
 // TestRestoreStateDeepCopyNestedOutputsMemStore 钉住 restoreState 对 Outputs 中
 // 嵌套容器（map[string]any）的深拷贝：MemStore.Load 是 cp := *ckpt 浅拷贝，路径上
 // 复用 maps 会与存储的 ScriptState 共享内存，resume 续跑时 mutate 嵌套元素会

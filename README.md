@@ -118,7 +118,8 @@ ag := driver.New(rt, d)
 分波有界并发执行（纯工具调用）→ 合成最终回复，全程 **2 次模型调用**。替代长程 ReAct 的
 "模型每步重决策"循环，把多步并行性下放给运行时。脚本经确定性校验（依赖环 / 工具存在 /
 参数名 / 步数上限），校验不过直接拒运行（fail-closed）。共用 `agent/execpath` 通道：
-Policy / Sandbox / Auditor / Doom Loop 与 ReAct 批量路径一致。
+Policy / Sandbox / Auditor 与 ReAct 批量路径一致（Doom Loop 守卫按设计**不**注册——
+脚本中重复同工具调用是合法语义）。
 
 ```go
 rt := &driver.RunContext{
