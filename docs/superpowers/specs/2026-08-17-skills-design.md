@@ -111,14 +111,17 @@ type SkillActivationResult struct {
 1. 解析 args（`tool.Parse` 自动校验 `name` 必需）
 2. 在 `t.Skills` 中按 `name` 查找；未找到返回错误
 3. 写事件 `skill/activate`（durable）载荷 `SkillActivateData`
-4. ctx 注入 `withActivatedSkills(ctx, append(existing, skill))`
-5. ctx 注入 `withToolSubset(ctx, union(existing, skill.AllowedTools))`
+4. sess 注入：`agent.AddTurnSkill(sess, skill)` — 把 Skill 投影为
+   `sess.TurnSkills`（最小切片 session.ActivatedSkill）并合并 AllowedTools 到
+   `sess.TurnToolSubset`（Set semantics，去重保序）
+5. （保留步骤位）sess 替代 ctx：本轮工具白名单 = `sess.TurnToolSubset`
 6. 返回 `SkillActivationResult`（body = markdown body + references 路径列表）
 
 ### 5.4 并发与互斥
 
 - **同时激活多个 Skill**：`AllowedTools` 取并集；每个 Skill 各自写 `skill/activate` 事件
-- **轮结束清空**：`react.runTurnInner` 末尾 emit `skill/deactivate` 载荷本轮所有 name
+- **轮结束清空**：`react.runTurnInner` 末尾 emit `skill/deactivate` 载荷本轮所有 name，
+  并清零 `sess.TurnSkills` / `sess.TurnToolSubset`（防御性轮首 reset 在 runTurnInner 顶部再次兜底）
 
 ## 6. 工具子集硬限制
 
@@ -209,22 +212,28 @@ type SkillDeactivateData struct {
 
 ### 9.1 `react.runTurnInner`
 
-- 每轮开始：`activatedSkills = nil`，`toolSubset = nil`（ctx 清零）
-- `activate_skill` 工具执行后：ctx 累积
+- 每轮开始：`sess.TurnSkills = nil`，`sess.TurnToolSubset = nil`（防御性 reset，
+  避免上一轮 early-return 路径未走 emitSkillDeactivate 导致状态泄漏）
+- `activate_skill` 工具执行后：`agent.AddTurnSkill(sess, target)` 累积
 - 每轮结束（成功 / SuspendError / 失败）：
   ```go
-  if len(activatedSkills) > 0 {
+  if len(sess.TurnSkills) > 0 {
       sess.Append(event.SkillDeactivate, SkillDeactivateData{Names: ...})
+      sess.TurnSkills = nil
+      sess.TurnToolSubset = nil
   }
   ```
 
 ### 9.2 `executeTool` 前置校验
 
 ```go
-if subset := toolSubsetFromCtx(ctx); subset != nil && !contains(subset, call.Name) {
+if subset := agent.ToolSubsetFromSession(rt.Session); subset != nil && !contains(subset, call.Name) {
     return tool.Result{Error: fmt.Errorf("skill allow-list blocks tool %q", call.Name)}
 }
 ```
+
+注：`skillAllowListGuard` 签名在 driver 层升级为 `skillAllowListGuard(rt *driver.RunContext) hook.Guard`，
+捕获 rt 后闭包内访问 `rt.Session.TurnToolSubset`（hook.Guard 仅接受 ctx，无法传入 rt）。
 
 ### 9.3 `policyGuard` 不变
 

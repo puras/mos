@@ -67,10 +67,11 @@ func InstallDefaults(rt *driver.RunContext) {
 	if rt.Policy != nil {
 		rt.Guards.Add(policyGuard(rt))
 	}
-	// 技能允许工具白名单：激活 Skill 时通过 agent.WithToolSubset 把 allowed-tools
-	// 写入 ctx（与 policyGuard 同样在 preflight 串行裁决，不可改写绕过）；
-	// 未在白名单中的工具被拦截并显式失败回填到模型面，驱动后续轮换技能。
-	rt.Guards.Add(skillAllowListGuard())
+	// 技能允许工具白名单：激活 Skill 时通过 agent.AddTurnSkill 把 allowed-tools
+	// 写入 sess.TurnToolSubset（与 policyGuard 同样在 preflight 串行裁决，
+	// 不可改写绕过）；未在白名单中的工具被拦截并显式失败回填到模型面，
+	// 驱动后续轮换技能。
+	rt.Guards.Add(skillAllowListGuard(rt))
 }
 
 // NewReAct 返回默认装配的 ReAct 驱动，注册默认钩子/守卫 + Doom Loop 守卫。
@@ -174,6 +175,11 @@ func (d *ReActDriver) runTurn(ctx context.Context, rt *driver.RunContext, sess *
 func (d *ReActDriver) runTurnInner(ctx context.Context, rt *driver.RunContext, sess *session.Session, turn int, history []session.InternalMessage) (string, bool, error) {
 	const step = 1
 
+	// 防御性轮首清零：上一轮若经 early-return 路径未走 emitSkillDeactivate
+	//（如 max_turns 截断），本轮起始仍要拿到空状态，避免 TurnSkills / TurnToolSubset 跨轮泄漏。
+	sess.TurnSkills = nil
+	sess.TurnToolSubset = nil
+
 	// M2.8 resume：从挂起轮直接进入工具批量执行（跳过 LLM 调用与日志重放）。
 	if ckpt := rt.ResumeCheckpoint; ckpt != nil && ckpt.Turn == turn {
 		return d.runResumeTurn(ctx, rt, sess, turn, step, ckpt)
@@ -262,22 +268,26 @@ func (d *ReActDriver) runTurnInner(ctx context.Context, rt *driver.RunContext, s
 }
 
 // emitSkillDeactivate 在轮结束统一写 skill/deactivate 事件：把本轮激活的 Skill
-// 清单（ctx.ActivatedSkillsFromCtx）作为 Names 字段落库；ctx 无激活 Skill 时为 no-op。
+// 清单（sess.TurnSkills 的 Name 字段）作为 Names 字段落库；无激活 Skill 时为 no-op。
 // 调用方负责在 runTurnInner 三处正常 return 之前调用——是 M3 Skills 强化"轮结束
-// 取消激活态"的统一观测点，对齐架构 v2 §3.5 Skills 生命周期。
+// 取消激活态"的统一观测点，对齐架构 v2 §3.5 Skills 生命周期。同时清零 TurnSkills
+// + TurnToolSubset（防御性：与 runTurnInner 轮首清零呼应，确保即使 early-return
+// 路径也下轮重新累积）。
 func emitSkillDeactivate(ctx context.Context, sess *session.Session) {
 	if sess == nil {
 		return
 	}
-	sk := agent.ActivatedSkillsFromCtx(ctx)
-	if len(sk) == 0 {
+	if len(sess.TurnSkills) == 0 {
 		return
 	}
-	names := make([]string, len(sk))
-	for i, s := range sk {
+	names := make([]string, len(sess.TurnSkills))
+	for i, s := range sess.TurnSkills {
 		names[i] = s.Name
 	}
 	_ = sess.Append(event.SessionEventSkillDeactivate, event.MarshalData(event.SkillDeactivateData{Names: names}))
+	// 清零本轮状态——下轮重新累积
+	sess.TurnSkills = nil
+	sess.TurnToolSubset = nil
 }
 
 // runResumeTurn 是 M2.8 恢复路径：跳过 LLM 调用与日志，从 checkpoint 重新执行
@@ -438,18 +448,22 @@ func (d *ReActDriver) saveCheckpoint(ctx context.Context, rt *driver.RunContext,
 // ---- 默认钩子/守卫 ----
 
 // skillAllowListGuard 是技能允许工具白名单（allowed-tools）守卫：在工具 preflight
-// 阶段从 ctx 读取 agent.ToolSubsetFromCtx（由 activate_skill 工具注入，含本轮
-// 所有已激活 Skill 的 allowed-tools 并集），不在子集中的工具调用返回 *execpath.ToolDeniedError
-// 拦截（非致命，execpath.ApplyOutcomes 显式失败回填给模型）。与 policyGuard 同级注册，
-// 不可被 hook 改写绕过，确保 allowed-tools 是单调硬限制。
-func skillAllowListGuard() hook.Guard {
+// 阶段从 sess.TurnToolSubset 读取（由 activate_skill 工具经 agent.AddTurnSkill
+// 写入，含本轮所有已激活 Skill 的 allowed-tools 并集），不在子集中的工具调用返回
+// *execpath.ToolDeniedError 拦截（非致命，execpath.ApplyOutcomes 显式失败回填给
+// 模型）。与 policyGuard 同级注册，不可被 hook 改写绕过，确保 allowed-tools 是
+// 单调硬限制。rt 在 NewReAct 注册时捕获（Guard 签名只接受 ctx）。
+func skillAllowListGuard(rt *driver.RunContext) hook.Guard {
 	return func(ctx context.Context, ev *hook.HookEvent) error {
 		if ev == nil || ev.ToolCall == nil {
 			return nil
 		}
-		subset := agent.ToolSubsetFromCtx(ctx)
+		if rt == nil || rt.Session == nil {
+			return nil
+		}
+		subset := agent.ToolSubsetFromSession(rt.Session)
 		if subset == nil {
-			return nil // 未限制：未激活 Skill 或 ctx 未注入
+			return nil // 未限制：未激活 Skill 或 sess 未注入
 		}
 		for _, n := range subset {
 			if n == ev.ToolCall.Name {

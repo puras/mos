@@ -1,33 +1,27 @@
 package agent
 
 import (
-	"context"
+	"hegq.net/mos/agent/session"
 )
 
-// 激活态 ctx 注入：本轮已激活的 Skill 列表 + 工具子集并集。
-// 与 request_human_input 同样的"ctx 携带本轮瞬时状态"模式。
+// 激活态持久化：本轮已激活的 Skill 列表 + 工具子集并集改存在 *session.Session
+// 上（替代 ctx 方案）。原因：tool.Registry.Call 仅返回 (any, error)，ctx 内
+// 累积状态对调用方不可见——必须放到 Session 这种可被 caller 持有的对象上。
+// driver 在每轮首尾负责清零（sess.TurnSkills = nil; sess.TurnToolSubset = nil）。
 
-type activatedSkillsKey struct{}
-type toolSubsetKey struct{}
-
-// ActivatedSkillsFromCtx 返回 ctx 中累积的已激活 Skill 列表；无则返回 nil。
-func ActivatedSkillsFromCtx(ctx context.Context) []Skill {
-	v, _ := ctx.Value(activatedSkillsKey{}).([]Skill)
-	return v
+// SkillsFromSession 返回 session 当前轮的已激活 Skill 列表（最小切片 session.ActivatedSkill）。
+// 无 / nil 时返回 nil。
+func SkillsFromSession(sess *session.Session) []session.ActivatedSkill {
+	if sess == nil {
+		return nil
+	}
+	return sess.TurnSkills
 }
 
-// WithActivatedSkills 把 Skill 列表注入 ctx。调用方负责累积（不复制）。
-func WithActivatedSkills(ctx context.Context, sk []Skill) context.Context {
-	return context.WithValue(ctx, activatedSkillsKey{}, sk)
-}
-
-// ToolSubsetFromCtx 返回 ctx 中累积的允许工具名并集；nil = 未限制。
-func ToolSubsetFromCtx(ctx context.Context) []string {
-	v, _ := ctx.Value(toolSubsetKey{}).([]string)
-	return v
-}
-
-// WithToolSubset 把工具名并集注入 ctx；调用方负责并集去重。
-func WithToolSubset(ctx context.Context, names []string) context.Context {
-	return context.WithValue(ctx, toolSubsetKey{}, names)
+// ToolSubsetFromSession 返回 session 当前轮的工具白名单并集；nil = 未限制。
+func ToolSubsetFromSession(sess *session.Session) []string {
+	if sess == nil {
+		return nil
+	}
+	return sess.TurnToolSubset
 }

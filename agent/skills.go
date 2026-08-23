@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"hegq.net/mos/agent/session"
 )
 
 // SkillFile 是技能声明文件名（对齐 Agent Skills 规范：SKILL.md）。
@@ -166,4 +168,34 @@ func writeSkillLine(b *strings.Builder, s Skill) {
 		b.WriteString(d)
 	}
 	b.WriteString("\n")
+}
+
+// AddTurnSkill 追加一个激活 Skill 到 sess 的本轮状态：把 Skill 投影为
+// session.ActivatedSkill 后 append 到 TurnSkills；同时把 AllowedTools 合并
+// 进 TurnToolSubset（Set semantics，去重保序；TurnToolSubset 为 nil 时仍为 nil，
+// 与 spec §6.2 "未声明 = 不收窄" 一致）。driver 在每轮首尾清零两字段。
+//
+// 此处定义为包级自由函数（而非 *session.Session 的方法），因为 agent 包
+// 已经依赖 session；反向让 session 引用 agent 会产生循环依赖。
+func AddTurnSkill(sess *session.Session, sk Skill) {
+	if sess == nil {
+		return
+	}
+	sess.TurnSkills = append(sess.TurnSkills, session.ActivatedSkill{
+		Name:         sk.Name,
+		AllowedTools: sk.AllowedTools,
+	})
+	if len(sk.AllowedTools) == 0 {
+		return // nil / 空子集：保持 nil，不做"空集合 ≠ 不限制"的语义破坏
+	}
+	seen := make(map[string]bool, len(sess.TurnToolSubset)+len(sk.AllowedTools))
+	for _, n := range sess.TurnToolSubset {
+		seen[n] = true
+	}
+	for _, n := range sk.AllowedTools {
+		if !seen[n] {
+			seen[n] = true
+			sess.TurnToolSubset = append(sess.TurnToolSubset, n)
+		}
+	}
 }

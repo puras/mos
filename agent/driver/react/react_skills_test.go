@@ -7,20 +7,29 @@ import (
 	"testing"
 
 	"hegq.net/mos/agent"
+	"hegq.net/mos/agent/driver"
 	"hegq.net/mos/agent/event"
 	"hegq.net/mos/agent/hook"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 )
 
-// TestSkillAllowListGuard_BlocksUnlistedTool 验证 skillAllowListGuard 在 ToolSubset
-// 已注入 ctx 时拦截未在白名单的工具调用。
+// newTestRunContext 构造只含 Session 字段的 *driver.RunContext，供 skillAllowListGuard
+// 单元测试使用（无需完整 Agent 配置）。
+func newTestRunContext(sess *session.Session) *driver.RunContext {
+	return &driver.RunContext{Session: sess}
+}
+
+// TestSkillAllowListGuard_BlocksUnlistedTool 验证 skillAllowListGuard 在 sess
+// 的 TurnToolSubset 已写入时拦截未在白名单的工具调用。
 func TestSkillAllowListGuard_BlocksUnlistedTool(t *testing.T) {
-	guard := skillAllowListGuard()
-	ctx := agent.WithToolSubset(context.Background(), []string{"read_file"})
+	sess := session.NewSession("test-guard-block")
+	sess.TurnToolSubset = []string{"read_file"}
+
+	guard := skillAllowListGuard(newTestRunContext(sess))
 
 	ev := &hook.HookEvent{ToolCall: &llm.ToolCall{Name: "shell", Args: `{"cmd":"ls"}`}}
-	err := guard(ctx, ev)
+	err := guard(context.Background(), ev)
 	if err == nil {
 		t.Fatal("expected denial for shell")
 	}
@@ -31,51 +40,65 @@ func TestSkillAllowListGuard_BlocksUnlistedTool(t *testing.T) {
 
 // TestSkillAllowListGuard_AllowsListedTool 验证白名单内工具不被拦截。
 func TestSkillAllowListGuard_AllowsListedTool(t *testing.T) {
-	guard := skillAllowListGuard()
-	ctx := agent.WithToolSubset(context.Background(), []string{"read_file", "shell"})
+	sess := session.NewSession("test-guard-allow")
+	sess.TurnToolSubset = []string{"read_file", "shell"}
+
+	guard := skillAllowListGuard(newTestRunContext(sess))
 
 	ev := &hook.HookEvent{ToolCall: &llm.ToolCall{Name: "shell", Args: `{"cmd":"ls"}`}}
-	if err := guard(ctx, ev); err != nil {
+	if err := guard(context.Background(), ev); err != nil {
 		t.Errorf("shell should be allowed: %v", err)
 	}
 }
 
-// TestSkillAllowListGuard_NoSubset_Noop 验证未声明 allowed-tools（ctx 无 ToolSubset）
-// 时 guard 不拦截——保留旧"不限制"语义。
+// TestSkillAllowListGuard_NoSubset_Noop 验证未声明 allowed-tools（sess.TurnToolSubset
+// 为 nil）时 guard 不拦截——保留"不限制"语义。
 func TestSkillAllowListGuard_NoSubset_Noop(t *testing.T) {
-	guard := skillAllowListGuard()
-	ctx := context.Background()
+	sess := session.NewSession("test-guard-noop")
+
+	guard := skillAllowListGuard(newTestRunContext(sess))
 
 	ev := &hook.HookEvent{ToolCall: &llm.ToolCall{Name: "shell", Args: `{"cmd":"ls"}`}}
-	if err := guard(ctx, ev); err != nil {
+	if err := guard(context.Background(), ev); err != nil {
 		t.Errorf("expected no-op without subset, got: %v", err)
 	}
 }
 
-// TestEmitSkillDeactivate_WritesEvent 验证 ctx 有激活 Skill 时 emitSkillDeactivate
-// 写 skill/deactivate 事件到 Session Event Log。
+// TestEmitSkillDeactivate_WritesEvent 验证 sess.TurnSkills 非空时 emitSkillDeactivate
+// 写 skill/deactivate 事件到 Session Event Log，并在写完后清零 TurnSkills +
+// TurnToolSubset（下轮重新累积）。
 func TestEmitSkillDeactivate_WritesEvent(t *testing.T) {
 	sess := session.NewSession("test-deactivate")
-	ctx := agent.WithActivatedSkills(context.Background(), []agent.Skill{
-		{Name: "git", Description: "git helper"},
-		{Name: "deploy", Description: "deploy helper"},
-	})
+	agent.AddTurnSkill(sess, agent.Skill{Name: "git", Description: "git helper"})
+	agent.AddTurnSkill(sess, agent.Skill{Name: "deploy", Description: "deploy helper"})
+	sess.TurnToolSubset = []string{"git", "shell"}
 
-	emitSkillDeactivate(ctx, sess)
+	emitSkillDeactivate(context.Background(), sess)
 
 	if got := lastSkillDeactivateNames(sess); len(got) != 2 || got[0] != "git" || got[1] != "deploy" {
 		t.Errorf("lastSkillDeactivateNames = %v, want [git deploy]", got)
 	}
+	if len(sess.TurnSkills) != 0 {
+		t.Errorf("TurnSkills not cleared after deactivate: %v", sess.TurnSkills)
+	}
+	if len(sess.TurnToolSubset) != 0 {
+		t.Errorf("TurnToolSubset not cleared after deactivate: %v", sess.TurnToolSubset)
+	}
 }
 
-// TestEmitSkillDeactivate_NoActivatedSkills 验证 ctx 无激活 Skill 时 no-op。
+// TestEmitSkillDeactivate_NoActivatedSkills 验证 sess.TurnSkills 为空时 emitSkillDeactivate
+// no-op（不写事件，也不动 TurnToolSubset）。
 func TestEmitSkillDeactivate_NoActivatedSkills(t *testing.T) {
 	sess := session.NewSession("test-deactivate-noop")
+	sess.TurnToolSubset = []string{"untouched"} // 应保持原状
 
 	emitSkillDeactivate(context.Background(), sess)
 
 	if got := lastSkillDeactivateNames(sess); len(got) != 0 {
 		t.Errorf("expected no event, got %v", got)
+	}
+	if len(sess.TurnToolSubset) != 1 || sess.TurnToolSubset[0] != "untouched" {
+		t.Errorf("TurnToolSubset should be untouched, got %v", sess.TurnToolSubset)
 	}
 }
 

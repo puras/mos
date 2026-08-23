@@ -41,6 +41,25 @@ type Session struct {
 	// 写失败时事件不进内存（fail-fast，不破坏"日志即事实"不变式）。
 	Persistence Persistence `json:"-"`
 	persisted   bool        `json:"-"`
+
+	// TurnSkills 是本轮已激活 Skill 列表（不持久化；driver 每轮首尾清零）。
+	// 替代 ctx 注入方案：因 tool.Registry.Call 不返回 ctx，本轮累积状态
+	// 只能放在可见对象（sess）上。json:"-" 保证 Session.Save 序列化跳过。
+	// 注意：Skill 完整定义在 agent 包（不可在此直接引用，避免 agent↔session
+	// 循环依赖）；这里存的是激活 Skill 的最小切片（Name + AllowedTools），
+	// agent.AddTurnSkill 负责把 agent.Skill 投影为 ActivatedSkill。
+	TurnSkills []ActivatedSkill `json:"-"`
+	// TurnToolSubset 是本轮工具白名单并集（nil = 不限制）；ActivateSkill
+	// 写入；driver 每轮首尾清零。
+	TurnToolSubset []string `json:"-"`
+}
+
+// ActivatedSkill 是 session 内记录的激活 Skill 最小信息：
+// Name（用于 skill/deactivate 事件 Names 字段）+ AllowedTools（用于 TurnToolSubset 并集）。
+// 此处独立定义（而非直接引入 agent.Skill）以避免 agent ↔ agent/session 循环依赖。
+type ActivatedSkill struct {
+	Name         string
+	AllowedTools []string
 }
 
 // NewSession 创建指定 ID 的空会话（版本号自动填充）。

@@ -19,7 +19,7 @@ import (
 // 工具调用流程：
 //  1. 解析 name → 在 Skills 中查找匹配；
 //  2. 读取 SKILL.md 正文（去掉 frontmatter）；
-//  3. ctx 注入：本轮已激活 Skill 列表（累积）+ 允许工具并集（unionStrings 去重）；
+//  3. sess 注入：sess.AddTurnSkill(target) 累积 + 更新 sess.TurnToolSubset；
 //  4. 经 ctx 取出装配层注入的 *session.Session → 写 skill/activate 事件（nil 时跳过）；
 //  5. 返回 SkillActivationResult 给模型（body / references / allowed_tools）。
 //
@@ -78,15 +78,11 @@ func (t ActivateSkill) Execute(ctx context.Context, args json.RawMessage) (any, 
 
 	body, _ := readSkillBody(target.Dir)
 
-	// ctx 注入：本轮已激活 + 工具子集并集
-	activated := append(agent.ActivatedSkillsFromCtx(ctx), *target)
-	ctx = agent.WithActivatedSkills(ctx, activated)
-	existing := agent.ToolSubsetFromCtx(ctx)
-	subset := unionStrings(existing, target.AllowedTools)
-	ctx = agent.WithToolSubset(ctx, subset)
-
-	// 写 skill/activate 事件：装配层经 WithSession 注入 sess（nil 时跳过事件）
+	// sess 注入：本轮已激活 + 工具子集并集（替代旧 ctx 方案——tool.Registry.Call
+	// 不返回 ctx，累积状态须放在可见对象 sess 上）。
 	if sess := sessionFromCtx(ctx); sess != nil {
+		agent.AddTurnSkill(sess, *target)
+		// 写 skill/activate 事件（装配层经 WithSession 注入 sess；nil 时跳过事件）
 		if err := sess.Append(event.SessionEventSkillActivate, event.MarshalData(event.SkillActivateData{
 			Name:         target.Name,
 			AllowedTools: target.AllowedTools,
@@ -121,26 +117,6 @@ func readSkillBody(dir string) (string, error) {
 		return strings.TrimSpace(s), nil
 	}
 	return strings.TrimSpace(rest[end+4:]), nil
-}
-
-// unionStrings 对两个字符串切片做有序并集去重（保留首次出现顺序）。
-// 用途：合并 ctx 已有的工具子集与新技能的 AllowedTools。
-func unionStrings(a, b []string) []string {
-	seen := make(map[string]bool, len(a)+len(b))
-	out := make([]string, 0, len(a)+len(b))
-	for _, s := range a {
-		if !seen[s] {
-			seen[s] = true
-			out = append(out, s)
-		}
-	}
-	for _, s := range b {
-		if !seen[s] {
-			seen[s] = true
-			out = append(out, s)
-		}
-	}
-	return out
 }
 
 // sessionKey 是 ctx 中 *session.Session 的 key 类型（仅 assistant 包内可见）。
