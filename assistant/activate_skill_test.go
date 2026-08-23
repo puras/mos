@@ -57,3 +57,44 @@ func TestActivateSkill_NotFound(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+// TestActivateSkill_ToolSubset_Union 验证 ctx 已累积的工具子集与新激活 Skill 的
+// AllowedTools 取并集（spec §5.4 / §11.2）。两次 Execute 复用同一 ctx，断言第二次后
+// toolSubset = [read_file, shell]（Skill #1 的 [read_file] 与 Skill #2 的 [shell] 取并集），
+// 同时 ActivatedSkills 累积两条。
+func TestActivateSkill_ToolSubset_Union(t *testing.T) {
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	writeFile(t, filepath.Join(dirA, "SKILL.md"), "---\nname: a\ndescription: x\n---\n# A\n")
+	writeFile(t, filepath.Join(dirB, "SKILL.md"), "---\nname: b\ndescription: x\n---\n# B\n")
+
+	skills := []agent.Skill{
+		{Name: "a", Description: "x", Dir: dirA, AllowedTools: []string{"read_file"}},
+		{Name: "b", Description: "x", Dir: dirB, AllowedTools: []string{"shell"}},
+	}
+	t1 := ActivateSkill{Skills: skills}
+
+	ctx := context.Background()
+	if _, err := t1.Execute(ctx, json.RawMessage(`{"name":"a"}`)); err != nil {
+		t.Fatalf("activate a: %v", err)
+	}
+	if _, err := t1.Execute(ctx, json.RawMessage(`{"name":"b"}`)); err != nil {
+		t.Fatalf("activate b: %v", err)
+	}
+
+	subset := agent.ToolSubsetFromCtx(ctx)
+	want := map[string]bool{"read_file": true, "shell": true}
+	if len(subset) != len(want) {
+		t.Fatalf("subset = %v, want %v", subset, want)
+	}
+	for _, n := range subset {
+		if !want[n] {
+			t.Errorf("unexpected %q in subset", n)
+		}
+	}
+
+	activated := agent.ActivatedSkillsFromCtx(ctx)
+	if len(activated) != 2 || activated[0].Name != "a" || activated[1].Name != "b" {
+		t.Errorf("activated = %+v, want [a b]", activated)
+	}
+}
