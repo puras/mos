@@ -32,9 +32,9 @@ func (p *DefaultPolicy) checkShell(ctx context.Context, argsJSON string) error {
 		return fmt.Errorf("命令不在允许列表，允许前缀: %s", strings.Join(p.ShellAllowed, ", "))
 	}
 
-	// ③ 受限危险命令：路径受限在 WorkDir 内 + 人工确认
+	// ③ 受限危险命令：路径受限在 FileAccess.WorkspaceRoot（WritableRoots 多根）内 + 人工确认
 	if bad := restrictedDangerous(cmd); bad != "" {
-		if p.WorkDir == "" {
+		if p.FileAccess.WorkspaceRoot == "" {
 			return fmt.Errorf("命令包含受限危险操作 %q，但未配置工作目录限定范围，已拒绝", bad)
 		}
 		if err := p.checkPathsInWorkDir(cmd); err != nil {
