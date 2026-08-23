@@ -273,12 +273,14 @@ func (directModel) ChatStream(context.Context, *llm.Request, func(llm.StreamChun
 // 策略装配后仍生效：路径越界的文件调用会被拒绝。
 func TestAssistantPolicyApplied(t *testing.T) {
 	workDir := t.TempDir()
-	a, err := New(directModel{}, nil, Config{FileAccess: FileAccessConfig{WorkspaceRoot: t.TempDir()}, Policy: NewDefaultPolicy(nil, workDir)})
+	// FileAccess.WorkspaceRoot 与 Policy.WorkDir 用同一目录（Task 12 重构后两者联动）：
+	// 越界路径选 /etc/passwd（不在 workDir / os.TempDir / WritableExtra 任一根下）。
+	a, err := New(directModel{}, nil, Config{FileAccess: FileAccessConfig{WorkspaceRoot: workDir}, Policy: NewDefaultPolicy(nil, workDir)})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	// 直接验证策略拒绝
-	err = a.Policy().Allow(context.Background(), toolCall("write_file", `{"path":"`+filepath.Join(workDir, "..", "evil.txt")+`"}`))
+	err = a.Policy().Allow(context.Background(), toolCall("write_file", `{"path":"/etc/passwd"}`))
 	if err == nil {
 		t.Fatal("path traversal should be rejected by policy")
 	}

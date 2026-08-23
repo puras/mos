@@ -61,8 +61,13 @@ func (p *DefaultPolicy) Mode() fs.Mode {
 }
 
 // NewDefaultPolicy 创建默认安全策略（注册内置工具检查器）。
+// workDir 同时作为 FileAccess.WorkspaceRoot 镜像（policy_file / checkFile 共用同一根）。
 func NewDefaultPolicy(shellAllowed []string, workDir string) *DefaultPolicy {
-	p := &DefaultPolicy{ShellAllowed: shellAllowed, WorkDir: workDir}
+	p := &DefaultPolicy{
+		ShellAllowed: shellAllowed,
+		WorkDir:      workDir,
+		FileAccess:   FileAccessConfig{WorkspaceRoot: workDir, JailReads: workDir != "", JailWrites: workDir != ""},
+	}
 	p.checkers = map[string]Checker{
 		"shell":               p.checkShell,
 		"read_file":           p.checkFileField("path"),

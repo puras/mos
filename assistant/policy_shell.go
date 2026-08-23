@@ -58,7 +58,7 @@ func (p *DefaultPolicy) checkShell(ctx context.Context, argsJSON string) error {
 // 启发式：取所有非 flag（不以 - 开头）且像路径的 token 逐一校验；
 // 裸文件名视为工作目录内的相对路径（shell 在执行目录下运行）。
 func (p *DefaultPolicy) checkPathsInWorkDir(cmd string) error {
-	if p.WorkDir == "" {
+	if p.FileAccess.WorkspaceRoot == "" {
 		return nil
 	}
 	for _, tok := range strings.Fields(cmd) {
@@ -72,7 +72,7 @@ func (p *DefaultPolicy) checkPathsInWorkDir(cmd string) error {
 		if target == "" || strings.HasPrefix(target, "$") {
 			continue
 		}
-		if err := withinDir(p.WorkDir, target); err != nil {
+		if err := withinDir(p.fileAccessPolicy(), target); err != nil {
 			return err
 		}
 	}
