@@ -13,6 +13,7 @@ import (
 	"hegq.net/mos/agent/driver/planexecute"
 	"hegq.net/mos/agent/driver/react"
 	"hegq.net/mos/agent/driver/reflection"
+	"hegq.net/mos/agent/driver/scripted"
 	"hegq.net/mos/agent/event"
 	"hegq.net/mos/agent/handle"
 	"hegq.net/mos/agent/session"
@@ -29,11 +30,11 @@ type Assistant struct {
 	tools  *tool.Registry
 	policy driver.Policy
 
-	model        llm.ChatModel    // 供新会话重建 RunContext（Handle.Create / Registry）
-	persistence  session.Persistence
-	checkpoints  checkpoint.Store
-	bus          *event.EventBus
-	registry     *handle.Registry // 会话句柄注册表（Handle 入口）
+	model       llm.ChatModel // 供新会话重建 RunContext（Handle.Create / Registry）
+	persistence session.Persistence
+	checkpoints checkpoint.Store
+	bus         *event.EventBus
+	registry    *handle.Registry // 会话句柄注册表（Handle 入口）
 }
 
 // DefaultSystemPrompt 是框架内置的默认系统引导词，开箱即用。
@@ -155,6 +156,7 @@ func buildRunContext(model llm.ChatModel, reg *tool.Registry, cfg Config) *drive
 		DoomLoopMaxRepeat:   cfg.DoomLoopMaxRepeat,
 		PlanPlanner:         cfg.PlanPlanner,
 		Reflector:           cfg.Reflector,
+		ScriptPlanner:       cfg.ScriptPlanner,
 		Approval:            cfg.Approval,
 		Checkpoints:         cfg.CheckpointStore,
 		Bus:                 cfg.Bus,
@@ -189,6 +191,8 @@ func assembleDriver(cfg Config, rt *driver.RunContext) (*driver.Agent, error) {
 		return planexecute.New(rt), nil
 	case "reflection":
 		return reflection.New(rt), nil
+	case "scripted":
+		return scripted.New(rt), nil
 	default:
 		return nil, fmt.Errorf("assistant: unknown driver %q", cfg.Driver)
 	}
@@ -273,6 +277,13 @@ func (a *Assistant) RunStream(ctx context.Context, sess *session.Session, input 
 
 // ToolNames 返回已注册的工具名列表。
 func (a *Assistant) ToolNames() []string { return a.tools.Names() }
+
+// WithSession 把 *session.Session 注入 ctx，供 activate_skill 等工具在执行期间
+// 经 sessionFromCtx 取用（写会话事件用）。nil 也允许注入；调用方负责装配时机。
+// 装配层（driver.RunContext 注入路径）在每轮工具调用前调用本函数把当前会话塞进 ctx。
+func WithSession(ctx context.Context, sess *session.Session) context.Context {
+	return context.WithValue(ctx, sessionKey{}, sess)
+}
 
 // confirmBridge 将旧 assistant.Confirmer（assistant.ConfirmRequest 参数）桥接为
 // approval.Confirmer（approval.ConfirmRequest 参数）——两者字段同构。

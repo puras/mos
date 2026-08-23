@@ -14,6 +14,9 @@ const (
 	DriverReact      = "react"
 	DriverPlanExec   = "plan-execute"
 	DriverReflection = "reflection"
+	// DriverScripted 是脚本化编排驱动（PTC 模式）。
+	// opt-in：仅在显式路由规则或 config script_planner 注入时启用，分类器不放行。
+	DriverScripted = "scripted"
 )
 
 // Classifier 将任务输入分类为合适的驱动（LLM 路由兜底，处理规则未覆盖的模糊输入）。

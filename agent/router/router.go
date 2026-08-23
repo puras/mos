@@ -12,6 +12,7 @@ import (
 	"hegq.net/mos/agent/driver/planexecute"
 	"hegq.net/mos/agent/driver/react"
 	"hegq.net/mos/agent/driver/reflection"
+	"hegq.net/mos/agent/driver/scripted"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/planner"
 )
@@ -80,6 +81,7 @@ func NewHybrid(opts ...Option) *HybridRouter {
 			planner.DriverReact:      func() driver.LoopDriver { return &react.ReActDriver{} },
 			planner.DriverPlanExec:   func() driver.LoopDriver { return &planexecute.PlanExecuteDriver{} },
 			planner.DriverReflection: func() driver.LoopDriver { return &reflection.ReflectionDriver{} },
+			planner.DriverScripted:   func() driver.LoopDriver { return &scripted.ScriptedDriver{} },
 		},
 		rules: []Rule{
 			{Keyword: "先规划", Driver: planner.DriverPlanExec},

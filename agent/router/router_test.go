@@ -10,6 +10,7 @@ import (
 	"hegq.net/mos/agent/driver/planexecute"
 	"hegq.net/mos/agent/driver/react"
 	"hegq.net/mos/agent/driver/reflection"
+	"hegq.net/mos/agent/driver/scripted"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/planner"
@@ -139,6 +140,21 @@ func TestUnknownFallback(t *testing.T) {
 	r := NewHybrid(WithFallback("nope"))
 	if _, err := r.Select(context.Background(), "x", session.NewSession("s1")); err == nil {
 		t.Fatal("Select should fail on unknown fallback driver")
+	}
+}
+
+// TestHybridRouterScriptedRule 验证 scripted 工厂已在 NewHybrid 内置注册；
+// 显式加规则后，关键词命中返回 ScriptedDriver。
+func TestHybridRouterScriptedRule(t *testing.T) {
+	r := NewHybrid(
+		WithRule("批量", planner.DriverScripted),
+	)
+	d, err := r.Select(context.Background(), "批量重命名文件", session.NewSession("s"))
+	if err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	if _, ok := d.(*scripted.ScriptedDriver); !ok {
+		t.Fatalf("expected *scripted.ScriptedDriver, got %T", d)
 	}
 }
 

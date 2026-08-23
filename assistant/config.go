@@ -34,6 +34,10 @@ type Config struct {
 	PlanPlanner planner.PlanPlanner
 	// Reflector Reflection 评审器（Driver=reflection 时必需；nil 拒绝运行）。
 	Reflector planner.Reflector
+	// ScriptPlanner 脚本编排规划器（Driver=scripted 时必需；nil 拒绝运行）。
+	// 与 PlanPlanner/Reflector 同源：可注入自定义 planner.ScriptPlanner 实现，
+	// 经 SeamRegistry KindPlanner 解析（agent/config 装配时）。
+	ScriptPlanner planner.ScriptPlanner
 
 	// SystemPrompt 系统引导词（系统约束槽位内容）。
 	// 设置了 Assembler 时，本字段作为默认组装器的约束槽位（可被组装器配置覆盖）。

@@ -32,6 +32,8 @@ type Config struct {
 	PlanPlanner string `yaml:"plan_planner"`
 	// Reflector Reflection 评审器 provider 名（Driver=reflection 时必需）。
 	Reflector string `yaml:"reflector"`
+	// ScriptPlanner 脚本编排规划器 provider 名（Driver=scripted 时必需；opt-in）。
+	ScriptPlanner string `yaml:"script_planner"`
 	// SystemPrompt 系统引导词。
 	SystemPrompt string `yaml:"system_prompt"`
 	// MaxTurns 可选保险丝（>0 生效；0 不限制）。
@@ -95,11 +97,16 @@ func AssembleConfig(reg *seam.SeamRegistry, cfg *Config) (*assistant.Assistant, 
 	if err != nil {
 		return nil, err
 	}
+	scriptPlanner, err := resolveScriptPlanner(reg, cfg.ScriptPlanner)
+	if err != nil {
+		return nil, err
+	}
 
 	ac := assistant.Config{
 		Driver:            cfg.Driver,
 		PlanPlanner:       planPlanner,
 		Reflector:         reflector,
+		ScriptPlanner:     scriptPlanner,
 		SystemPrompt:      cfg.SystemPrompt,
 		MaxTurns:          cfg.MaxTurns,
 		ContextBudget:     cfg.ContextBudget,
@@ -197,4 +204,20 @@ func resolveReflector(reg *seam.SeamRegistry, name string) (planner.Reflector, e
 		return nil, fmt.Errorf("config: reflector provider %q is not planner.Reflector (%T)", name, v)
 	}
 	return r, nil
+}
+
+// resolveScriptPlanner 按名解析脚本编排规划器（可选，未配置返回 nil）。
+func resolveScriptPlanner(reg *seam.SeamRegistry, name string) (planner.ScriptPlanner, error) {
+	if name == "" {
+		return nil, nil
+	}
+	v, err := reg.Resolve(seam.KindPlanner, name)
+	if err != nil {
+		return nil, fmt.Errorf("config: script_planner: %w", err)
+	}
+	p, ok := v.(planner.ScriptPlanner)
+	if !ok {
+		return nil, fmt.Errorf("config: script_planner provider %q is not planner.ScriptPlanner (%T)", name, v)
+	}
+	return p, nil
 }
