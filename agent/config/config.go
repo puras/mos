@@ -5,6 +5,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 
 	"gopkg.in/yaml.v3"
 
@@ -44,6 +45,10 @@ type Config struct {
 	ProjectDocDir string `yaml:"project_doc_dir"`
 	// SkillsDir 技能目录（自动构建默认组装器）。
 	SkillsDir string `yaml:"skills_dir"`
+	// WorkspaceRoot 文件工具 jail 根目录（Task 10：必填；缺省回退到进程 cwd）。
+	// 空值由 assistant.New 校验拒绝；本字段为空时 Assemble 自动用 cwd 兜底，
+	// 避免单元测试等"无项目上下文"场景无法启动。
+	WorkspaceRoot string `yaml:"workspace_root"`
 }
 
 // Load 解析 YAML 配置（未做组件解析，纯结构校验）。
@@ -96,6 +101,14 @@ func AssembleConfig(reg *seam.SeamRegistry, cfg *Config) (*assistant.Assistant, 
 		return nil, err
 	}
 
+	workspaceRoot := cfg.WorkspaceRoot
+	if workspaceRoot == "" {
+		var cwdErr error
+		workspaceRoot, cwdErr = os.Getwd()
+		if cwdErr != nil {
+			return nil, fmt.Errorf("config: WorkspaceRoot 缺省且无法获取 cwd: %w", cwdErr)
+		}
+	}
 	ac := assistant.Config{
 		Driver:            cfg.Driver,
 		PlanPlanner:       planPlanner,
@@ -107,6 +120,7 @@ func AssembleConfig(reg *seam.SeamRegistry, cfg *Config) (*assistant.Assistant, 
 		ProjectDocDir:     cfg.ProjectDocDir,
 		SkillsDir:         cfg.SkillsDir,
 		Policy:            policy,
+		FileAccess:        assistant.FileAccessConfig{WorkspaceRoot: workspaceRoot},
 	}
 	return assistant.New(model, tools, ac)
 }

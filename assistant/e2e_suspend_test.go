@@ -66,10 +66,11 @@ func newSuspendAssistant(t *testing.T, workDir string) (*Assistant, *approval.In
 	pol.Approval = ap
 
 	a, err := New(suspendWriteModel(workDir), []tool.Tool{builtin.WriteFile{}}, Config{
-		Policy:         pol,
-		Approval:       ap,
+		FileAccess:      FileAccessConfig{WorkspaceRoot: t.TempDir()},
+		Policy:          pol,
+		Approval:        ap,
 		CheckpointStore: store,
-		Persistence:    persist,
+		Persistence:     persist,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -257,10 +258,11 @@ func TestE2E_RequestHumanInput(t *testing.T) {
 	pol.Approval = ap
 
 	a, err := New(humanInputModel{wantAnswer: "X"}, nil, Config{
-		Policy:         pol,
-		Approval:       ap,
+		FileAccess:      FileAccessConfig{WorkspaceRoot: t.TempDir()},
+		Policy:          pol,
+		Approval:        ap,
 		CheckpointStore: store,
-		Persistence:    persist,
+		Persistence:     persist,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

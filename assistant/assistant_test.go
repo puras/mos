@@ -96,7 +96,7 @@ func TestDefaultSystemPrompt(t *testing.T) {
 
 	// 未配置时注入框架默认引导
 	m := &captureModel{}
-	a, err := New(m, nil, Config{})
+	a, err := New(m, nil, Config{FileAccess: FileAccessConfig{WorkspaceRoot: t.TempDir()}})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestDefaultSystemPrompt(t *testing.T) {
 
 	// 显式配置覆盖默认
 	m2 := &captureModel{}
-	a2, err := New(m2, nil, Config{SystemPrompt: "自定义引导"})
+	a2, err := New(m2, nil, Config{FileAccess: FileAccessConfig{WorkspaceRoot: t.TempDir()}, SystemPrompt: "自定义引导"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestAssistantSystemAssemblerAuto(t *testing.T) {
 	}
 
 	m := &captureModel{}
-	a, err := New(m, nil, Config{SkillsDir: root})
+	a, err := New(m, nil, Config{FileAccess: FileAccessConfig{WorkspaceRoot: t.TempDir()}, SkillsDir: root})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestAssistantSystemAssemblerCustom(t *testing.T) {
 	})
 
 	m := &captureModel{}
-	a, err := New(m, nil, Config{Assembler: custom, SystemPrompt: "不应出现"})
+	a, err := New(m, nil, Config{FileAccess: FileAccessConfig{WorkspaceRoot: t.TempDir()}, Assembler: custom, SystemPrompt: "不应出现"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -195,6 +195,7 @@ func TestAssistantRetrieverInjection(t *testing.T) {
 	ctx := context.Background()
 	m := &captureModel{}
 	a, err := New(m, nil, Config{
+		FileAccess: FileAccessConfig{WorkspaceRoot: t.TempDir()},
 		Retriever: &stubRetriever{docs: []memory.Document{
 			{Source: "doc-x", Content: "远程数据库连接串位于配置中心", Score: 0.7},
 		}},
@@ -226,6 +227,7 @@ func TestAssistantRetrieverMinScoreGap(t *testing.T) {
 	m := &captureModel{}
 	var events []agent.Event
 	a, err := New(m, nil, Config{
+		FileAccess: FileAccessConfig{WorkspaceRoot: t.TempDir()},
 		Retriever: &stubRetriever{docs: []memory.Document{
 			{Source: "doc-x", Content: "与查询无关", Score: 0.1},
 		}},
@@ -271,7 +273,7 @@ func (directModel) ChatStream(context.Context, *llm.Request, func(llm.StreamChun
 // 策略装配后仍生效：路径越界的文件调用会被拒绝。
 func TestAssistantPolicyApplied(t *testing.T) {
 	workDir := t.TempDir()
-	a, err := New(directModel{}, nil, Config{Policy: NewDefaultPolicy(nil, workDir)})
+	a, err := New(directModel{}, nil, Config{FileAccess: FileAccessConfig{WorkspaceRoot: t.TempDir()}, Policy: NewDefaultPolicy(nil, workDir)})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -290,7 +292,9 @@ type mockApproval struct{}
 func (mockApproval) Request(context.Context, approval.ApprovalRequest) (approval.ApprovalID, error) {
 	return "mock-approval-id", nil
 }
-func (mockApproval) Resolve(context.Context, approval.ApprovalID, approval.ApprovalDecision) error { return nil }
+func (mockApproval) Resolve(context.Context, approval.ApprovalID, approval.ApprovalDecision) error {
+	return nil
+}
 
 // requireApproval 断言策略返回需要人工确认的标记（M2.8：决策由驱动层 Approval 处理）。
 func requireApproval(t *testing.T, err error) {
@@ -513,7 +517,7 @@ func TestTUIModeRestrictedShellRejected(t *testing.T) {
 		t.Fatal("TUI 模式不应挂载审批器")
 	}
 
-	a, err := New(tuiShellModel(workDir), []tool.Tool{builtin.Shell{}}, Config{Policy: policy})
+	a, err := New(tuiShellModel(workDir), []tool.Tool{builtin.Shell{}}, Config{FileAccess: FileAccessConfig{WorkspaceRoot: t.TempDir()}, Policy: policy})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -541,5 +545,18 @@ func TestTUIModeRestrictedShellRejected(t *testing.T) {
 	// 工具未实际执行：拒绝反馈不会包含 shell 的真实输出（如 rm 报错信息）
 	if strings.Contains(toolMsg.Content, "No such file") {
 		t.Fatalf("history[2] = %q, shell should not have executed", toolMsg.Content)
+	}
+}
+
+// TestNewRequiresWorkspaceRoot 验证 FileAccess.WorkspaceRoot 必填（Task 10 fail-closed）：
+// 零值 FileAccessConfig{}.WorkspaceRoot=="" 时 assistant.New 必须立即返回错误，
+// 且错误文案点名 WorkspaceRoot，便于上层排查。
+func TestNewRequiresWorkspaceRoot(t *testing.T) {
+	_, err := New(directModel{}, nil, Config{})
+	if err == nil {
+		t.Fatal("空 WorkspaceRoot 应使 New 失败")
+	}
+	if !strings.Contains(err.Error(), "WorkspaceRoot") {
+		t.Errorf("错误文案应点名 WorkspaceRoot，got=%s", err.Error())
 	}
 }

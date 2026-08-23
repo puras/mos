@@ -29,11 +29,11 @@ type Assistant struct {
 	tools  *tool.Registry
 	policy driver.Policy
 
-	model        llm.ChatModel    // 供新会话重建 RunContext（Handle.Create / Registry）
-	persistence  session.Persistence
-	checkpoints  checkpoint.Store
-	bus          *event.EventBus
-	registry     *handle.Registry // 会话句柄注册表（Handle 入口）
+	model       llm.ChatModel // 供新会话重建 RunContext（Handle.Create / Registry）
+	persistence session.Persistence
+	checkpoints checkpoint.Store
+	bus         *event.EventBus
+	registry    *handle.Registry // 会话句柄注册表（Handle 入口）
 }
 
 // DefaultSystemPrompt 是框架内置的默认系统引导词，开箱即用。
@@ -78,6 +78,9 @@ const DefaultSystemPrompt = `你是 MoS 智能体，一个通过调用工具解�
 // model、tools 与 Config 中的框架概念均由调用方注入（nil 时使用框架默认实现），
 // 本函数不关心模型接入配置与具体工具实现。
 func New(model llm.ChatModel, tools []tool.Tool, cfg Config) (*Assistant, error) {
+	if cfg.FileAccess.WorkspaceRoot == "" {
+		return nil, fmt.Errorf("assistant.New: Config.FileAccess.WorkspaceRoot 必填（fail-closed，详见 docs/superpowers/plans/2026-08-17-file-tool-jail.md）")
+	}
 	reg := tool.NewRegistry()
 	for _, t := range tools {
 		if err := reg.Register(t); err != nil {
