@@ -11,6 +11,12 @@ type Local struct {
 	mode Mode
 }
 
+// NewLocal 构造透传实现的 FileSystem（mode 通常为 ModeDangerFull）。
+// mode 字段未导出，跨包构造必须经此入口。
+func NewLocal(mode Mode) *Local {
+	return &Local{mode: mode}
+}
+
 var _ FileSystem = (*Local)(nil)
 
 // Resolve 实现 FileSystem.Resolve：filepath.Abs 后直接返回。

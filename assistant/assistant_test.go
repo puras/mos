@@ -16,6 +16,7 @@ import (
 	"hegq.net/mos/memory"
 	"hegq.net/mos/tool"
 	"hegq.net/mos/tool/builtin"
+	"hegq.net/mos/tool/fs"
 )
 
 func toolCall(name, args string) *llm.ToolCall {
@@ -547,6 +548,50 @@ func TestTUIModeRestrictedShellRejected(t *testing.T) {
 	// 工具未实际执行：拒绝反馈不会包含 shell 的真实输出（如 rm 报错信息）
 	if strings.Contains(toolMsg.Content, "No such file") {
 		t.Fatalf("history[2] = %q, shell should not have executed", toolMsg.Content)
+	}
+}
+
+// TestAssistantProvidesFileSystemSandboxed 验证 New 按 Policy.Mode()=SaaSJailed 装配 Sandboxed。
+func TestAssistantProvidesFileSystemSandboxed(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Config{FileAccess: FileAccessConfig{
+		WorkspaceRoot: dir,
+		JailReads:     true,
+		JailWrites:    true,
+	}}
+	cfg.Policy = NewDefaultPolicy(nil, dir)
+	a, err := New(directModel{}, nil, cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	fsys := a.FS()
+	if fsys == nil {
+		t.Fatal("FS 未装配")
+	}
+	if fsys.Mode() != fs.ModeSaaSJailed {
+		t.Errorf("Mode=%s want=saas-jailed", fsys.Mode())
+	}
+	// 越界应被 Sandboxed 拒
+	if _, err := fsys.Resolve(context.Background(), fs.Request{Path: "/etc/passwd", Op: fs.OpRead}); err == nil {
+		t.Error("Sandboxed 应拒绝越界读")
+	}
+}
+
+// TestAssistantProvidesFileSystemLocalWhenDangerFull 验证零值 JailReads/JailWrites → Local 透传。
+func TestAssistantProvidesFileSystemLocalWhenDangerFull(t *testing.T) {
+	dir := t.TempDir()
+	a, err := New(directModel{}, nil, Config{
+		FileAccess: FileAccessConfig{WorkspaceRoot: dir},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	fsys := a.FS()
+	if fsys == nil {
+		t.Fatal("FS 未装配")
+	}
+	if fsys.Mode() != fs.ModeDangerFull {
+		t.Errorf("Mode=%s want=danger-full", fsys.Mode())
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 	"hegq.net/mos/llm"
 	"hegq.net/mos/planner"
 	"hegq.net/mos/tool"
+	"hegq.net/mos/tool/fs"
 )
 
 // Assistant 是组装好的智能体实例：模型对象 + 工具集 + 框架概念（策略/规划/审计/记忆）。
@@ -33,7 +34,8 @@ type Assistant struct {
 	persistence session.Persistence
 	checkpoints checkpoint.Store
 	bus         *event.EventBus
-	registry    *handle.Registry // 会话句柄注册表（Handle 入口）
+	registry    *handle.Registry   // 会话句柄注册表（Handle 入口）
+	runContext  *driver.RunContext // 共享 RunContext（file-tool-jail Task 14：FS 暴露给工具层）
 }
 
 // DefaultSystemPrompt 是框架内置的默认系统引导词，开箱即用。
@@ -133,6 +135,7 @@ func New(model llm.ChatModel, tools []tool.Tool, cfg Config) (*Assistant, error)
 		persistence: cfg.Persistence,
 		checkpoints: cfg.CheckpointStore,
 		bus:         cfg.Bus,
+		runContext:  rt,
 	}
 	a.registry = handle.NewRegistry(a.newAgentForSession, cfg.CheckpointStore, cfg.Bus)
 	return a, nil
@@ -176,7 +179,31 @@ func buildRunContext(model llm.ChatModel, reg *tool.Registry, cfg Config) *drive
 	default:
 		rt.SystemPrompt = cfg.SystemPrompt
 	}
+	rt.FS = buildFileSystem(cfg)
 	return rt
+}
+
+// buildFileSystem 按 Policy.Mode() 选 fs 实现。
+// ModeSaaSJailed / ModeLocalJailed → Sandboxed；ModeDangerFull → Local（透传）。
+// cfg.Policy 为 nil 或非 *DefaultPolicy 时按 ModeDangerFull 兜底（防御性：第三方 Policy
+// 实现不必实现 Mode 也不强制 jail，由 FileAccessConfig 决定 jail 行为）。
+func buildFileSystem(cfg Config) fs.FileSystem {
+	mode := fs.ModeDangerFull
+	if dp, ok := cfg.Policy.(*DefaultPolicy); ok {
+		mode = dp.Mode()
+	}
+	policy := &fs.FileAccessPolicy{
+		WorkspaceRoot: cfg.FileAccess.WorkspaceRoot,
+		JailReads:     cfg.FileAccess.JailReads,
+		JailWrites:    cfg.FileAccess.JailWrites,
+		WritableExtra: cfg.FileAccess.WritableExtra,
+	}
+	switch mode {
+	case fs.ModeSaaSJailed, fs.ModeLocalJailed:
+		return &fs.Sandboxed{Policy: policy}
+	default:
+		return fs.NewLocal(mode)
+	}
 }
 
 // assembleDriver 按配置装配驱动（架构 v2 §3.5 按名选组件）：
@@ -202,6 +229,15 @@ func (a *Assistant) Agent() *driver.Agent { return a.agent }
 
 // Config 返回当前配置。
 func (a *Assistant) Config() Config { return a.config }
+
+// FS 返回装配好的文件能力实例（file-tool-jail Task 14）。
+// 工具调用方在 ctx 注入：`fs.WithFileSystem(ctx, a.FS())`（Task 15–18 接入）。
+func (a *Assistant) FS() fs.FileSystem {
+	if a == nil || a.runContext == nil {
+		return nil
+	}
+	return a.runContext.FS
+}
 
 // Policy 返回当前安全策略。
 func (a *Assistant) Policy() driver.Policy { return a.policy }
