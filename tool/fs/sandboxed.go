@@ -14,12 +14,15 @@ type Sandboxed struct {
 }
 
 // Mode 返回当前策略模式。
+// 读写都 jail → saas-jailed（DSH read-only / SaaS 默认）；
+// 只 jail 其中一侧 → local-jailed（DSH workspace-write：写 fenced，读放开）；
+// 都不 jail → danger-full（此实例本不该被装配，assistant.buildFileSystem 会选 Local）。
 func (s *Sandboxed) Mode() Mode {
 	switch {
-	case s.Policy.JailReads && !s.Policy.JailWrites:
-		return ModeLocalJailed
 	case s.Policy.JailReads && s.Policy.JailWrites:
 		return ModeSaaSJailed
+	case s.Policy.JailReads || s.Policy.JailWrites:
+		return ModeLocalJailed
 	default:
 		return ModeDangerFull
 	}

@@ -595,6 +595,51 @@ func TestAssistantProvidesFileSystemLocalWhenDangerFull(t *testing.T) {
 	}
 }
 
+// thirdPartyPolicy 是只实现 driver.Policy 接口（无 Mode 方法）的第三方策略，
+// 用于验证 buildFileSystem 不依赖 *DefaultPolicy 类型断言推导 jail 开关。
+type thirdPartyPolicy struct{}
+
+func (thirdPartyPolicy) Allow(context.Context, *llm.ToolCall) error { return nil }
+
+// TestBuildFileSystemJailsWithThirdPartyPolicy 验证 fail-closed：第三方 Policy 实现
+// （没有 Mode 方法）配 JailWrites=true 时，仍必须拿到 Sandboxed 而非 Local 透传。
+// jail 开关的唯一事实来源是 FileAccessConfig.Jail*，不是 Policy 的具体类型。
+func TestBuildFileSystemJailsWithThirdPartyPolicy(t *testing.T) {
+	dir := t.TempDir()
+	a, err := New(directModel{}, nil, Config{
+		FileAccess: FileAccessConfig{WorkspaceRoot: dir, JailReads: true, JailWrites: true},
+		Policy:     thirdPartyPolicy{},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	fsys := a.FS()
+	if fsys == nil {
+		t.Fatal("FS 未装配")
+	}
+	if fsys.Mode() != fs.ModeSaaSJailed {
+		t.Errorf("Mode=%s want=saas-jailed（第三方 Policy 不应导致 jail 失效）", fsys.Mode())
+	}
+	if _, err := fsys.Resolve(context.Background(), fs.Request{Path: "/etc/passwd", Op: fs.OpWrite}); err == nil {
+		t.Error("JailWrites=true 时越界写必须被拒绝（fail-open 缺口）")
+	}
+}
+
+// TestBuildFileSystemJailReadsOnlyIsLocalJailed 验证只 jail 读时映射到 local-jailed。
+func TestBuildFileSystemJailReadsOnlyIsLocalJailed(t *testing.T) {
+	dir := t.TempDir()
+	a, err := New(directModel{}, nil, Config{
+		FileAccess: FileAccessConfig{WorkspaceRoot: dir, JailReads: true},
+		Policy:     thirdPartyPolicy{},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := a.FS().Mode(); got != fs.ModeLocalJailed {
+		t.Errorf("Mode=%s want=local-jailed", got)
+	}
+}
+
 // TestNewRequiresWorkspaceRoot 验证 FileAccess.WorkspaceRoot 必填（Task 10 fail-closed）：
 // 零值 FileAccessConfig{}.WorkspaceRoot=="" 时 assistant.New 必须立即返回错误，
 // 且错误文案点名 WorkspaceRoot，便于上层排查。

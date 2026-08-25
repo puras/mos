@@ -149,3 +149,12 @@ func TestSandboxedSymlinkInsideWorkspacePasses(t *testing.T) {
 		t.Fatalf("workspace 内 symlink → workspace 内目标应允许 Op=Write: %v", err)
 	}
 }
+
+// TestSandboxedModeJailWritesOnly：仅 jail 写（JailReads=false, JailWrites=true）。
+// buildFileSystem 修 fail-open 后此组合可达——Sandboxed 实例不得自报 danger-full。
+func TestSandboxedModeJailWritesOnly(t *testing.T) {
+	s := &Sandboxed{Policy: &FileAccessPolicy{WorkspaceRoot: t.TempDir(), JailWrites: true}}
+	if got := s.Mode(); got == ModeDangerFull {
+		t.Errorf("Mode=%s：正在 jail 写的实例不应自报 danger-full", got)
+	}
+}

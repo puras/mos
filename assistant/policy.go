@@ -47,14 +47,14 @@ type DefaultPolicy struct {
 }
 
 // Mode 推导自 FileAccessConfig（与 tool/fs.Sandboxed.Mode 同形映射）。
-// 对位 DSH sandboxPolicy：JailReads=true 表示读 jail；JailReads+JailWrites 都 true 表示 SaaS 级 read-only。
+// 对位 DSH sandboxPolicy：读写都 jail → SaaS 级 read-only；只 jail 一侧 → workspace-write。
 // 零值 FileAccessConfig{}（JailReads=false, JailWrites=false）→ ModeDangerFull（显式全开放）。
 func (p *DefaultPolicy) Mode() fs.Mode {
 	switch {
-	case p.FileAccess.JailReads && !p.FileAccess.JailWrites:
-		return fs.ModeLocalJailed
 	case p.FileAccess.JailReads && p.FileAccess.JailWrites:
 		return fs.ModeSaaSJailed
+	case p.FileAccess.JailReads || p.FileAccess.JailWrites:
+		return fs.ModeLocalJailed
 	default:
 		return fs.ModeDangerFull
 	}

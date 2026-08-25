@@ -183,27 +183,24 @@ func buildRunContext(model llm.ChatModel, reg *tool.Registry, cfg Config) *drive
 	return rt
 }
 
-// buildFileSystem 按 Policy.Mode() 选 fs 实现。
-// ModeSaaSJailed / ModeLocalJailed → Sandboxed；ModeDangerFull → Local（透传）。
-// cfg.Policy 为 nil 或非 *DefaultPolicy 时按 ModeDangerFull 兜底（防御性：第三方 Policy
-// 实现不必实现 Mode 也不强制 jail，由 FileAccessConfig 决定 jail 行为）。
+// buildFileSystem 按 FileAccessConfig 的 jail 开关选 fs 实现（fail-closed）。
+// 任一 Jail* 为 true → Sandboxed（jail 生效）；两者都 false → Local（显式全开放透传）。
+//
+// jail 开关的唯一事实来源是 FileAccessConfig.Jail*，**不是** Policy 的具体类型：
+// 第三方 Policy 实现（未实现 Mode 方法）配 JailWrites=true 时同样必须拿到 Sandboxed，
+// 否则 jail 静默失效（fail-open）。Sandboxed.Mode() 内部由同一份 FileAccessPolicy 推导，
+// 与 DefaultPolicy.Mode() 保持同形映射。
 func buildFileSystem(cfg Config) fs.FileSystem {
-	mode := fs.ModeDangerFull
-	if dp, ok := cfg.Policy.(*DefaultPolicy); ok {
-		mode = dp.Mode()
-	}
 	policy := &fs.FileAccessPolicy{
 		WorkspaceRoot: cfg.FileAccess.WorkspaceRoot,
 		JailReads:     cfg.FileAccess.JailReads,
 		JailWrites:    cfg.FileAccess.JailWrites,
 		WritableExtra: cfg.FileAccess.WritableExtra,
 	}
-	switch mode {
-	case fs.ModeSaaSJailed, fs.ModeLocalJailed:
+	if policy.JailReads || policy.JailWrites {
 		return &fs.Sandboxed{Policy: policy}
-	default:
-		return fs.NewLocal(mode)
 	}
+	return fs.NewLocal(fs.ModeDangerFull)
 }
 
 // assembleDriver 按配置装配驱动（架构 v2 §3.5 按名选组件）：
