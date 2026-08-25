@@ -156,10 +156,16 @@ func ApplyOutcomes(ctx context.Context, rt *driver.RunContext, sess *session.Ses
 
 // ExecuteHook 是 tool/execute 链尾的默认执行器：实际调用工具并填充结果。
 // 平台可在其前注册包装钩子（超时/重试/指标），经 next 委托到本执行器。
+//
+// 工具执行前向 ctx 注入 *session.Session（agent.WithSession）：activate_skill
+// 等工具需要 sess 写事件 / 读本轮状态。rt.Session 由 driver 在每轮装配。
 func ExecuteHook(rt *driver.RunContext) hook.Hook {
 	return func(ctx context.Context, ev *hook.HookEvent, next hook.Next) (*hook.HookEvent, error) {
 		if ev.ToolCall == nil {
 			return next(ctx, ev)
+		}
+		if rt != nil && rt.Session != nil {
+			ctx = agent.WithSession(ctx, rt.Session)
 		}
 		result, err := rt.Tools.Call(ctx, ev.ToolCall.Name, json.RawMessage(ev.ToolCall.Args))
 		ev.Result = result

@@ -287,10 +287,13 @@ func (a *Assistant) RunStream(ctx context.Context, sess *session.Session, input 
 func (a *Assistant) ToolNames() []string { return a.tools.Names() }
 
 // WithSession 把 *session.Session 注入 ctx，供 activate_skill 等工具在执行期间
-// 经 sessionFromCtx 取用（写会话事件用）。nil 也允许注入；调用方负责装配时机。
-// 装配层（driver.RunContext 注入路径）在每轮工具调用前调用本函数把当前会话塞进 ctx。
+// 经 agent.SessionFromCtx 取用（写会话事件用）。nil 也允许注入；调用方负责装配时机。
+// 装配层（execpath.ExecuteHook）在 tool/execute 钩子前调用 agent.WithSession 注入当前会话。
+//
+// 本函数保留为兼容性转发：历史代码与测试可能直接调 assistant.WithSession；
+// 新代码建议直接调 agent.WithSession。
 func WithSession(ctx context.Context, sess *session.Session) context.Context {
-	return context.WithValue(ctx, sessionKey{}, sess)
+	return agent.WithSession(ctx, sess)
 }
 
 // confirmBridge 将旧 assistant.Confirmer（assistant.ConfirmRequest 参数）桥接为

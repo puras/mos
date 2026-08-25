@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"context"
+
 	"hegq.net/mos/agent/session"
 )
 
@@ -24,4 +26,24 @@ func ToolSubsetFromSession(sess *session.Session) []string {
 		return nil
 	}
 	return sess.TurnToolSubset
+}
+
+// sessionKey 是 ctx 中 *session.Session 的 key 类型。
+// driver 在每次工具执行前调用 WithSession 注入；ActivateSkill 等工具经
+// SessionFromCtx 取用（写事件、读本轮状态）。nil 也允许注入。
+type sessionKey struct{}
+
+// WithSession 把 *session.Session 注入 ctx，供工具执行期间按需取用。
+// driver（execpath.ExecuteHook）在 tool/execute 钩子前调用此函数。
+func WithSession(ctx context.Context, sess *session.Session) context.Context {
+	return context.WithValue(ctx, sessionKey{}, sess)
+}
+
+// SessionFromCtx 从 ctx 取 *session.Session；nil 表示未注入（如纯单元测试）。
+func SessionFromCtx(ctx context.Context) *session.Session {
+	if ctx == nil {
+		return nil
+	}
+	v, _ := ctx.Value(sessionKey{}).(*session.Session)
+	return v
 }

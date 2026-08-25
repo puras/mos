@@ -119,13 +119,9 @@ func readSkillBody(dir string) (string, error) {
 	return strings.TrimSpace(rest[end+4:]), nil
 }
 
-// sessionKey 是 ctx 中 *session.Session 的 key 类型（仅 assistant 包内可见）。
-// 装配层通过 WithSession 注入；nil 表示未装配（如纯单元测试），跳过事件写入。
-type sessionKey struct{}
-
 // sessionFromCtx 从 ctx 取 *session.Session（装配层注入；nil 时跳过事件）。
+// 委托 agent.SessionFromCtx：key 定义在 agent 包内，driver（execpath）可注入。
 func sessionFromCtx(ctx context.Context) *session.Session {
-	v, _ := ctx.Value(sessionKey{}).(*session.Session)
-	return v
+	return agent.SessionFromCtx(ctx)
 }
 
