@@ -24,6 +24,7 @@ import (
 	"hegq.net/mos/memory"
 	"hegq.net/mos/planner"
 	"hegq.net/mos/tool"
+	"hegq.net/mos/tool/fs"
 )
 
 // ErrToolDenied 表示工具调用被单调守卫拒绝（非致命：结果反馈给模型继续）。
@@ -574,10 +575,18 @@ func policyGuard(rt *driver.RunContext) hook.Guard {
 
 // executeHook 是 tool/execute 链尾的默认执行器：实际调用工具并填充结果。
 // 平台可在其前注册包装钩子（超时/重试/指标），经 next 委托到本执行器。
+//
+// 文件能力注入（file-tool-jail Task 14b）：调工具前把 rt.FS 放进 ctx，
+// 内置文件工具（read_file / write_file / find_files / grep）经 fs.FromContext(ctx)
+// 取用。注入点集中在此处而非各工具内，三个驱动（react / plan-execute / reflection）
+// 都经 react.NewReAct 装配本钩子，一处覆盖全部路径。
 func executeHook(rt *driver.RunContext) hook.Hook {
 	return func(ctx context.Context, ev *hook.HookEvent, next hook.Next) (*hook.HookEvent, error) {
 		if ev.ToolCall == nil {
 			return next(ctx, ev)
+		}
+		if rt.FS != nil {
+			ctx = fs.WithFileSystem(ctx, rt.FS)
 		}
 		result, err := rt.Tools.Call(ctx, ev.ToolCall.Name, json.RawMessage(ev.ToolCall.Args))
 		ev.Result = result

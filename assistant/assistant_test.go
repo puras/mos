@@ -2,6 +2,7 @@ package assistant
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -600,6 +601,72 @@ func TestAssistantProvidesFileSystemLocalWhenDangerFull(t *testing.T) {
 type thirdPartyPolicy struct{}
 
 func (thirdPartyPolicy) Allow(context.Context, *llm.ToolCall) error { return nil }
+
+// fsProbeTool 在 Execute 里抓取 ctx 中的 FileSystem，用于验证注入点已生效。
+type fsProbeTool struct{ got chan fs.FileSystem }
+
+func (fsProbeTool) Name() string        { return "fs_probe" }
+func (fsProbeTool) Description() string { return "探测 ctx 中的 FileSystem（测试用）" }
+func (fsProbeTool) Parameters() any     { return map[string]any{"type": "object"} }
+func (p fsProbeTool) Execute(ctx context.Context, _ json.RawMessage) (any, error) {
+	select {
+	case p.got <- fs.FromContext(ctx):
+	default:
+	}
+	return "ok", nil
+}
+
+// probeModel 首轮调 fs_probe，次轮直接作答。
+type probeModel struct{}
+
+func (probeModel) Capabilities() llm.Capability { return llm.CapFunctionCalling }
+func (probeModel) Chat(_ context.Context, req *llm.Request) (*llm.Response, error) {
+	for _, msg := range req.Messages {
+		if msg.Role == llm.RoleTool {
+			return &llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: "done"}}, nil
+		}
+	}
+	return &llm.Response{Message: llm.Message{
+		Role:      llm.RoleAssistant,
+		ToolCalls: []llm.ToolCall{{ID: "p1", Name: "fs_probe", Args: `{}`}},
+	}}, nil
+}
+func (probeModel) ChatStream(context.Context, *llm.Request, func(llm.StreamChunk) error) (*llm.Response, error) {
+	return nil, llm.ErrUnsupported
+}
+
+// TestToolCtxCarriesFileSystem 验证工具执行时 ctx 里已注入 RunContext.FS。
+// 这是 Task 15–18 四个文件工具改造的前提：它们都用 fs.FromContext(ctx) 取能力，
+// 若注入点缺失则全部 fail-closed 为 *NotConfiguredError（工具直接不可用）。
+func TestToolCtxCarriesFileSystem(t *testing.T) {
+	dir := t.TempDir()
+	probe := fsProbeTool{got: make(chan fs.FileSystem, 1)}
+	pol := NewDefaultPolicy(nil, dir)
+	if err := pol.Register("fs_probe", func(context.Context, string) error { return nil }); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	a, err := New(probeModel{}, []tool.Tool{probe}, Config{
+		FileAccess: FileAccessConfig{WorkspaceRoot: dir, JailReads: true, JailWrites: true},
+		Policy:     pol,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := a.Run(context.Background(), a.NewSession(), "探测"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	select {
+	case got := <-probe.got:
+		if got == nil {
+			t.Fatal("工具 ctx 未注入 FileSystem（Task 15–18 会全线 fail-closed）")
+		}
+		if got.Mode() != fs.ModeSaaSJailed {
+			t.Errorf("注入的 FS Mode=%s want=saas-jailed", got.Mode())
+		}
+	default:
+		t.Fatal("工具未被执行")
+	}
+}
 
 // TestBuildFileSystemJailsWithThirdPartyPolicy 验证 fail-closed：第三方 Policy 实现
 // （没有 Mode 方法）配 JailWrites=true 时，仍必须拿到 Sandboxed 而非 Local 透传。
