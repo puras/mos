@@ -60,6 +60,10 @@ type Config struct {
 	// 生成懒加载清单注入系统提示词，正文由模型触发时经 read_file 按需读取。
 	// 与 Assembler 均为 nil 时无效；设置后将自动构建默认组装器。
 	SkillsDir string
+	// DisableActivateSkill 关闭 activate_skill 工具自动注册（M2.6 Skills 强化 Task 7）：
+	// 为 true 时即使 SkillsDir 非空也不注册 ActivateSkill（应用层自管技能注入）。
+	// 默认 false。
+	DisableActivateSkill bool
 
 	// Policy 工具调用安全策略（默认 NewDefaultPolicy(nil, "")，即无额外限制）。
 	Policy driver.Policy

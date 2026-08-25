@@ -180,6 +180,79 @@ func TestAssistantSystemAssemblerCustom(t *testing.T) {
 	}
 }
 
+// ---- M2.6 Skills 强化 Task 7：activate_skill 自动注册 ----
+
+// 配置 SkillsDir 时自动注册 activate_skill（Task 7）：模型可调用，
+// 工具名出现在 ToolNames() 中。
+func TestAssistant_RegistersActivateSkill(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "git")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"),
+		[]byte("---\nname: git\ndescription: 提交辅助\n---\n# Body\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	a, err := New(&captureModel{}, nil, Config{SkillsDir: root})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	names := a.ToolNames()
+	var found bool
+	for _, n := range names {
+		if n == "activate_skill" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("activate_skill should be registered, got tools: %v", names)
+	}
+}
+
+// DisableActivateSkill=true 时不注册（即使 SkillsDir 非空）。
+func TestAssistant_DisableActivateSkill(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "git")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"),
+		[]byte("---\nname: git\ndescription: 提交辅助\n---\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	a, err := New(&captureModel{}, nil, Config{
+		SkillsDir:            root,
+		DisableActivateSkill: true,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	for _, n := range a.ToolNames() {
+		if n == "activate_skill" {
+			t.Errorf("activate_skill should NOT be registered when DisableActivateSkill=true")
+		}
+	}
+}
+
+// SkillsDir 为空时不注册 activate_skill（无 Skills 来源也无意义）。
+func TestAssistant_NoSkillsDir_NoActivateSkill(t *testing.T) {
+	a, err := New(&captureModel{}, nil, Config{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, n := range a.ToolNames() {
+		if n == "activate_skill" {
+			t.Errorf("activate_skill should NOT be registered without SkillsDir")
+		}
+	}
+}
+
 // ---- M2.7 长期记忆 RAG 检索注入装配 ----
 
 // stubRetriever 固定返回预设分块的检索器，供装配层验证。

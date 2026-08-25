@@ -107,6 +107,14 @@ func New(model llm.ChatModel, tools []tool.Tool, cfg Config) (*Assistant, error)
 			return nil, fmt.Errorf("assistant: 注册 request_human_input 失败: %w", err)
 		}
 	}
+	// M2.6 Skills 强化：SkillsDir 非空时自动注册 activate_skill（Task 6 已实现）。
+	// DisableActivateSkill 为 true 时跳过（应用层自管工具集）。
+	if cfg.SkillsDir != "" && !cfg.DisableActivateSkill {
+		skills, _ := agent.LoadSkills(cfg.SkillsDir)
+		if err := reg.Register(ActivateSkill{Skills: skills}); err != nil {
+			return nil, fmt.Errorf("assistant: 注册 activate_skill 失败: %w", err)
+		}
+	}
 	// 策略侧 Approval 与驱动侧一致（检查器据此返回 *approval.RequiredError）。
 	if p, ok := cfg.Policy.(*DefaultPolicy); ok {
 		p.Approval = cfg.Approval
