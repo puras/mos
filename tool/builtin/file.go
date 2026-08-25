@@ -93,7 +93,11 @@ func (WriteFile) Description() string {
 	return "写入或追加文本到文件（自动创建父目录）"
 }
 func (WriteFile) Parameters() any { return &writeFileParams{} }
-func (WriteFile) Execute(_ context.Context, args json.RawMessage) (any, error) {
+
+// Execute 写入文件（file-tool-jail Task 16）：路径先经 fs capability 以 OpWrite 解析
+// （Lexical + Realpath 双层，防 symlink TOCTOU），越界返回 *fs.PathDeniedError；
+// ctx 未注入 fs 时 fail-closed 返回 *fs.NotConfiguredError。
+func (WriteFile) Execute(ctx context.Context, args json.RawMessage) (any, error) {
 	p, err := tool.Parse[writeFileParams](args)
 	if err != nil {
 		return nil, err
@@ -101,7 +105,16 @@ func (WriteFile) Execute(_ context.Context, args json.RawMessage) (any, error) {
 	if p.Path == "" {
 		return nil, fmt.Errorf("path 不能为空")
 	}
-	if err := os.MkdirAll(filepath.Dir(p.Path), 0o755); err != nil {
+	fsys := fs.FromContext(ctx)
+	if fsys == nil {
+		return nil, &fs.NotConfiguredError{}
+	}
+	r, err := fsys.Resolve(ctx, fs.Request{Path: p.Path, Op: fs.OpWrite})
+	if err != nil {
+		return nil, err
+	}
+	resolved := r.TargetKey
+	if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
 		return nil, err
 	}
 	flag := os.O_CREATE | os.O_WRONLY
@@ -110,7 +123,7 @@ func (WriteFile) Execute(_ context.Context, args json.RawMessage) (any, error) {
 	} else {
 		flag |= os.O_TRUNC
 	}
-	f, err := os.OpenFile(p.Path, flag, 0o644)
+	f, err := os.OpenFile(resolved, flag, 0o644)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +133,7 @@ func (WriteFile) Execute(_ context.Context, args json.RawMessage) (any, error) {
 		return nil, err
 	}
 	return map[string]any{
-		"path":   p.Path,
+		"path":   resolved,
 		"bytes":  n,
 		"append": p.Append,
 	}, nil
