@@ -61,13 +61,15 @@ func TestWebFetchExecute(t *testing.T) {
 func TestFileTools(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "sub", "a.txt")
+	// file-tool-jail：文件工具经 ctx 取 fs capability；读写都 jail 到 dir。
+	ctx := jailCtx(t, dir)
 
 	// 写入（自动建父目录）
-	if _, err := (WriteFile{}).Execute(context.Background(), mustJSON(map[string]any{"path": fp, "content": "hello"})); err != nil {
+	if _, err := (WriteFile{}).Execute(ctx, mustJSON(map[string]any{"path": fp, "content": "hello"})); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	// 读取
-	res, err := ReadFile{}.Execute(context.Background(), mustJSON(map[string]any{"path": fp}))
+	res, err := ReadFile{}.Execute(ctx, mustJSON(map[string]any{"path": fp}))
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -75,7 +77,7 @@ func TestFileTools(t *testing.T) {
 		t.Fatalf("read content = %v", res)
 	}
 	// 搜索
-	fres, err := FindFiles{}.Execute(context.Background(), mustJSON(map[string]any{"root": dir, "pattern": "*.txt"}))
+	fres, err := FindFiles{}.Execute(ctx, mustJSON(map[string]any{"root": dir, "pattern": "*.txt"}))
 	if err != nil {
 		t.Fatalf("find: %v", err)
 	}
@@ -83,7 +85,7 @@ func TestFileTools(t *testing.T) {
 		t.Fatalf("find matches = %v", fres)
 	}
 	// 内容检索
-	gres, err := Grep{}.Execute(context.Background(), mustJSON(map[string]any{"root": dir, "pattern": "hello"}))
+	gres, err := Grep{}.Execute(ctx, mustJSON(map[string]any{"root": dir, "pattern": "hello"}))
 	if err != nil {
 		t.Fatalf("grep: %v", err)
 	}

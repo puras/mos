@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"hegq.net/mos/tool"
+	"hegq.net/mos/tool/fs"
 )
 
 const defaultReadLimit = 8192
@@ -25,7 +26,10 @@ type readFileParams struct {
 func (ReadFile) Name() string        { return "read_file" }
 func (ReadFile) Description() string { return "读取文件内容，支持指定偏移与长度" }
 func (ReadFile) Parameters() any     { return &readFileParams{} }
-func (ReadFile) Execute(_ context.Context, args json.RawMessage) (any, error) {
+
+// Execute 读取文件（file-tool-jail Task 15）：路径先经 fs capability 解析，
+// 越界返回 *fs.PathDeniedError；ctx 未注入 fs 时 fail-closed 返回 *fs.NotConfiguredError。
+func (ReadFile) Execute(ctx context.Context, args json.RawMessage) (any, error) {
 	p, err := tool.Parse[readFileParams](args)
 	if err != nil {
 		return nil, err
@@ -33,12 +37,20 @@ func (ReadFile) Execute(_ context.Context, args json.RawMessage) (any, error) {
 	if p.Path == "" {
 		return nil, fmt.Errorf("path 不能为空")
 	}
+	fsys := fs.FromContext(ctx)
+	if fsys == nil {
+		return nil, &fs.NotConfiguredError{}
+	}
+	r, err := fsys.Resolve(ctx, fs.Request{Path: p.Path, Op: fs.OpRead})
+	if err != nil {
+		return nil, err
+	}
 	limit := p.Limit
 	if limit <= 0 {
 		limit = defaultReadLimit
 	}
 
-	f, err := os.Open(p.Path)
+	f, err := os.Open(r.TargetKey)
 	if err != nil {
 		return nil, err
 	}

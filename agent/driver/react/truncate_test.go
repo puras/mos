@@ -15,6 +15,7 @@ import (
 	"hegq.net/mos/llm"
 	"hegq.net/mos/tool"
 	"hegq.net/mos/tool/builtin"
+	"hegq.net/mos/tool/fs"
 )
 
 // newTestTruncator 构造小上限截断器，便于在测试中触发截断。
@@ -109,7 +110,7 @@ func TestTruncatorEscapeHatchReRead(t *testing.T) {
 		lines = append(lines, "full_line_"+strconv.Itoa(i))
 	}
 	full := strings.Join(lines, "\n")
-	tr, _ := newTestTruncator(t, 0, 10)
+	tr, spillDir := newTestTruncator(t, 0, 10)
 	out, truncated := tr.Truncate("read_file", full)
 	if !truncated {
 		t.Fatalf("超限未截断")
@@ -123,7 +124,11 @@ func TestTruncatorEscapeHatchReRead(t *testing.T) {
 	pathEnd := strings.Index(out[pathStart:], "，")
 	spillPath := out[pathStart : pathStart+pathEnd]
 
-	resp, err := builtin.ReadFile{}.Execute(t.Context(), json.RawMessage(`{"path":"`+spillPath+`"}`))
+	// read_file 经 ctx 取 fs capability（file-tool-jail）；注入 jail 到截断器落盘目录。
+	fsCtx := fs.WithFileSystem(t.Context(), &fs.Sandboxed{Policy: &fs.FileAccessPolicy{
+		WorkspaceRoot: spillDir, JailReads: true, JailWrites: true,
+	}})
+	resp, err := builtin.ReadFile{}.Execute(fsCtx, json.RawMessage(`{"path":"`+spillPath+`"}`))
 	if err != nil {
 		t.Fatalf("read_file 回读失败: %v", err)
 	}
