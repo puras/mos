@@ -119,7 +119,7 @@ type grepParams struct {
 func (Grep) Name() string        { return "grep" }
 func (Grep) Description() string { return "按正则表达式在目录树中搜索文件内容" }
 func (Grep) Parameters() any     { return &grepParams{} }
-func (Grep) Execute(_ context.Context, args json.RawMessage) (any, error) {
+func (Grep) Execute(ctx context.Context, args json.RawMessage) (any, error) {
 	p, err := tool.Parse[grepParams](args)
 	if err != nil {
 		return nil, err
@@ -128,9 +128,9 @@ func (Grep) Execute(_ context.Context, args json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("无效正则: %w", err)
 	}
-	root := p.Root
-	if root == "" {
-		root = "."
+	root, err := resolveRoot(ctx, p.Root)
+	if err != nil {
+		return nil, err
 	}
 	maxMatches := p.MaxMatches
 	if maxMatches <= 0 {

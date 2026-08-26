@@ -122,3 +122,38 @@ func TestFindFilesNotConfiguredError(t *testing.T) {
 		t.Fatalf("未注入 fs 应返回 *fs.NotConfiguredError，got=%v", err)
 	}
 }
+
+func TestGrepRootEscapesDenied(t *testing.T) {
+	dir := t.TempDir()
+	args, _ := json.Marshal(map[string]any{"root": "/etc", "pattern": "x"})
+	_, err := Grep{}.Execute(jailCtx(t, dir), args)
+	var pd *fs.PathDeniedError
+	if !errors.As(err, &pd) {
+		t.Fatalf("应返回 *PathDeniedError，got=%v", err)
+	}
+}
+
+func TestGrepDefaultsToWorkspaceRoot(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a\n// hello\n"), 0o644); err != nil {
+		t.Fatalf("准备文件失败: %v", err)
+	}
+	args, _ := json.Marshal(map[string]any{"pattern": "hello"})
+	r, err := Grep{}.Execute(jailCtx(t, dir), args)
+	if err != nil {
+		t.Fatalf("Execute 失败: %v", err)
+	}
+	m := r.(map[string]any)
+	if m["count"].(int) != 1 {
+		t.Errorf("count=%v want=1（Root 空时应默认 WorkspaceRoot）", m["count"])
+	}
+}
+
+func TestGrepNotConfiguredError(t *testing.T) {
+	args, _ := json.Marshal(map[string]any{"pattern": "x"})
+	_, err := Grep{}.Execute(context.Background(), args)
+	var nc *fs.NotConfiguredError
+	if !errors.As(err, &nc) {
+		t.Fatalf("未注入 fs 应返回 *fs.NotConfiguredError，got=%v", err)
+	}
+}
