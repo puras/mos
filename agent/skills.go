@@ -170,10 +170,10 @@ func writeSkillLine(b *strings.Builder, s Skill) {
 	b.WriteString("\n")
 }
 
-// AddTurnSkill 追加一个激活 Skill 到 sess 的本轮状态：把 Skill 投影为
+// AddTurnSkill 追加一个激活 Skill 到 sess 的本次 Run 状态：把 Skill 投影为
 // session.ActivatedSkill 后 append 到 TurnSkills；同时把 AllowedTools 合并
 // 进 TurnToolSubset（Set semantics，去重保序；TurnToolSubset 为 nil 时仍为 nil，
-// 与 spec §6.2 "未声明 = 不收窄" 一致）。driver 在每轮首尾清零两字段。
+// 与 spec §6.2 "未声明 = 不收窄" 一致）。driver 在 Run 首尾清零两字段（跨轮持续生效）。
 //
 // 此处定义为包级自由函数（而非 *session.Session 的方法），因为 agent 包
 // 已经依赖 session；反向让 session 引用 agent 会产生循环依赖。

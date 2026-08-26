@@ -62,7 +62,8 @@ const (
 	SessionEventSkillLoad = "skill/load"
 	// SessionEventSkillActivate 技能激活（emit 观测）：activate_skill 工具执行成功后写入。
 	SessionEventSkillActivate = "skill/activate"
-	// SessionEventSkillDeactivate 技能取消激活（emit 观测）：每轮 runTurnInner 末尾统一写入。
+	// SessionEventSkillDeactivate 技能取消激活（emit 观测）：react.Run 收尾 defer 统一写入
+	// （作用域是本次 Run 而非单轮——见 agent/driver/react.Run 起始处说明）。
 	SessionEventSkillDeactivate = "skill/deactivate"
 )
 

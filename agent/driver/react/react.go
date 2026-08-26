@@ -453,7 +453,7 @@ func (d *ReActDriver) saveCheckpoint(ctx context.Context, rt *driver.RunContext,
 
 // skillAllowListGuard 是技能允许工具白名单（allowed-tools）守卫：在工具 preflight
 // 阶段从 sess.TurnToolSubset 读取（由 activate_skill 工具经 agent.AddTurnSkill
-// 写入，含本轮所有已激活 Skill 的 allowed-tools 并集），不在子集中的工具调用返回
+// 写入，含本次 Run 所有已激活 Skill 的 allowed-tools 并集），不在子集中的工具调用返回
 // *execpath.ToolDeniedError 拦截（非致命，execpath.ApplyOutcomes 显式失败回填给
 // 模型）。与 policyGuard 同级注册，不可被 hook 改写绕过，确保 allowed-tools 是
 // 单调硬限制。rt 在 NewReAct 注册时捕获（Guard 签名只接受 ctx）。

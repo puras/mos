@@ -42,15 +42,16 @@ type Session struct {
 	Persistence Persistence `json:"-"`
 	persisted   bool        `json:"-"`
 
-	// TurnSkills 是本轮已激活 Skill 列表（不持久化；driver 每轮首尾清零）。
-	// 替代 ctx 注入方案：因 tool.Registry.Call 不返回 ctx，本轮累积状态
+	// TurnSkills 是本次 Run 已激活的 Skill 列表（不持久化；driver 在 Run 首尾清零，
+	// 跨轮持续生效——作用域见 agent/driver/react.Run 起始处说明）。
+	// 替代 ctx 注入方案：因 tool.Registry.Call 不返回 ctx，累积状态
 	// 只能放在可见对象（sess）上。json:"-" 保证 Session.Save 序列化跳过。
 	// 注意：Skill 完整定义在 agent 包（不可在此直接引用，避免 agent↔session
 	// 循环依赖）；这里存的是激活 Skill 的最小切片（Name + AllowedTools），
 	// agent.AddTurnSkill 负责把 agent.Skill 投影为 ActivatedSkill。
 	TurnSkills []ActivatedSkill `json:"-"`
-	// TurnToolSubset 是本轮工具白名单并集（nil = 不限制）；ActivateSkill
-	// 写入；driver 每轮首尾清零。
+	// TurnToolSubset 是本次 Run 的工具白名单并集（nil = 不限制）；ActivateSkill
+	// 写入；driver 在 Run 首尾清零。
 	TurnToolSubset []string `json:"-"`
 }
 

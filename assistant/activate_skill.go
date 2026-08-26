@@ -15,7 +15,7 @@ import (
 )
 
 // ActivateSkill 是技能激活工具（MoS Skills 强化 Task 6）：
-// 模型经 activate_skill 工具触发一个技能，把正文 + references + 允许工具列表注入本轮回复。
+// 模型经 activate_skill 工具触发一个技能，把正文 + references + 允许工具列表注入本次 Run。
 // 工具调用流程：
 //  1. 解析 name → 在 Skills 中查找匹配；
 //  2. 读取 SKILL.md 正文（去掉 frontmatter）；
@@ -35,7 +35,7 @@ func (ActivateSkill) Name() string { return "activate_skill" }
 // Description 实现 tool.Tool。
 func (ActivateSkill) Description() string {
 	return "按名激活一个技能：返回该技能的正文、references 路径与允许工具白名单。" +
-		"激活后本轮已激活技能列表累积，模型可继续调用其他技能或直接使用返回的正文。"
+		"激活在本次任务内持续生效（可继续激活其他技能，白名单取并集），也可直接使用返回的正文。"
 }
 
 // Parameters 实现 tool.Tool：仅 name 一个必填字段。
@@ -78,7 +78,7 @@ func (t ActivateSkill) Execute(ctx context.Context, args json.RawMessage) (any, 
 
 	body, _ := readSkillBody(target.Dir)
 
-	// sess 注入：本轮已激活 + 工具子集并集（替代旧 ctx 方案——tool.Registry.Call
+	// sess 注入：本次 Run 已激活 + 工具子集并集（替代旧 ctx 方案——tool.Registry.Call
 	// 不返回 ctx，累积状态须放在可见对象 sess 上）。
 	if sess := sessionFromCtx(ctx); sess != nil {
 		agent.AddTurnSkill(sess, *target)
