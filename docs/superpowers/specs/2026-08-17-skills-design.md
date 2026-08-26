@@ -13,7 +13,9 @@ MoS 当前 Skills 能力仅解析 `name` / `description`，模型自由 `read_fi
 - **不实现 `model` / `agent` / `hooks` 字段**——与现有 `llm/wrap` 装饰器 / `SubAgent` 原语（M3）/ `HookRegistry` 职责重叠。Skills 保持"知识包"纯语义。
 - **不实现 marketplace / 安装 / 认证 / 索引**——架构 §9.3 已划归平台层。
 - **不实现 `user_invocable` 斜杠命令面**——SDK 不暴露 CLI；字段可声明，由平台层消费。
-- **不实现跨会话 Skill 状态**——激活态仅单轮生效（与 `request_human_input` 同生命周期）。
+- **不实现跨会话 Skill 状态**——激活态仅本次 Run 内生效（跨轮持续、Run 收尾清零；
+  设计变更记录：v1 草案原定"单轮"，实施中发现轮结束清零使 allowed-tools 在模型
+  真正使用技能前即失效，故改为 Run 作用域）。
 - **不实现 Skill 间依赖锁 / 版本管理**——YAGNI，路径管理留给平台层。
 
 ## 3. frontmatter 字段契约（v1）
@@ -83,7 +85,8 @@ type Skill struct {
 
 - **自动注册**：当 `assistant.Config.SkillsDir != ""` 时 `assistant.New` 自动注册
 - **可关闭**：`assistant.Config.DisableActivateSkill bool` 默认 false
-- **作用域**：单轮生效（与 `request_human_input` 同模式）
+- **作用域**：本次 Run 内生效（Run 首部清零、Run 收尾 defer 统一 deactivate；
+  跨轮持续生效使 allowed-tools 硬限制真正可用——见 §5.4 变更说明）
 
 ### 5.2 工具签名
 
@@ -120,8 +123,9 @@ type SkillActivationResult struct {
 ### 5.4 并发与互斥
 
 - **同时激活多个 Skill**：`AllowedTools` 取并集；每个 Skill 各自写 `skill/activate` 事件
-- **轮结束清空**：`react.runTurnInner` 末尾 emit `skill/deactivate` 载荷本轮所有 name，
-  并清零 `sess.TurnSkills` / `sess.TurnToolSubset`（防御性轮首 reset 在 runTurnInner 顶部再次兜底）
+- **Run 收尾清空**：`react.Run` 以 `defer emitSkillDeactivate` 在 Run 结束（完成/出错/挂起
+  冒泡）时 emit `skill/deactivate` 载荷本次 Run 激活过的全部 name，并清零
+  `sess.TurnSkills` / `sess.TurnToolSubset`；Run 首部亦有清零兜底
 
 ## 6. 工具子集硬限制
 
@@ -151,7 +155,7 @@ if subset := toolSubsetFromCtx(ctx); subset != nil {
 const (
     SessionEventSkillLoad       = "skill/load"       // 装配时扫描
     SessionEventSkillActivate   = "skill/activate"   // activate_skill 调用
-    SessionEventSkillDeactivate = "skill/deactivate" // 轮结束清空
+    SessionEventSkillDeactivate = "skill/deactivate" // Run 收尾清空
 )
 
 type SkillLoadData struct {
@@ -187,7 +191,7 @@ type SkillDeactivateData struct {
 
 **`skill/activate` 触发时机**：`activate_skill` 工具 Execute 成功后。
 
-**`skill/deactivate` 触发时机**：每轮 `runTurnInner` 末尾（无论成功/失败/挂起）。
+**`skill/deactivate` 触发时机**：`react.Run` 收尾 defer（无论完成/出错/挂起冒泡）。
 
 ## 8. SlotSkills 渲染升级
 
@@ -212,10 +216,10 @@ type SkillDeactivateData struct {
 
 ### 9.1 `react.runTurnInner`
 
-- 每轮开始：`sess.TurnSkills = nil`，`sess.TurnToolSubset = nil`（防御性 reset，
-  避免上一轮 early-return 路径未走 emitSkillDeactivate 导致状态泄漏）
-- `activate_skill` 工具执行后：`agent.AddTurnSkill(sess, target)` 累积
-- 每轮结束（成功 / SuspendError / 失败）：
+- Run 开始：`sess.TurnSkills = nil`，`sess.TurnToolSubset = nil`，
+  `defer emitSkillDeactivate(ctx, sess)` 注册 Run 收尾钩子
+- `activate_skill` 工具执行后：`agent.AddTurnSkill(sess, target)` 累积（跨轮持续）
+- Run 结束（完成 / SuspendError 挂起冒泡 / 失败）：defer 统一写事件并清零：
   ```go
   if len(sess.TurnSkills) > 0 {
       sess.Append(event.SkillDeactivate, SkillDeactivateData{Names: ...})
@@ -301,7 +305,7 @@ agent/skills.go              # 解析 + 数据结构扩展
 agent/skills_test.go         # 单元测试扩展
 agent/event/events.go        # +3 常量 +3 payload
 agent/observer.go            # +EventSkillLoad/Activate/Deactivate 观测枚举
-agent/driver/react/react.go  # 轮结束 deactivate + executeTool 前置校验
+agent/driver/react/react.go  # Run 收尾 defer deactivate + GuardBus 白名单守卫
 agent/driver/react/react_skills_test.go  # driver 集成测试
 assistant/config.go          # +DisableActivateSkill
 assistant/assistant.go       # 自动注册 activate_skill
@@ -317,6 +321,6 @@ README.md                    # Skills 章节更新
 - `model` / `agent` / `hooks` 字段（与现有机制重叠）
 - marketplace / 安装 / 认证（平台层）
 - Skill 间依赖锁 / 版本（YAGNI）
-- 跨会话 Skill 状态（仅单轮）
+- 跨会话 Skill 状态（仅本次 Run；TurnSkills 不进 checkpoint，跨挂起-恢复不保留）
 - 用户斜杠命令面（CLI 不在 SDK 范围）
 - Skill 嵌套（一个 Skill 引用另一个 Skill）

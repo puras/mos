@@ -104,6 +104,19 @@ type defaultSystemAssembler struct {
 	loadErr error
 }
 
+// hasSkillLoadEvent 判断会话日志里是否已有 skill/load 事件（每会话只写一次的幂等判据）。
+func hasSkillLoadEvent(sess *session.Session) bool {
+	if sess == nil {
+		return false
+	}
+	for _, ev := range sess.Events {
+		if ev.Type == event.SessionEventSkillLoad {
+			return true
+		}
+	}
+	return false
+}
+
 // Assemble 实现 SystemAssembler：按固定顺序输出启用的槽位分段。
 // 项目指令与技能清单仅在首次调用时从磁盘加载（配置不变则缓存复用）。
 func (a *defaultSystemAssembler) Assemble(ctx context.Context, sess *session.Session, tools []llm.Tool) ([]SystemSection, error) {
@@ -134,20 +147,26 @@ func (a *defaultSystemAssembler) Assemble(ctx context.Context, sess *session.Ses
 	}
 	if len(a.skills) > 0 {
 		add(SlotSkills, "技能清单", renderSkills(a.skills))
-		// 写 skill/load 事件（durable）：首次扫描后写入一次，把全部 Skill frontmatter
-		// 摘要落 Session Event Log（与 approval/checkpoint 事件同等地位）。
+		// 写 skill/load 事件（durable）：每会话一次，把全部 Skill frontmatter 摘要落
+		// Session Event Log（与 approval/checkpoint 事件同等地位）。
+		//
+		// 幂等判据取自会话日志本身（而非 a.once）：本组装器由 buildRunContext 装配后
+		// 被同一 Assistant 的所有会话共享，once 只会让"第一个跑到这里的会话"拿到事件，
+		// 其余会话永久缺失。日志即事实——扫已有事件是唯一对多会话与 Resume 都正确的判据。
 		// 事件落库失败向上抛（fail-fast），与 session.Restore 一致。
-		metas := make([]event.SkillMeta, 0, len(a.skills))
-		for _, s := range a.skills {
-			metas = append(metas, event.SkillMeta{
-				Name: s.Name, Description: s.Description,
-				SchemaVersion: s.SchemaVersion, WhenToUse: s.WhenToUse,
-				AllowedTools: s.AllowedTools, References: s.References,
-				Paths: s.Paths, Source: s.Source, UserInvocable: s.UserInvocable,
-			})
-		}
-		if err := sess.Append(event.SessionEventSkillLoad, event.MarshalData(event.SkillLoadData{Skills: metas})); err != nil {
-			return out, fmt.Errorf("system assembler: append skill/load: %w", err)
+		if !hasSkillLoadEvent(sess) {
+			metas := make([]event.SkillMeta, 0, len(a.skills))
+			for _, s := range a.skills {
+				metas = append(metas, event.SkillMeta{
+					Name: s.Name, Description: s.Description,
+					SchemaVersion: s.SchemaVersion, WhenToUse: s.WhenToUse,
+					AllowedTools: s.AllowedTools, References: s.References,
+					Paths: s.Paths, Source: s.Source, UserInvocable: s.UserInvocable,
+				})
+			}
+			if err := sess.Append(event.SessionEventSkillLoad, event.MarshalData(event.SkillLoadData{Skills: metas})); err != nil {
+				return out, fmt.Errorf("system assembler: append skill/load: %w", err)
+			}
 		}
 	}
 	// 历史摘要：默认关闭（Compactor 已注入消息历史），显式启用时取自 TaskState 快照

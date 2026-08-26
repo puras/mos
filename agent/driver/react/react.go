@@ -111,6 +111,16 @@ func (d *ReActDriver) Run(ctx context.Context, rt *driver.RunContext, input stri
 	sess := rt.Session
 	ctx = tool.WithSandbox(ctx, rt.Sandbox)
 
+	// Skills 激活态作用域 = 本次 Run（不是单轮）：
+	// 模型只能在"下一轮"用上技能正文的指引，若轮结束就清零，allowed-tools 白名单
+	// 在模型真正调工具前已失效，硬限制形同虚设。故起始清零、Run 收尾统一 deactivate，
+	// 中间各轮持续生效（多技能取并集）。
+	// 已知边界：TurnSkills 不进 checkpoint（json:"-"），跨挂起-恢复不保留——
+	// resume 会重放挂起轮的工具批，该批内若含 activate_skill 则重新激活。
+	sess.TurnSkills = nil
+	sess.TurnToolSubset = nil
+	defer emitSkillDeactivate(ctx, sess)
+
 	// 任务状态初始化：首次运行记录原始目标，进入 running。
 	// （resume 路径由 Handle.Resume 预加载持久化的 TaskState，Goal 已非空。）
 	if sess.State.Goal == "" {
@@ -175,10 +185,8 @@ func (d *ReActDriver) runTurn(ctx context.Context, rt *driver.RunContext, sess *
 func (d *ReActDriver) runTurnInner(ctx context.Context, rt *driver.RunContext, sess *session.Session, turn int, history []session.InternalMessage) (string, bool, error) {
 	const step = 1
 
-	// 防御性轮首清零：上一轮若经 early-return 路径未走 emitSkillDeactivate
-	//（如 max_turns 截断），本轮起始仍要拿到空状态，避免 TurnSkills / TurnToolSubset 跨轮泄漏。
-	sess.TurnSkills = nil
-	sess.TurnToolSubset = nil
+	// 注：激活态（TurnSkills / TurnToolSubset）的清零与 skill/deactivate 落库
+	// 统一在 Run 起始/收尾处理——作用域是本次 Run，不在轮边界清零。
 
 	// M2.8 resume：从挂起轮直接进入工具批量执行（跳过 LLM 调用与日志重放）。
 	if ckpt := rt.ResumeCheckpoint; ckpt != nil && ckpt.Turn == turn {
@@ -231,7 +239,6 @@ func (d *ReActDriver) runTurnInner(ctx context.Context, rt *driver.RunContext, s
 		_ = sess.Append(event.SessionEventStepEnd, event.StepData{Turn: turn, Step: step})
 		_ = sess.Append(event.SessionEventTurnEnd, event.TurnData{Turn: turn, Reason: "done"})
 		rt.Notify(agent.Event{Type: agent.EventDone, SessionID: sess.ID, Turn: turn, Content: action.Content})
-		emitSkillDeactivate(ctx, sess)
 		return action.Content, true, nil
 	}
 
@@ -247,7 +254,6 @@ func (d *ReActDriver) runTurnInner(ctx context.Context, rt *driver.RunContext, s
 			rt.Notify(agent.Event{Type: agent.EventToolResult, SessionID: sess.ID, Turn: turn, ToolCall: call})
 		}
 		_ = sess.Append(event.SessionEventStepEnd, event.StepData{Turn: turn, Step: step})
-		emitSkillDeactivate(ctx, sess)
 		return "", false, nil
 	}
 
@@ -258,21 +264,19 @@ func (d *ReActDriver) runTurnInner(ctx context.Context, rt *driver.RunContext, s
 		if err := d.saveCheckpoint(ctx, rt, sess, turn, step, calls, suspend); err != nil {
 			return "", false, fmt.Errorf("agent: save checkpoint: %w", err)
 		}
-		emitSkillDeactivate(ctx, sess)
 		return "", false, suspend
 	}
 
-	reply, done, ferr := d.finalizeToolBatch(ctx, rt, sess, turn, step, calls, &action, outs)
-	emitSkillDeactivate(ctx, sess)
-	return reply, done, ferr
+	return d.finalizeToolBatch(ctx, rt, sess, turn, step, calls, &action, outs)
 }
 
-// emitSkillDeactivate 在轮结束统一写 skill/deactivate 事件：把本轮激活的 Skill
-// 清单（sess.TurnSkills 的 Name 字段）作为 Names 字段落库；无激活 Skill 时为 no-op。
-// 调用方负责在 runTurnInner 三处正常 return 之前调用——是 M3 Skills 强化"轮结束
-// 取消激活态"的统一观测点，对齐架构 v2 §3.5 Skills 生命周期。同时清零 TurnSkills
-// + TurnToolSubset（防御性：与 runTurnInner 轮首清零呼应，确保即使 early-return
-// 路径也下轮重新累积）。
+// emitSkillDeactivate 在 Run 收尾统一写 skill/deactivate 事件：把本次 Run 激活过的
+// Skill 清单（sess.TurnSkills 的 Name 字段）作为 Names 字段落库，并清零激活态；
+// 无激活 Skill 时为 no-op。
+//
+// 由 Run 以 defer 调用（正常完成 / 出错 / 挂起冒泡都会走到），是 Skills 强化
+// "取消激活态"的唯一观测点，对齐架构 v2 §3.5 Skills 生命周期。
+// 作用域是本次 Run 而非单轮——见 Run 起始处的说明。
 func emitSkillDeactivate(ctx context.Context, sess *session.Session) {
 	if sess == nil {
 		return
@@ -285,7 +289,7 @@ func emitSkillDeactivate(ctx context.Context, sess *session.Session) {
 		names[i] = s.Name
 	}
 	_ = sess.Append(event.SessionEventSkillDeactivate, event.MarshalData(event.SkillDeactivateData{Names: names}))
-	// 清零本轮状态——下轮重新累积
+	// 清零激活态——下次 Run 重新累积
 	sess.TurnSkills = nil
 	sess.TurnToolSubset = nil
 }
