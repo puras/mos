@@ -1,2 +1,8 @@
 .env
 .idea/
+
+# Go 构建缓存（GOCACHE 指向仓库内时产生；go clean -cache 可清理）
+.gocache/
+
+# Claude Code 本地会话配置与临时 worktree
+.claude/
