@@ -30,7 +30,10 @@ const (
 	KindPlanner   Kind = "planner"
 	KindReflector Kind = "reflector"
 
-	KindFileSystem Kind = "filesystem" // 文件系统 capability（Task 8/13 装配）
+	// KindFileSystem 文件系统 capability（架构 v2 §3.5，对位 dsh ctx.fs）。
+	// 平台可注册自定义 FileSystem 实现（如远程/对象存储后端）；
+	// 内置装配走 assistant.buildFileSystem 直挂 RunContext.FS，不经本注册表。
+	KindFileSystem Kind = "filesystem"
 )
 
 // Factory 是组件提供者：每次解析调用工厂，产出独立实例（有状态组件不共享）。

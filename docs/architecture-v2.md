@@ -1,4 +1,4 @@
-# MoS 架构演进规划（v2.19）
+# MoS 架构演进规划（v2.20）
 
 > 状态：设计规划（未实施）｜ 参考：DeepSeek Harness（dsh）+ Cordis 插件框架
 > 目标：让 MoS 支持**多智能体循环类型（ReAct / Plan&Execute / Reflection）、环节可改写、提供者可替换、运行期装配**，采用 Go SDK 惯用法（编译期注册 + 运行期选择），不设向后兼容负担（未发布）。
@@ -8,6 +8,7 @@
 
 | 日期 | 版本 | 更新内容 |
 | --- | --- | --- |
+| 2026-08-19 | v2.20 | 实施：文件工具 Jail 落地——新包 `tool/fs`（`FileSystem` seam 接口 + `Sandboxed` 双层校验 + `Local` 透传 + `WritableRoots` 共享根 + `WithFileSystem`/`FromContext` ctx 注入 + `WithBus` 审计注入），对齐 dsh `ctx.fs` + `sandboxPolicy` + `shell.sandboxMode` 三 seam 同形；`assistant.FileAccessConfig{WorkspaceRoot, JailReads, JailWrites, WritableExtra}`——`WorkspaceRoot` 必填，零值使 `New` 失败（**破坏性变更**，不保留向后兼容）；jail 开关唯一事实来源为 `FileAccessConfig.Jail*`（不依赖 Policy 具体类型，防第三方 Policy 下 jail 静默失效）；`withinDir` 与 shell 受限危险命令校验统一改用 `WritableRoots` 多根（与 fs sandbox 共根防配置漂移）；`react.executeHook` 统一注入 FS + Bus 到工具 ctx（三驱动都经 `react.NewReAct` 装配，一处覆盖）；四个内置文件工具（read_file / write_file / find_files / grep）全部经 `fs.FromContext` 取能力，未注入即 `*NotConfiguredError`（fail-closed）；新增 `fs/resolve` 审计事件（allow/deny 双分支，可回放） |
 | 2026-08-17 | v2.19 | 实施：`request_human_input` 人工介入工具落地——配置 Approval 时自动注册；首次调用经 `Approval.Request` 挂起（checkpoint 落库），resume 后经 ctx 决策表读取人类回答（`ApprovalDecision.Content`）返回给模型；同步确认器经 `Immediate` 不挂起直接返回；新增 `tool.WithCallID` ctx 注入 + `approval.WithApproval`/`WithResumeDecisions` 上下文辅助 + `DefaultPolicy` 放行 + E2E 测试（人类作答路径）；M2.8 全部完成 |
 | 2026-08-17 | v2.18 | 实施：M2.8 异步审批 + Checkpointer + AgentHandle 全量落地——新包 `agent/approval`（Approval Request/Resolve + SuspendError + InMemApproval + ConfirmerAdapter/Immediate，对齐 PI SuspendedOperation）、`agent/checkpoint`（Checkpoint + Store seam：内存/文件后端，数据库由业务层注入）、`agent/handle`（AgentHandle + Registry + ValidateMissing，对齐 dsh AgentRegistry）；策略检查器改返回 `*approval.RequiredError`，policyGuard 发起审批、批量 preflight 守卫先行日志后置、挂起整批中止；`session.Persistence` 增 `SaveState/LoadState`（TaskState 持久化）、`Session.DropInterruptedForTurn`；事件目录新增 approval/request+resolve、checkpoint/save+restore、agent/created+disposed+status、subagent/start、agent/inbox；修 `RunContext.Bus` 始终 nil 缺陷（默认 EventBus）；§5.2 第 11 项落地 |
 | 2026-08-17 | v2.17 | 实施：新能力 `agent/telemetry`（Telemetry seam 契约：TelemetryContext/TelemetrySpan + Noop + WithSpan 回调生命周期 + Recorder 参考实现 + Conformance 契约测试，对齐 PI pi-telemetry）；RunContext.Telemetry 注入（nil 降级 no-op）；ReAct 驱动自动打点 driver.turn / llm.request / tool.execute span；§5.2 第 10 项落地，v2 重构 10 项全部完成 |
@@ -288,6 +289,7 @@ type SeamRegistry struct {
 	attachments  map[string]AttachmentFactory // 二进制附件存储（文件上传）
 	persistence  map[string]PersistenceFactory // 会话日志持久化（jsonl 内置；sqlite 等数据库后端由业务层注册注入）
 	compactors   map[string]CompactorFactory   // 压缩能力（能力 seam，Provider 可换）
+	filesystems  map[string]FileSystemFactory  // 文件系统 capability（KindFileSystem，对齐 dsh ctx.fs）
 }
 
 // 使用：assistant.Config 支持按名
@@ -301,6 +303,16 @@ cfg := assistant.Config{
 ```
 
 每个 seam 遵循 dsh 三角色：**服务定义**（接口，已有或新增）→ **提供者**（注册）→ **消费者**（按名解析）。持久化 seam 细节见 3.8（crash 恢复/批量落盘语义）。
+
+**`KindFileSystem`（文件系统 capability）**——对齐 dsh 的 `ctx.fs` + `sandboxPolicy` + `shell.sandboxMode` 三 seam 同形：
+
+| 角色 | 落地 |
+| --- | --- |
+| 服务定义 | `tool/fs.FileSystem`（`Resolve(ctx, Request) (*Resolved, error)` + `Mode() Mode`） |
+| 提供者 | `tool/fs.Sandboxed`（Lexical + Realpath 双层 jail）/ `tool/fs.Local`（透传，仅 `danger-full`） |
+| 消费者 | 四个内置文件工具经 `fs.FromContext(ctx)` 取用；缺失即 `*fs.NotConfiguredError`（fail-closed） |
+
+装配走 `assistant.New` → `buildFileSystem(cfg)` → `RunContext.FS`，注入点在 `react.executeHook`（调工具前 `fs.WithFileSystem` + `fs.WithBus`，三驱动共用故一处覆盖全路径）。jail 开关的唯一事实来源是 `FileAccessConfig.Jail*`，不依赖 Policy 具体类型——第三方 Policy 实现同样受 jail 约束。`WritableRoots(policy)` 由 fs sandbox 与 shell policy 共用，防两处配置漂移。
 
 ### 3.6 任务路由（`DriverRouter`）
 
