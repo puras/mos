@@ -157,3 +157,37 @@ func TestGrepNotConfiguredError(t *testing.T) {
 		t.Fatalf("未注入 fs 应返回 *fs.NotConfiguredError，got=%v", err)
 	}
 }
+
+// TestWalkDoesNotFollowSymlinkedDirs 钉住 filepath.WalkDir 不跟随 symlink 的保证：
+// workspace 内指向外部的 symlink 目录，其中的文件不得出现在 find_files / grep 结果里。
+func TestWalkDoesNotFollowSymlinkedDirs(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "secret.go")
+	if err := os.WriteFile(secret, []byte("package leak\n// needle\n"), 0o644); err != nil {
+		t.Fatalf("准备外部文件失败: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "leak")); err != nil {
+		t.Skipf("不支持 symlink: %v", err)
+	}
+
+	ctx := jailCtx(t, dir)
+
+	fargs, _ := json.Marshal(map[string]any{"root": dir, "pattern": "*.go"})
+	fr, err := FindFiles{}.Execute(ctx, fargs)
+	if err != nil {
+		t.Fatalf("FindFiles: %v", err)
+	}
+	if got := fr.(map[string]any)["count"].(int); got != 0 {
+		t.Errorf("find_files 不应透过 symlink 目录枚举外部文件，got count=%d", got)
+	}
+
+	gargs, _ := json.Marshal(map[string]any{"root": dir, "pattern": "needle"})
+	gr, err := Grep{}.Execute(ctx, gargs)
+	if err != nil {
+		t.Fatalf("Grep: %v", err)
+	}
+	if got := gr.(map[string]any)["count"].(int); got != 0 {
+		t.Errorf("grep 不应透过 symlink 目录扫描外部文件，got count=%d", got)
+	}
+}
