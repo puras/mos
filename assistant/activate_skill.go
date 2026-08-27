@@ -41,6 +41,13 @@ func (ActivateSkill) Description() string {
 // Parameters 实现 tool.Tool：仅 name 一个必填字段。
 func (ActivateSkill) Parameters() any { return &activateSkillArgs{} }
 
+// Sequential 实现 tool.SequentialTool：本工具改写共享会话状态
+// （sess.TurnSkills / sess.TurnToolSubset 累积 + sess.Append 写事件日志），
+// 模型一次返回多个 activate_skill 时并发执行会产生数据竞争（Seq 重复/丢失、
+// 白名单切片撕裂——而白名单是安全控制）。声明串行让 execpath.ExecuteBatch
+// 把整批回退为顺序执行，与 rt.AddFact 用 factMu 串行化 TaskState.Facts 同源。
+func (ActivateSkill) Sequential() bool { return true }
+
 // activateSkillArgs 是 activate_skill 工具参数。
 type activateSkillArgs struct {
 	Name string `json:"name" jsonschema:"required"`
