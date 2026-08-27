@@ -266,7 +266,6 @@ type SkillMeta struct {
 	WhenToUse     string   `json:"when_to_use,omitempty"`
 	AllowedTools  []string `json:"allowed_tools,omitempty"`
 	References    []string `json:"references,omitempty"`
-	Paths         []string `json:"paths,omitempty"`
 	Source        string   `json:"source,omitempty"`
 	UserInvocable bool     `json:"user_invocable,omitempty"`
 }

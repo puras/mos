@@ -32,9 +32,6 @@ allowed-tools:                     # 可选：硬限制工具子集（未声明 
 references:                        # 可选：references/ 子文档路径（模型按需 Read）
   - references/commit-types.md
   - references/conventional-commits.md
-paths:                             # 可选：glob 路径过滤（仅影响 SlotSkills 清单）
-  - "*.go"
-  - "**/*.proto"
 source: local                      # 可选：local / github:owner/repo 审计用
 user-invocable: true               # 可选：是否允许斜杠命令调用（v1 仅声明，CLI 不接）
 ---
@@ -50,11 +47,10 @@ user-invocable: true               # 可选：是否允许斜杠命令调用（v
 | `when_to_use` | string | — | 标量 |
 | `allowed-tools` | string list | — | inline `["a", "b"]` 或多行 `- a` |
 | `references` | string list | — | 同上 |
-| `paths` | string list | — | 同上 |
 | `source` | string | — | 标量 |
 | `user-invocable` | bool | — | 标量（默认 false） |
 
-**解析方式**：使用 `gopkg.in/yaml.v3`（已在 go.mod 声明）。保留 `parseFrontmatter` 旧路径（仅 `name` / `description`），新路径解析完整 8 字段。
+**解析方式**：使用 `gopkg.in/yaml.v3`（已在 go.mod 声明）。保留 `parseFrontmatter` 旧路径（仅 `name` / `description`），新路径解析完整 7 字段。
 
 ## 4. 数据结构
 
@@ -67,13 +63,11 @@ type Skill struct {
     WhenToUse     string   // 可选
     AllowedTools  []string // 可选
     References    []string // 可选
-    Paths         []string // 可选
     Source        string   // 可选
     UserInvocable bool     // 可选，默认 false
 
     // 运行时元数据
-    Dir          string // SKILL.md 所在目录（references 拼接用）
-    PathMatch    bool   // 当前 working dir 是否命中 paths glob
+    Dir string // SKILL.md 所在目录（references 拼接用）
 }
 ```
 
@@ -169,7 +163,6 @@ type SkillMeta struct {
     WhenToUse     string   `json:"when_to_use,omitempty"`
     AllowedTools  []string `json:"allowed_tools,omitempty"`
     References    []string `json:"references,omitempty"`
-    Paths         []string `json:"paths,omitempty"`
     Source        string   `json:"source,omitempty"`
     UserInvocable bool     `json:"user_invocable,omitempty"`
 }
@@ -195,22 +188,16 @@ type SkillDeactivateData struct {
 
 ## 8. SlotSkills 渲染升级
 
-`renderSkills` 增强输出：
+`renderSkills` 输出单段清单（设计变更：v1 草案的 `paths` glob 过滤 + 命中/未命中
+两段渲染已移除——清单过滤属**业务层职责**，业务可经 `Config.Assembler` 自定义组装器
+实现；框架不扫盘、不引入 glob 语义，全部技能统一列出）：
 
 ```
 以下技能按需触发（用 activate_skill 工具激活；激活后正文 + references 路径返回给你）：
 
-可用技能：
-- git-commit-helper: 辅助提交 Git commit（*.go）
-- proto-migration: proto 文件迁移（**/*.proto）
-
-未命中路径（模型可手动 activate_skill 调用）：
-- deployment-runbook: 部署运维（路径未命中）
+- git-commit-helper: 辅助提交 Git commit
+- proto-migration: proto 文件迁移
 ```
-
-- `PathMatch = true` 的 Skill 列入"可用技能"
-- `PathMatch = false` 的 Skill 列入"未命中路径"（仍可手动激活）
-- 不命中 paths glob 的 Skill 仍可被模型主动调 `activate_skill` 加载
 
 ## 9. driver 集成点
 
@@ -263,11 +250,10 @@ type Config struct {
 
 ### 11.1 单元测试（`agent/skills_test.go`）
 
-- `TestParseFrontmatter_Full` — 完整 8 字段解析
+- `TestParseFrontmatter_Full` — 完整 7 字段解析
 - `TestParseFrontmatter_Minimal` — 仅 `name` / `description` / `schema_version`（向后兼容）
 - `TestParseFrontmatter_BadYAML` — 格式错误不 panic，返回 ok=false
 - `TestLoadSkills_SubDir` — 子目录递归（保留旧行为）
-- `TestSkill_PathMatch` — glob 匹配当前 working dir
 
 ### 11.2 单元测试（`agent/skills_activate_test.go`）
 
@@ -289,7 +275,7 @@ type Config struct {
 ## 12. 文档同步
 
 - `docs/architecture-v2.md` §3.3 修订 Skills 描述：补 frontmatter 契约 + activate_skill 工具 + 事件 + 工具子集
-- `FEATURES.md` §3.3 "系统提示词动态组装" 项后新增独立段："Skills 强化（v1）" 列 8 字段 + 工具 + 事件
+- `FEATURES.md` §3.3 "系统提示词动态组装" 项后新增独立段："Skills 强化（v1）" 列 7 字段 + 工具 + 事件
 - `README.md` Skills 章节：补 activate_skill 工具示例
 
 ## 13. 兼容性
@@ -324,3 +310,6 @@ README.md                    # Skills 章节更新
 - 跨会话 Skill 状态（仅本次 Run；TurnSkills 不进 checkpoint，跨挂起-恢复不保留）
 - 用户斜杠命令面（CLI 不在 SDK 范围）
 - Skill 嵌套（一个 Skill 引用另一个 Skill）
+- **技能清单路径过滤（`paths` glob）**——属业务层职责：哪些技能与当前项目相关
+  是业务的判断，且扩展点已存在（`Config.Assembler` 自定义组装器自行过滤）；
+  框架保持不扫盘、零 glob 语义。v1 草案曾含此字段，实施评审后移除

@@ -8,6 +8,7 @@
 
 | 日期 | 版本 | 更新内容 |
 | --- | --- | --- |
+| 2026-08-27 | v2.21 | Skills 强化 v1 修订：移除 `paths` 字段与命中/未命中两段渲染——清单路径过滤属业务层职责（哪些技能与当前项目相关是业务的判断；扩展点已存在：`Config.Assembler` 自定义组装器自行过滤），框架保持不扫盘、零 glob 语义。原实现中 `PathMatch` 从未被计算（声明了 paths 的技能恒落"未命中"段，功能为死逻辑且误导模型）。frontmatter 由 8 字段收敛为 7 字段；`renderSkills` 改单段清单；`event.SkillMeta` 去 Paths。设计评审 C2 处置（另：C1 数据竞争已修——ActivateSkill 实现 tool.SequentialTool，同批多激活回退串行） |
 | 2026-08-26 | v2.20 | 实施：Skills 强化 v1（M2.6 follow-up）落地——`agent/skills.go` frontmatter 升级为 8 字段契约（`name`/`description`/`schema_version` 必需 + `when_to_use`/`allowed-tools`/`references`/`paths`/`source`/`user-invocable` 可选，`gopkg.in/yaml.v3` 解析，旧 SKILL.md 向后兼容）；新工具 `assistant.ActivateSkill`（`activate_skill`：按名返回正文 + references 路径 + allowed-tools，`Config.SkillsDir` 非空时自动注册，`DisableActivateSkill` 可关）；激活态存 `Session.TurnSkills`/`TurnToolSubset`（`json:"-"` 不持久化，`AddTurnSkill` 并集去重）——因 `tool.Registry.Call` 不返回 ctx，状态须放会话对象，driver 经 `execpath.ExecuteHook` 注入 `agent.WithSession` 供工具取用；`allowed-tools` 硬限制走 GuardBus（`skillAllowListGuard`，与 policyGuard 同级）；**作用域为本次 Run 而非单轮**（单轮会在模型真正用上技能前清零白名单使硬限制失效；Run 首部清零 + defer 收尾统一 `skill/deactivate`）；事件目录新增 `skill/load`（每会话一次，事件溯源去重）/`skill/activate`/`skill/deactivate`；`paths` glob 拆清单命中/未命中两段；references 仅给路径、正文不进日志；`DefaultPolicy` 放行 `activate_skill`（自证只读）；§4.2 事件目录 + §12.1 概念表同步 |
 | 2026-08-17 | v2.19 | 实施：`request_human_input` 人工介入工具落地——配置 Approval 时自动注册；首次调用经 `Approval.Request` 挂起（checkpoint 落库），resume 后经 ctx 决策表读取人类回答（`ApprovalDecision.Content`）返回给模型；同步确认器经 `Immediate` 不挂起直接返回；新增 `tool.WithCallID` ctx 注入 + `approval.WithApproval`/`WithResumeDecisions` 上下文辅助 + `DefaultPolicy` 放行 + E2E 测试（人类作答路径）；M2.8 全部完成 |
 | 2026-08-17 | v2.18 | 实施：M2.8 异步审批 + Checkpointer + AgentHandle 全量落地——新包 `agent/approval`（Approval Request/Resolve + SuspendError + InMemApproval + ConfirmerAdapter/Immediate，对齐 PI SuspendedOperation）、`agent/checkpoint`（Checkpoint + Store seam：内存/文件后端，数据库由业务层注入）、`agent/handle`（AgentHandle + Registry + ValidateMissing，对齐 dsh AgentRegistry）；策略检查器改返回 `*approval.RequiredError`，policyGuard 发起审批、批量 preflight 守卫先行日志后置、挂起整批中止；`session.Persistence` 增 `SaveState/LoadState`（TaskState 持久化）、`Session.DropInterruptedForTurn`；事件目录新增 approval/request+resolve、checkpoint/save+restore、agent/created+disposed+status、subagent/start、agent/inbox；修 `RunContext.Bus` 始终 nil 缺陷（默认 EventBus）；§5.2 第 11 项落地 |
@@ -604,7 +605,7 @@ README 路线图中未实现的里程碑（M2.8 ~ M5）按三类归位：**v2 �
 | M4 人工网关（Web 化确认） | approval 钩子（异步回填） | 弹窗/通知/回调通道 |
 | M4 Dashboard / 可视化 | durable 会话事件 + 轨迹 | 存储与展示 |
 | M4 熵管理（文档园丁） | — | 后台任务 |
-| M4 插件化 marketplace | SKILL.md 加载 + Skills 强化 v1（已有：frontmatter 8 字段 + activate_skill + allowed-tools 硬限制）+ MCP 适配 | 插件索引/安装/认证 |
+| M4 插件化 marketplace | SKILL.md 加载 + Skills 强化 v1（已有：frontmatter 7 字段 + activate_skill + allowed-tools 硬限制）+ MCP 适配 | 插件索引/安装/认证 |
 | M3 AgentTeam | SubAgent 原语 | 团队状态落盘与重建（`runs/<run-id>`） |
 
 ### 9.4 路线图治理
@@ -835,7 +836,7 @@ flowchart LR
 | `Classifier` | LLM 任务分类：输出 JSON 驱动名（react / plan-execute / reflection），未知/无法解析走 fallback | planner | ✅ 已实现 |
 | `SystemAssembler` | 按会话组装系统提示词（Slots：约束/任务/状态/工具/项目指令/技能清单） | agent | ✅ 现有 |
 | `SystemSection` / `SystemSlot` | 系统提示的段落与可开关槽位 | agent | ✅ 现有 |
-| `Skill` / `skillFrontmatter` | SKILL.md frontmatter 8 字段契约（yaml.v3 解析）+ `PathMatch` glob 命中标记；清单懒加载，正文经 `activate_skill` 按需返回 | agent | ✅ 已实现（Skills 强化 v1） |
+| `Skill` / `skillFrontmatter` | SKILL.md frontmatter 7 字段契约（yaml.v3 解析）；清单懒加载（单段渲染，无路径过滤——属业务层），正文经 `activate_skill` 按需返回 | agent | ✅ 已实现（Skills 强化 v1） |
 | `ActivateSkill` / `SkillActivationResult` | 技能激活工具（`activate_skill`）：按名返回正文 + references 路径 + allowed-tools；`SkillsDir` 非空时 `assistant.New` 自动注册 | assistant | ✅ 已实现（Skills 强化 v1） |
 | `Session.TurnSkills` / `TurnToolSubset` | 本次 Run 的激活态（`json:"-"` 不持久化）：`AddTurnSkill` 累积 + allowed-tools 并集去重；driver 在 Run 首尾清零 | agent/session | ✅ 已实现（Skills 强化 v1） |
 | `skillAllowListGuard` | allowed-tools 硬限制守卫（GuardBus，与 policyGuard 同级不可绕过）：读 `Session.TurnToolSubset`，未声明 = 不收窄，命中即拒并回填模型 | agent/driver/react | ✅ 已实现（Skills 强化 v1） |
@@ -956,7 +957,7 @@ flowchart LR
 | `Compactor` / `CompactorConfig` | 上下文压缩器（v2 中作为 compaction 三段式事件的执行者） | agent | ✅ 现有（语义演进） |
 | `ResultTruncator` | 工具结果截断（超限溢出到文件） | agent | ✅ 现有（保留） |
 | `InternalMessage` | MoS 内部消息模型（基于 `llm.Message` + 运行期元数据） | agent/session | ✅ 现有（保留） |
-| `ProjectDoc` / `Skill` | 项目文档（CLAUDE.md）/ 技能（SKILL.md：frontmatter 8 字段契约 + `activate_skill` 激活 + `allowed-tools` GuardBus 硬限制 + `skill/*` 事件）加载 | agent | ✅ 现有（Skills 强化 v1 已落地） |
+| `ProjectDoc` / `Skill` | 项目文档（CLAUDE.md）/ 技能（SKILL.md：frontmatter 7 字段契约 + `activate_skill` 激活 + `allowed-tools` GuardBus 硬限制 + `skill/*` 事件）加载 | agent | ✅ 现有（Skills 强化 v1 已落地） |
 
 **assistant**
 

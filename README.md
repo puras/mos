@@ -15,7 +15,7 @@ MoS 是一个基于 Go 的智能体基础框架（Agent Base），提供统一�
 - **Harness Engineering（工具安全防护）**：`driver.Policy`（`agent/driver` 包）在每次工具调用执行前拦截检查，内置默认策略可拦截危险 Shell 命令、路径越界与非 http 抓取
 - **Loop Engineering（循环可观测）**：每轮循环暴露思考/工具调用/工具结果/完成事件（含迭代序号），完整还原推理过程
 - **审计式任务状态（Audit Gate + Task State）**：工具结果经 `Auditor` 审计后，仅"环境可独立验证"的事实写入独立于消息历史的 `TaskState`（目标 / 已验证事实 / 状态机）；模型自述不算数——执行上下文可刷新，进度真相不过期
-- **Skills（技能包）**：`SKILL.md` frontmatter 8 字段契约（yaml 解析）；清单懒加载注入系统提示词，模型经 `activate_skill` 按需激活拿正文 + `references/` 路径；`allowed-tools` 声明后工具白名单硬收窄（守卫链拦截，未声明则不限制），激活在本次任务内跨轮持续生效；装载/激活/取消激活全程落会话事件日志
+- **Skills（技能包）**：`SKILL.md` frontmatter 7 字段契约（yaml 解析）；清单懒加载注入系统提示词，模型经 `activate_skill` 按需激活拿正文 + `references/` 路径；`allowed-tools` 声明后工具白名单硬收窄（守卫链拦截，未声明则不限制），激活在本次任务内跨轮持续生效；装载/激活/取消激活全程落会话事件日志
 - **开箱即用的智能体**：`assistant` 包组装好 Provider + 内置/扩展工具包 + 安全策略（`assistant.New` 一行装配）
 - **近零依赖**：SDK 仅依赖本地协议库 `hegq.net/mogo` 与两个轻量纯 Go 库（`google/uuid`、`gopkg.in/yaml.v3`）
 
@@ -177,8 +177,6 @@ allowed-tools:                  # 可选，激活后工具白名单硬收窄（�
   - shell
 references:                     # 可选，子文档路径（模型按需 read_file）
   - references/commit-types.md
-paths:                          # 可选，glob 命中才列入"可用技能"段
-  - "*.go"
 source: local                   # 可选，审计用
 user-invocable: true            # 可选，平台层斜杠命令面消费（SDK 不接 CLI）
 ---
@@ -207,9 +205,9 @@ a, err := assistant.New(model, tools, assistant.Config{
 模型通常在某一轮激活、在后续轮按正文指引干活，若轮末就清零，`allowed-tools` 会在模型
 真正用上技能前失效，硬限制形同虚设。
 
-清单渲染按 `paths` glob 拆两段——命中当前工作目录的列"可用技能"，未命中的列"未命中路径"
-（仍可被模型主动激活）。装配期扫描结果以 `skill/load` 事件每会话落库一次，便于审计
-"当时加载了哪些技能"。
+装配期扫描结果以 `skill/load` 事件每会话落库一次，便于审计"当时加载了哪些技能"。
+全部技能统一列入清单（框架不做路径过滤——哪些技能与当前项目相关属业务判断，
+需要时经 `Config.Assembler` 自定义组装器自行过滤）。
 
 ### 会话持久化 + Scope（agent/session + agent/scope）
 
@@ -631,7 +629,7 @@ go test ./...
 - [x] **M2.3**：工具输出截断（行数/字节双重限制 + 按工具类型智能截断——read/web 类截头、shell 类截尾、其余 head+tail + 逃生通道——完整结果落盘、提示模型用 read_file 按偏移回读；截断只作用于模型可见文本，Auditor 仍审计完整原始结果；框架层 `agent.ResultTruncator` 接口 + `agent.NewDefaultTruncator`，assistant 默认开启 64KB/2000 行，应用层经 `MOS_TOOL_OUTPUT_KB` / `MOS_TOOL_OUTPUT_LINES` 配置）
 - [x] **M2.4**：两层消息与翻译边界（`Session.History` 升级为内部结构化消息 `agent.InternalMessage`——嵌入 `llm.Message` 并附加 `ExcludeFromContext` / `Summary` / `Source` 运行期元数据；翻译边界 `convertToLlm` 在发送给规划器/模型前统一执行——过滤 `ExcludeFromContext` 消息、标准角色原样转换、摘要消息（`SummaryMsg`，M2.5 压缩产物）与自定义消息（`CustomMsg`，应用层注入/Agent 间通信）统一转 user 角色并按来源标注，`[历史摘要]` / `[source]` 前缀；memory/planner 接口不变，`fromLlm` 将持久化标准消息接回内部层，工具调用消息的 `ToolCalls`/`ReasoningContent`/`ToolCallID` 字段翻译边界不丢失）
 - [x] **M2.5**：fresh-context 压缩（`agent.Compactor` 接口 + `NewDefaultCompactor`：两轮之间超 `KeepRecent`（默认 12）触发，切割点从尾部数且不切断 ToolCall-Result 对——首条若为孤儿 tool 结果则前移切割点；压缩摘要直接采用审计写入的 `TaskState.Snapshot()` 而非 LLM 重新总结，以 `SummaryMsg` 注入、翻译边界转 user 角色标 `[历史摘要]`；压缩后 `syncHistory` 剔除 system 引导并把保留消息重放回 memory）+ 上下文利用率监控（`planner.Action.Usage` 透出模型 token 用量，`WithContextBudget` 设置窗口预算，超过 40% Dumb Zone 广播 `EventContextUsage`）+ Doom Loop 检测（`WithDoomLoopDetection`：相同工具名+参数连续 3 次调用 → 中断任务置 blocked 并返回错误）——渐进式披露 / 分层上下文懒加载 / 上下文重置与跨 Session handoff 留待 M2.6+；框架层均为可选 Option，assistant 默认开启 Compactor
-- [x] **M2.6**：系统提示词动态组装（槽位化：系统约束 / 任务定义 / 当前状态 / 工具签名 / 项目指令 / 技能清单 / 历史摘要；`agent.SystemAssembler` 接口 + `NewDefaultSystemAssembler`——每轮模型调用前重新组装，固定指令保持静态利于 prompt cache，运行时状态随 TaskState 进度刷新（当前状态槽位 = 审计写入的已验证事实快照）；克制主义——系统约束槽位独立为最小静态文本，工具签名紧凑逐行渲染不重复全量 schema；`RenderSystem` 以【标题】分段拼接。多级 CLAUDE.md 向上递归：`LoadProjectDocs` 从工作目录向上合并，顶层在前、就近覆盖，注入项目指令槽位。Skills 懒加载清单：`LoadSkills` 扫描 SKILL.md 的 frontmatter（name + description 触发条件），清单注入技能槽位，正文与 references/ 由模型触发时经 read_file 按需读取，不占常驻上下文。历史摘要槽位默认关闭——M2.5 压缩摘要已由 Compactor 注入消息历史，避免冗余。框架层为可选 Option（`WithSystemAssembler` / `SystemAssemblerFunc` 函数式适配器），assistant 经 `Config.Assembler` / `Config.ProjectDocDir` / `Config.SkillsDir` 装配，未配置时回退静态引导行为不变）。**Skills 强化 v1（follow-up）**：frontmatter 升级为 8 字段契约（`name`/`description`/`schema_version` 必需 + `when_to_use`/`allowed-tools`/`references`/`paths`/`source`/`user-invocable` 可选，yaml.v3 解析，旧 SKILL.md 向后兼容）；`activate_skill` 工具按名激活返回正文 + references 路径 + allowed-tools（`SkillsDir` 非空时自动注册，`DisableActivateSkill` 可关）；激活态存 `Session.TurnSkills`/`TurnToolSubset`（不持久化，并集去重），作用域为本次 Run（跨轮持续生效，Run 首尾清零）；`allowed-tools` 经 GuardBus 硬收窄工具白名单；`skill/load`（每会话一次）/`skill/activate`/`skill/deactivate` 三事件落会话日志；`paths` glob 拆清单命中/未命中两段
+- [x] **M2.6**：系统提示词动态组装（槽位化：系统约束 / 任务定义 / 当前状态 / 工具签名 / 项目指令 / 技能清单 / 历史摘要；`agent.SystemAssembler` 接口 + `NewDefaultSystemAssembler`——每轮模型调用前重新组装，固定指令保持静态利于 prompt cache，运行时状态随 TaskState 进度刷新（当前状态槽位 = 审计写入的已验证事实快照）；克制主义——系统约束槽位独立为最小静态文本，工具签名紧凑逐行渲染不重复全量 schema；`RenderSystem` 以【标题】分段拼接。多级 CLAUDE.md 向上递归：`LoadProjectDocs` 从工作目录向上合并，顶层在前、就近覆盖，注入项目指令槽位。Skills 懒加载清单：`LoadSkills` 扫描 SKILL.md 的 frontmatter（name + description 触发条件），清单注入技能槽位，正文与 references/ 由模型触发时经 read_file 按需读取，不占常驻上下文。历史摘要槽位默认关闭——M2.5 压缩摘要已由 Compactor 注入消息历史，避免冗余。框架层为可选 Option（`WithSystemAssembler` / `SystemAssemblerFunc` 函数式适配器），assistant 经 `Config.Assembler` / `Config.ProjectDocDir` / `Config.SkillsDir` 装配，未配置时回退静态引导行为不变）。**Skills 强化 v1（follow-up）**：frontmatter 升级为 8 字段契约（`name`/`description`/`schema_version` 必需 + `when_to_use`/`allowed-tools`/`references`/`source`/`user-invocable` 可选，yaml.v3 解析，旧 SKILL.md 向后兼容）；`activate_skill` 工具按名激活返回正文 + references 路径 + allowed-tools（`SkillsDir` 非空时自动注册，`DisableActivateSkill` 可关）；激活态存 `Session.TurnSkills`/`TurnToolSubset`（不持久化，并集去重），作用域为本次 Run（跨轮持续生效，Run 首尾清零）；`allowed-tools` 经 GuardBus 硬收窄工具白名单；`skill/load`（每会话一次）/`skill/activate`/`skill/deactivate` 三事件落会话日志；`paths` glob 拆清单命中/未命中两段
 - [x] **M2.7**：长期记忆（RAG 注入，2026-08 精简后**仅保留扩展点**）——`memory.Retriever` 接口 + agent 每轮检索注入（`ragInjectHook`：按 `TaskState.Goal` 检索，经知识守门——源验证 / 冲突裁决 / 知识差距检测（`EventKnowledgeGap`）/ `MaxChunks` 截断——以 `CustomMsg(Source="rag")` 注入当轮副本，不进会话历史）+ `assistant.Config.Retriever` / `RetrieverMinScore` 装配；原 `memory/longterm`（sqlite + FTS5 + 向量）实现已移除（参考 DSH/PI 均未内置 RAG，SDK 只保留接口与注入钩子，实现由使用方按需提供，未注入时行为不变）
 - [x] **M2.8**：异步审批 + Checkpointer + AgentHandle（2026-08-17 落地）——`agent/approval`（`Approval.Request/Resolve` + `SuspendError` + `InMemApproval` + `ConfirmerAdapter`/`Immediate`，对齐 PI `SuspendedOperation`）+ `agent/checkpoint`（`Checkpoint` + `Store` seam：内存/文件后端，数据库业务层注入）+ `agent/handle`（`AgentHandle` / `Registry`：create/resume/dispose + `ValidateMissing` 资源校验，对齐 dsh `AgentRegistry`）+ `session.Persistence.SaveState/LoadState`（TaskState 持久化）。`request_human_input` 工具已落地（配置 Approval 时自动注册；模型主动请求人类输入/确认/授权 → 挂起 → 平台作答 → Resume 续跑返回回答）；HITL 权衡（可扩展性、专家依赖、数据匿名化）属平台层
 - [ ] **M2.9**：经验记忆（知识进化第 1 层：执行历史沉淀为成功策略 / 已知陷阱库，按成功率 / 时间 / 成本加权评分择优，决策时检索注入——复用 M2.7 记忆基础设施，零代码风险）

@@ -161,7 +161,7 @@ func (a *defaultSystemAssembler) Assemble(ctx context.Context, sess *session.Ses
 					Name: s.Name, Description: s.Description,
 					SchemaVersion: s.SchemaVersion, WhenToUse: s.WhenToUse,
 					AllowedTools: s.AllowedTools, References: s.References,
-					Paths: s.Paths, Source: s.Source, UserInvocable: s.UserInvocable,
+					Source: s.Source, UserInvocable: s.UserInvocable,
 				})
 			}
 			if err := sess.Append(event.SessionEventSkillLoad, event.MarshalData(event.SkillLoadData{Skills: metas})); err != nil {

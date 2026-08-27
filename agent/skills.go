@@ -29,8 +29,6 @@ type Skill struct {
 	AllowedTools []string
 	// References 是技能引用文件路径列表（frontmatter references）。
 	References []string
-	// Paths 是技能生效路径 glob 列表（frontmatter paths）。
-	Paths []string
 	// Source 是技能来源（frontmatter source，如 local/repository）。
 	Source string
 	// UserInvocable 表示是否允许用户直接调用（frontmatter user-invocable）。
@@ -38,8 +36,6 @@ type Skill struct {
 
 	// Dir 是 SKILL.md 所在目录。
 	Dir string
-	// PathMatch 是当前 working dir 是否命中 paths glob（运行时计算）。
-	PathMatch bool
 }
 
 // LoadSkills 扫描 dir 中的技能：
@@ -80,7 +76,6 @@ type skillFrontmatter struct {
 	WhenToUse     string   `yaml:"when_to_use"`
 	AllowedTools  []string `yaml:"allowed-tools"`
 	References    []string `yaml:"references"`
-	Paths         []string `yaml:"paths"`
 	Source        string   `yaml:"source"`
 	UserInvocable bool     `yaml:"user-invocable"`
 }
@@ -104,7 +99,6 @@ func parseSkillFile(path string) (Skill, bool) {
 		WhenToUse:     strings.TrimSpace(meta.WhenToUse),
 		AllowedTools:  meta.AllowedTools,
 		References:    meta.References,
-		Paths:         meta.Paths,
 		Source:        strings.TrimSpace(meta.Source),
 		UserInvocable: meta.UserInvocable,
 		Dir:           filepath.Dir(path),
@@ -129,45 +123,22 @@ func extractFrontmatter(b []byte) []byte {
 	return []byte(rest[:end])
 }
 
-// renderSkills 把技能清单渲染为两段：
-// - 可用技能（命中当前 working dir 的 paths glob）
-// - 未命中路径（paths 未匹配，activate_skill 仍可手动调用）
-// 无 paths 字段视为全命中（不渲染 fallback 段）。
+// renderSkills 把技能清单渲染为单段列表（v2.21 起：`paths` 字段已移除——
+// 清单过滤属业务层职责，业务可经 Config.Assembler 自定义组装器实现；
+// 全部技能统一列出，模型按需 activate_skill）。
 func renderSkills(skills []Skill) string {
-	var matched, unmatched []Skill
-	for _, s := range skills {
-		if s.PathMatch || len(s.Paths) == 0 {
-			matched = append(matched, s)
-		} else {
-			unmatched = append(unmatched, s)
-		}
-	}
 	var b strings.Builder
-	b.WriteString("以下技能按需触发（用 activate_skill 工具激活；激活后正文 + references 路径返回给你）：\n")
-	if len(matched) > 0 {
-		b.WriteString("\n可用技能：\n")
-		for _, s := range matched {
-			writeSkillLine(&b, s)
+	b.WriteString("以下技能按需触发（用 activate_skill 工具激活；激活后正文 + references 路径返回给你）：\n\n")
+	for _, s := range skills {
+		b.WriteString("- ")
+		b.WriteString(s.Name)
+		if d := strings.TrimSpace(s.Description); d != "" {
+			b.WriteString(": ")
+			b.WriteString(d)
 		}
-	}
-	if len(unmatched) > 0 {
-		b.WriteString("\n未命中路径（模型可手动 activate_skill 调用）：\n")
-		for _, s := range unmatched {
-			writeSkillLine(&b, s)
-		}
+		b.WriteString("\n")
 	}
 	return strings.TrimSpace(b.String())
-}
-
-// writeSkillLine 写入单条技能行：`- name: description`。
-func writeSkillLine(b *strings.Builder, s Skill) {
-	b.WriteString("- ")
-	b.WriteString(s.Name)
-	if d := strings.TrimSpace(s.Description); d != "" {
-		b.WriteString(": ")
-		b.WriteString(d)
-	}
-	b.WriteString("\n")
 }
 
 // AddTurnSkill 追加一个激活 Skill 到 sess 的本次 Run 状态：把 Skill 投影为

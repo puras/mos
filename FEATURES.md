@@ -63,7 +63,7 @@ MoS 是 SDK，不参与服务化能力范畴：Web UI / API 网关 / 任务调�
 - **fresh-context 压缩（M2.5）**：超 `KeepRecent` 触发，不切断 ToolCall-Result 对；摘要直接采用 `TaskState.Snapshot()`
 - **Doom Loop 检测（M2.5）**：相同工具 + 参数连续 N 次 → 单调守卫拦截（`DoomLoopGuard`），上下文利用率 40% 告警线事件广播
 - **系统提示词动态组装（M2.6）**：槽位化（系统约束 / 任务定义 / 当前状态 / 工具签名 / 项目指令 / 技能清单 / 历史摘要）；CLAUDE.md 向上递归、就近覆盖；Skills 懒加载（SKILL.md frontmatter 清单，正文按需读取）
-- **Skills 强化 v1（M2.6 follow-up）**：`agent/skills.go` frontmatter 升级为 8 字段契约（`name` / `description` / `schema_version` 必需 + `when_to_use` / `allowed-tools` / `references` / `paths` / `source` / `user-invocable` 可选，`gopkg.in/yaml.v3` 解析，旧 SKILL.md 向后兼容）；`assistant.ActivateSkill` 工具（`activate_skill`）按名激活返回正文 + references 路径 + 工具白名单，`Config.SkillsDir` 非空时自动注册（`DisableActivateSkill` 可关）；激活态存 `Session.TurnSkills` / `TurnToolSubset`（`json:"-"` 不持久化，`AddTurnSkill` 并集去重）——`tool.Registry.Call` 不返回 ctx，故状态放会话对象上，driver 经 `execpath.ExecuteHook` 注入 `agent.WithSession` 让工具取到会话；`allowed-tools` 硬限制走 GuardBus（`skillAllowListGuard`，未声明 = 不收窄，命中即拒并回填模型）；作用域为本次 Run（跨轮持续生效——单轮会在模型真正用上技能前就清零白名单；Run 首部清零 + defer 收尾统一 `skill/deactivate`）；`skill/load`（每会话一次，事件溯源去重）/ `skill/activate` / `skill/deactivate` 三事件落 Session Event Log（durable）；`paths` glob 拆清单命中/未命中两段；references 仅给路径、正文不进日志；`model` / `agent` / `hooks` 字段不引入（与 SeamRegistry / SubAgent / HookRegistry 重叠）
+- **Skills 强化 v1（M2.6 follow-up）**：`agent/skills.go` frontmatter 升级为 7 字段契约（`name` / `description` / `schema_version` 必需 + `when_to_use` / `allowed-tools` / `references` / `source` / `user-invocable` 可选，`gopkg.in/yaml.v3` 解析，旧 SKILL.md 向后兼容）；`assistant.ActivateSkill` 工具（`activate_skill`）按名激活返回正文 + references 路径 + 工具白名单，`Config.SkillsDir` 非空时自动注册（`DisableActivateSkill` 可关）；激活态存 `Session.TurnSkills` / `TurnToolSubset`（`json:"-"` 不持久化，`AddTurnSkill` 并集去重）——`tool.Registry.Call` 不返回 ctx，故状态放会话对象上，driver 经 `execpath.ExecuteHook` 注入 `agent.WithSession` 让工具取到会话；`allowed-tools` 硬限制走 GuardBus（`skillAllowListGuard`，未声明 = 不收窄，命中即拒并回填模型）；作用域为本次 Run（跨轮持续生效——单轮会在模型真正用上技能前就清零白名单；Run 首部清零 + defer 收尾统一 `skill/deactivate`）；`skill/load`（每会话一次，事件溯源去重）/ `skill/activate` / `skill/deactivate` 三事件落 Session Event Log（durable）；references 仅给路径、正文不进日志（清单过滤属业务层，`paths` 字段不引入——业务经 `Config.Assembler` 自定义组装器实现）；`model` / `agent` / `hooks` 字段不引入（与 SeamRegistry / SubAgent / HookRegistry 重叠）
 - **RAG 注入（M2.7，扩展点）**：`memory.Retriever` 接口 + 每轮按 Goal 检索注入，知识守门（源验证 / 冲突裁决 / 知识差距检测 / MaxChunks 截断），注入只作用于当轮发送副本、不进历史；实现由使用方提供（原 `memory/longterm` 已移除）
 
 ### 3.4 决策规划（`planner/`）
@@ -108,7 +108,7 @@ SDK 零第三方依赖（仅依赖本地协议库 `hegq.net/mogo`）。
 ## 5. 完整性评估
 
 ### 5.1 对照路线图
-- ✅ **已完成（11 项）**：M1、M1.5、M1.6、M2.1 ~ M2.8；v2 架构（EventBus / HookBus / LoopDriver / Session 事件日志）+ M2.8 异步审批 / Checkpointer / AgentHandle 已落地；M2.6 follow-up：Skills 强化 v1（frontmatter 8 字段契约 + `activate_skill` 工具 + `allowed-tools` GuardBus 硬限制 + 三个 `skill/*` 事件 + 本次 Run 作用域激活态）已落地
+- ✅ **已完成（11 项）**：M1、M1.5、M1.6、M2.1 ~ M2.8；v2 架构（EventBus / HookBus / LoopDriver / Session 事件日志）+ M2.8 异步审批 / Checkpointer / AgentHandle 已落地；M2.6 follow-up：Skills 强化 v1（frontmatter 7 字段契约 + `activate_skill` 工具 + `allowed-tools` GuardBus 硬限制 + 三个 `skill/*` 事件 + 本次 Run 作用域激活态）已落地
 - ❌ **未开始（5 项）**：M2.9 经验记忆、M2.10 工具规模化、M3 多智能体编排、M4 生产化、M5 自我进化
 
 ### 5.2 质量现状

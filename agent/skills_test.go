@@ -30,8 +30,6 @@ allowed-tools:
   - read_file
 references:
   - references/commit-types.md
-paths:
-  - "*.go"
 source: local
 user-invocable: true
 ---
@@ -61,9 +59,6 @@ func TestParseSkillFile_Full(t *testing.T) {
 	}
 	if !reflect.DeepEqual(s.References, []string{"references/commit-types.md"}) {
 		t.Errorf("References = %v", s.References)
-	}
-	if !reflect.DeepEqual(s.Paths, []string{"*.go"}) {
-		t.Errorf("Paths = %v", s.Paths)
 	}
 	if s.Source != "local" {
 		t.Errorf("Source = %q", s.Source)
@@ -173,48 +168,28 @@ func TestRenderSkills(t *testing.T) {
 	if !strings.Contains(got, "web-debug") || !strings.Contains(got, "排查抓取失败") {
 		t.Fatalf("render = %q", got)
 	}
-	// 无 paths 字段视为全命中：只渲染可用技能段，且引导用 activate_skill 懒加载
-	if !strings.Contains(got, "可用技能") || !strings.Contains(got, "activate_skill") {
-		t.Fatalf("render should mention activate_skill & matched section: %q", got)
-	}
-	if strings.Contains(got, "未命中路径") {
-		t.Fatalf("render = %q, want no fallback section", got)
+	// 单段清单，引导用 activate_skill 懒加载
+	if !strings.Contains(got, "activate_skill") {
+		t.Fatalf("render should mention activate_skill: %q", got)
 	}
 	if !strings.Contains(got, "- review") {
 		t.Fatalf("render = %q", got)
 	}
 }
 
-func TestRenderSkills_SplitMatched(t *testing.T) {
-	matched := Skill{Name: "git", Description: "git helper", PathMatch: true}
-	unmatched := Skill{Name: "deploy", Description: "deploy helper", PathMatch: false, Paths: []string{"*.sh"}}
-	out := renderSkills([]Skill{matched, unmatched})
-
-	if !strings.Contains(out, "可用技能") {
-		t.Errorf("expected '可用技能' marker, got: %s", out)
-	}
-	if !strings.Contains(out, "- git") {
-		t.Errorf("expected matched skill in available section, got: %s", out)
-	}
-	if !strings.Contains(out, "未命中路径") {
-		t.Errorf("expected '未命中路径' marker, got: %s", out)
-	}
-	if !strings.Contains(out, "- deploy") {
-		t.Errorf("expected unmatched skill in fallback section, got: %s", out)
-	}
-}
-
-func TestRenderSkills_NoPaths_AllMatched(t *testing.T) {
-	s1 := Skill{Name: "a", Description: "A"}
-	s2 := Skill{Name: "b", Description: "B"}
+// v2.21：paths 字段已移除（清单过滤属业务层），renderSkills 为单段清单。
+func TestRenderSkills_SingleList(t *testing.T) {
+	s1 := Skill{Name: "git", Description: "git helper"}
+	s2 := Skill{Name: "deploy", Description: "deploy helper"}
 	out := renderSkills([]Skill{s1, s2})
 
-	// 无 paths 字段视为全命中
-	if strings.Contains(out, "未命中路径") {
-		t.Errorf("expected no fallback section, got: %s", out)
+	if strings.Contains(out, "未命中路径") || strings.Contains(out, "可用技能") {
+		t.Errorf("section headers should be gone, got: %s", out)
 	}
-	if !strings.Contains(out, "- a") || !strings.Contains(out, "- b") {
-		t.Errorf("expected both skills, got: %s", out)
+	for _, want := range []string{"- git", "- deploy", "activate_skill"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in render, got: %s", want, out)
+		}
 	}
 }
 
