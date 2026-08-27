@@ -580,6 +580,7 @@ func policyGuard(rt *driver.RunContext) hook.Guard {
 // 内置文件工具（read_file / write_file / find_files / grep）经 fs.FromContext(ctx)
 // 取用。注入点集中在此处而非各工具内，三个驱动（react / plan-execute / reflection）
 // 都经 react.NewReAct 装配本钩子，一处覆盖全部路径。
+// 同时注入 rt.Bus，使 Sandboxed.Resolve 的 fs/resolve 审计事件能真正发出（Task 19）。
 func executeHook(rt *driver.RunContext) hook.Hook {
 	return func(ctx context.Context, ev *hook.HookEvent, next hook.Next) (*hook.HookEvent, error) {
 		if ev.ToolCall == nil {
@@ -587,6 +588,9 @@ func executeHook(rt *driver.RunContext) hook.Hook {
 		}
 		if rt.FS != nil {
 			ctx = fs.WithFileSystem(ctx, rt.FS)
+		}
+		if rt.Bus != nil {
+			ctx = fs.WithBus(ctx, rt.Bus)
 		}
 		result, err := rt.Tools.Call(ctx, ev.ToolCall.Name, json.RawMessage(ev.ToolCall.Args))
 		ev.Result = result

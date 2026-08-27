@@ -41,6 +41,10 @@ const (
 	// SessionEventApprovalResolve 异步审批回填（emit 观测）：决策结果落地，
 	// 不影响权威状态（驱动续跑以 checkpoint.Decision 字段为准）。
 	SessionEventApprovalResolve = "approval/resolve"
+	// SessionEventFsResolve 文件路径解析决策（emit 观测 / durable 审计）：
+	// 文件工具经 fs capability 解析路径时发出，记录 allowed / denied 与判定依据，
+	// 使"哪些路径被拒绝、为什么"可回放（file-tool-jail plan Task 19）。
+	SessionEventFsResolve = "fs/resolve"
 	// SessionEventCheckpointSave checkpoint 落库（durable）：driver 在任意钩子点
 	// 抛 SuspendError 前写入；事件载荷含快照 + 钩子点 + 待定决策。
 	SessionEventCheckpointSave = "checkpoint/save"
@@ -112,6 +116,21 @@ type ToolResultData struct {
 	Result any    `json:"result,omitempty"`
 	Text   string `json:"text,omitempty"`
 	Error  string `json:"error,omitempty"`
+}
+
+// FsResolveData 文件路径解析决策（file-tool-jail plan Task 19）：
+// Display 是模型传入的原始路径（可能含 ..），Target 是解析后的实体路径；
+// Decision 为 allowed / denied，Reason 在 denied 时给出判定依据。
+// 与 shell 侧的 policy 审计互补：这里记录的是 fs capability 层的路径裁决。
+type FsResolveData struct {
+	Display   string `json:"display"`
+	Target    string `json:"target"`
+	Op        string `json:"op"`   // read | write | list | grep
+	Mode      string `json:"mode"` // local-jailed | saas-jailed | danger-full
+	Decision  string `json:"decision"`
+	Workspace string `json:"workspace,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // CompactionStartData 压缩开始（带锁语义的简化：单 Session 串行写入天然带锁）。

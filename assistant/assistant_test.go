@@ -8,10 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"hegq.net/mos/agent"
 	"hegq.net/mos/agent/approval"
+	"hegq.net/mos/agent/event"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/memory"
@@ -717,5 +719,79 @@ func TestNewRequiresWorkspaceRoot(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "WorkspaceRoot") {
 		t.Errorf("错误文案应点名 WorkspaceRoot，got=%s", err.Error())
+	}
+}
+
+// readFileModel 首轮调 read_file 读指定路径，次轮直接作答。
+type readFileModel struct{ path string }
+
+func (readFileModel) Capabilities() llm.Capability { return llm.CapFunctionCalling }
+func (m readFileModel) Chat(_ context.Context, req *llm.Request) (*llm.Response, error) {
+	for _, msg := range req.Messages {
+		if msg.Role == llm.RoleTool {
+			return &llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: "done"}}, nil
+		}
+	}
+	args, _ := json.Marshal(map[string]any{"path": m.path})
+	return &llm.Response{Message: llm.Message{
+		Role:      llm.RoleAssistant,
+		ToolCalls: []llm.ToolCall{{ID: "r1", Name: "read_file", Args: string(args)}},
+	}}, nil
+}
+func (readFileModel) ChatStream(context.Context, *llm.Request, func(llm.StreamChunk) error) (*llm.Response, error) {
+	return nil, llm.ErrUnsupported
+}
+
+// TestFsResolveEventEmittedEndToEnd 验证 fs/resolve 审计事件在真实驱动路径上真的发出。
+// Task 19 建好了事件契约与 Sandboxed 的发射逻辑，但装配层若不把 bus 注入 ctx，
+// BusFromContext 恒为 nil → 事件永久静默，审计能力形同不存在。
+func TestFsResolveEventEmittedEndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "audit.txt")
+	if err := os.WriteFile(target, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("准备文件失败: %v", err)
+	}
+
+	bus := event.NewEventBus()
+	var mu sync.Mutex
+	var got []event.FsResolveData
+	bus.On(event.SessionEventFsResolve, event.ModeEmit, func(_ context.Context, payload any) (any, error) {
+		if d, ok := payload.(event.FsResolveData); ok {
+			mu.Lock()
+			got = append(got, d)
+			mu.Unlock()
+		}
+		return nil, nil
+	})
+
+	a, err := New(readFileModel{path: target}, []tool.Tool{builtin.ReadFile{}}, Config{
+		FileAccess: FileAccessConfig{WorkspaceRoot: dir, JailReads: true, JailWrites: true},
+		Policy:     NewDefaultPolicy(nil, dir),
+		Bus:        bus,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := a.Run(context.Background(), a.NewSession(), "读文件"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) == 0 {
+		t.Fatal("未收到 fs/resolve 事件（装配层未把 bus 注入 ctx，审计通道空转）")
+	}
+	ev := got[0]
+	if ev.Decision != "allowed" {
+		t.Errorf("decision=%q want=allowed", ev.Decision)
+	}
+	if ev.Op != "read" {
+		t.Errorf("op=%q want=read", ev.Op)
+	}
+	if ev.Mode != "saas-jailed" {
+		t.Errorf("mode=%q want=saas-jailed", ev.Mode)
+	}
+	if ev.Target != target {
+		t.Errorf("target=%q want=%q", ev.Target, target)
 	}
 }

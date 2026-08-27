@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"hegq.net/mos/agent/event"
 )
 
 func newJailedPolicy(t *testing.T, mode Mode) (*FileAccessPolicy, string) {
@@ -156,5 +158,66 @@ func TestSandboxedModeJailWritesOnly(t *testing.T) {
 	s := &Sandboxed{Policy: &FileAccessPolicy{WorkspaceRoot: t.TempDir(), JailWrites: true}}
 	if got := s.Mode(); got == ModeDangerFull {
 		t.Errorf("Mode=%s：正在 jail 写的实例不应自报 danger-full", got)
+	}
+}
+
+// recordingBus 记录 emit 的事件名与载荷（测试用）。
+type recordingBus struct {
+	names    []string
+	payloads []any
+}
+
+func (b *recordingBus) Emit(_ context.Context, name string, payload any) error {
+	b.names = append(b.names, name)
+	b.payloads = append(b.payloads, payload)
+	return nil
+}
+
+// TestSandboxedEmitsResolveEvents 验证 allow 与 deny 两条路径都发 fs/resolve 审计事件。
+func TestSandboxedEmitsResolveEvents(t *testing.T) {
+	p, dir := newJailedPolicy(t, ModeSaaSJailed)
+	fsys := &Sandboxed{Policy: p}
+	bus := &recordingBus{}
+	ctx := WithBus(context.Background(), bus)
+
+	// denied
+	if _, err := fsys.Resolve(ctx, Request{Path: "/etc/passwd", Op: OpRead, SessionID: "s"}); err == nil {
+		t.Fatal("越界应被拒绝")
+	}
+	// allowed
+	if _, err := fsys.Resolve(ctx, Request{Path: filepath.Join(dir, "x"), Op: OpRead, SessionID: "s"}); err != nil {
+		t.Fatalf("workspace 内应通过: %v", err)
+	}
+
+	if len(bus.names) != 2 {
+		t.Fatalf("应发 2 个事件，got=%d (%v)", len(bus.names), bus.names)
+	}
+	for i, n := range bus.names {
+		if n != "fs/resolve" {
+			t.Errorf("事件[%d] name=%q want=fs/resolve", i, n)
+		}
+	}
+	d0, ok := bus.payloads[0].(event.FsResolveData)
+	if !ok {
+		t.Fatalf("载荷[0] 类型=%T want=event.FsResolveData", bus.payloads[0])
+	}
+	if d0.Decision != "denied" {
+		t.Errorf("事件[0].decision=%q want=denied", d0.Decision)
+	}
+	if d0.Op != string(OpRead) || d0.Mode != string(ModeSaaSJailed) {
+		t.Errorf("事件[0] op=%q mode=%q", d0.Op, d0.Mode)
+	}
+	d1 := bus.payloads[1].(event.FsResolveData)
+	if d1.Decision != "allowed" {
+		t.Errorf("事件[1].decision=%q want=allowed", d1.Decision)
+	}
+}
+
+// TestSandboxedResolveWithoutBusIsSilent 验证未注入 bus 时不 panic（审计可选）。
+func TestSandboxedResolveWithoutBusIsSilent(t *testing.T) {
+	p, dir := newJailedPolicy(t, ModeSaaSJailed)
+	fsys := &Sandboxed{Policy: p}
+	if _, err := fsys.Resolve(context.Background(), Request{Path: filepath.Join(dir, "x"), Op: OpRead}); err != nil {
+		t.Fatalf("无 bus 时应正常工作: %v", err)
 	}
 }

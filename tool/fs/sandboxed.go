@@ -48,18 +48,18 @@ func (s *Sandboxed) Resolve(ctx context.Context, req Request) (*Resolved, error)
 	// Lexical 阶段：rel 必须以 workspace 为前缀
 	rel, err := filepath.Rel(workspace, abs)
 	if err != nil {
-		return nil, s.denied(req, abs, workspace)
+		return nil, s.denied(ctx, req, abs, workspace)
 	}
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return nil, s.denied(req, abs, workspace)
+		return nil, s.denied(ctx, req, abs, workspace)
 	}
 
 	if req.Op != OpWrite {
-		return &Resolved{DisplayPath: abs, TargetKey: abs}, nil
+		return s.allowed(ctx, req, abs, workspace)
 	}
 
 	// Op=Write：Realpath 阶段（DSH fsio.ts:146-194）
-	return s.realpathWrite(req, abs, workspace)
+	return s.realpathWrite(ctx, req, abs, workspace)
 }
 
 // realpathWrite 实现 Op=Write 的实体 inode 比对，防 symlink TOCTOU。
@@ -72,12 +72,12 @@ func (s *Sandboxed) Resolve(ctx context.Context, req Request) (*Resolved, error)
 //     必须从**已存在**的祖先目录向上解析，找到 link 链中第一个真实存在的目录，
 //     把 "parent_resolved + basename(link_target)" 当作实体目标再 Lexical 校验，
 //     否则 broken symlink → 越界文件 会被静默放行。
-func (s *Sandboxed) realpathWrite(req Request, abs, workspace string) (*Resolved, error) {
+func (s *Sandboxed) realpathWrite(ctx context.Context, req Request, abs, workspace string) (*Resolved, error) {
 	lst, lerr := os.Lstat(abs)
 	if lerr != nil {
 		if os.IsNotExist(lerr) {
 			// 全新文件：abs 路径本身不在文件系统），Lexical 已通过且 abs 在 workspace 内即允许。
-			return &Resolved{DisplayPath: abs, TargetKey: abs}, nil
+			return s.allowed(ctx, req, abs, workspace)
 		}
 		return nil, lerr
 	}
@@ -90,9 +90,9 @@ func (s *Sandboxed) realpathWrite(req Request, abs, workspace string) (*Resolved
 		}
 		rel, err := filepath.Rel(workspace, resolvedAbs)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return nil, s.denied(req, abs, workspace)
+			return nil, s.denied(ctx, req, abs, workspace)
 		}
-		return &Resolved{DisplayPath: abs, TargetKey: abs}, nil
+		return s.allowed(ctx, req, abs, workspace)
 	}
 
 	if lst.Mode()&os.ModeSymlink == 0 {
@@ -100,7 +100,7 @@ func (s *Sandboxed) realpathWrite(req Request, abs, workspace string) (*Resolved
 		resolved, err := filepath.EvalSymlinks(abs)
 		if err != nil {
 			if os.IsNotExist(err) {
-				return &Resolved{DisplayPath: abs, TargetKey: abs}, nil
+				return s.allowed(ctx, req, abs, workspace)
 			}
 			return nil, err
 		}
@@ -122,7 +122,7 @@ func (s *Sandboxed) realpathWrite(req Request, abs, workspace string) (*Resolved
 			return checkResolved(target)
 		}
 		// 目标是 symlink：递归解析。
-		return s.realpathWrite(req, target, workspace)
+		return s.realpathWrite(ctx, req, target, workspace)
 	}
 	if !os.IsNotExist(err) {
 		return nil, err
@@ -133,7 +133,7 @@ func (s *Sandboxed) realpathWrite(req Request, abs, workspace string) (*Resolved
 	for {
 		parent := filepath.Dir(probe)
 		if parent == probe {
-			return nil, s.denied(req, abs, workspace)
+			return nil, s.denied(ctx, req, abs, workspace)
 		}
 		if _, err := os.Stat(parent); err == nil {
 			return checkResolved(filepath.Join(parent, filepath.Base(probe)))
@@ -142,13 +142,23 @@ func (s *Sandboxed) realpathWrite(req Request, abs, workspace string) (*Resolved
 	}
 }
 
-// denied 构造结构化 PathDeniedError。
-func (s *Sandboxed) denied(req Request, abs, workspace string) error {
-	return &PathDeniedError{
+// denied 构造结构化 PathDeniedError，并发 fs/resolve 审计事件（decision=denied）。
+// 所有拒绝路径的唯一出口，保证"被拒必留痕"。
+func (s *Sandboxed) denied(ctx context.Context, req Request, abs, workspace string) error {
+	err := &PathDeniedError{
 		Display: req.Path, Target: abs, Workspace: workspace,
 		Op: req.Op, Mode: s.Mode(),
 		AllowedRoots: WritableRoots(s.Policy),
 	}
+	emitResolve(ctx, req, s.Mode(), abs, workspace, "denied", err.Error())
+	return err
+}
+
+// allowed 构造放行结果，并发 fs/resolve 审计事件（decision=allowed）。
+// 所有放行路径的唯一出口，与 denied 对称。
+func (s *Sandboxed) allowed(ctx context.Context, req Request, abs, workspace string) (*Resolved, error) {
+	emitResolve(ctx, req, s.Mode(), abs, workspace, "allowed", "")
+	return &Resolved{DisplayPath: abs, TargetKey: abs}, nil
 }
 
 var _ FileSystem = (*Sandboxed)(nil)
