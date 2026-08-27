@@ -58,41 +58,44 @@ func (s *Sandboxed) Resolve(ctx context.Context, req Request) (*Resolved, error)
 		return s.allowed(ctx, req, abs, workspace)
 	}
 
-	// Op=Write：Realpath 阶段（DSH fsio.ts:146-194）
-	return s.realpathWrite(ctx, req, abs, workspace)
+	// Op=Write：Realpath 阶段（DSH fsio.ts:146-194）。
+	// 实体比对以 EvalSymlinks 后的 workspace 为基准：workspace 自身可能位于
+	// 符号链接下（如 macOS 的 /tmp → /private/tmp），否则真实祖先会被误判为越界。
+	wsEntity := workspace
+	if r, err := filepath.EvalSymlinks(workspace); err == nil {
+		wsEntity = r
+	}
+	return s.realpathWrite(ctx, req, abs, workspace, wsEntity)
 }
 
-// realpathWrite 实现 Op=Write 的实体 inode 比对，防 symlink TOCTOU。
+// realpathWrite 实现 Op=Write 的实体比对，防 symlink TOCTOU 与“经越界 symlink 组件
+// 创建新文件”两类逃逸。
 //
-// 处理顺序：
-//  1. 先用 Lstat 区分 symlink 与普通路径。普通路径走 EvalSymlinks → 二次 Lexical。
-//  2. symlink 用 Lstat 拿到 link 本身的 inode 不行——必须解析其指向目标。
-//     - 目标存在：EvalSymlinks → 二次 Lexical（防 symlink 链路中途逃出）。
-//     - 目标不存在（IsNotExist）：EvalSymlinks 失败，但写操作仍会沿 symlink 创建文件，
-//     必须从**已存在**的祖先目录向上解析，找到 link 链中第一个真实存在的目录，
-//     把 "parent_resolved + basename(link_target)" 当作实体目标再 Lexical 校验，
-//     否则 broken symlink → 越界文件 会被静默放行。
-func (s *Sandboxed) realpathWrite(ctx context.Context, req Request, abs, workspace string) (*Resolved, error) {
+// 三条路径：
+//  1. 目标不存在（Lstat NotExist）：中间组件可能指向 workspace 外（如 ws/escape → /etc，
+//     写 ws/escape/new.txt 时 Lstat 报 NotExist 但实际会经 escape 落到 /etc）。
+//     必须走 resolveNewPath 验证最深存在祖先的解析结果。
+//  2. 目标存在且非 symlink：EvalSymlinks 解析其上方组件；整链失败为 NotExist 时
+//     同样落 resolveNewPath（存在前缀本身可能是越界 symlink）。
+//  3. 目标本身是 symlink：读链接目标递归（带深度上限防环），终止条件交由 1/2 分支处理。
+const maxSymlinkDepth = 32
+
+func (s *Sandboxed) realpathWrite(ctx context.Context, req Request, abs, workspace, wsEntity string) (*Resolved, error) {
+	return s.realpathWriteN(ctx, req, abs, workspace, wsEntity, 0)
+}
+
+func (s *Sandboxed) realpathWriteN(ctx context.Context, req Request, abs, workspace, wsEntity string, depth int) (*Resolved, error) {
+	if depth > maxSymlinkDepth {
+		// 链接环：内核 open 会报 ELOOP，这里提前拒绝避免无限递归。
+		return nil, s.denied(ctx, req, abs, workspace)
+	}
 	lst, lerr := os.Lstat(abs)
 	if lerr != nil {
 		if os.IsNotExist(lerr) {
-			// 全新文件：abs 路径本身不在文件系统），Lexical 已通过且 abs 在 workspace 内即允许。
-			return s.allowed(ctx, req, abs, workspace)
+			// 叶子不存在≠安全：已有中间组件可能把写入重定向到 workspace 外。
+			return s.resolveNewPath(ctx, req, abs, workspace, wsEntity)
 		}
 		return nil, lerr
-	}
-
-	// 实体（EvalSymlinks 后）再走一次 Lexical，捕获 symlink 链中逃出 workspace 的层级。
-	checkResolved := func(resolved string) (*Resolved, error) {
-		resolvedAbs, err := filepath.Abs(resolved)
-		if err != nil {
-			return nil, err
-		}
-		rel, err := filepath.Rel(workspace, resolvedAbs)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return nil, s.denied(ctx, req, abs, workspace)
-		}
-		return s.allowed(ctx, req, abs, workspace)
 	}
 
 	if lst.Mode()&os.ModeSymlink == 0 {
@@ -100,14 +103,15 @@ func (s *Sandboxed) realpathWrite(ctx context.Context, req Request, abs, workspa
 		resolved, err := filepath.EvalSymlinks(abs)
 		if err != nil {
 			if os.IsNotExist(err) {
-				return s.allowed(ctx, req, abs, workspace)
+				// 整链有缺失段：存在前缀仍可能含越界 symlink，不能盲放行。
+				return s.resolveNewPath(ctx, req, abs, workspace, wsEntity)
 			}
 			return nil, err
 		}
-		return checkResolved(resolved)
+		return s.checkEntity(ctx, req, abs, workspace, wsEntity, resolved)
 	}
 
-	// abs 本身是 symlink。读其链接目标，递归解析直到不再是 symlink 或解析失败。
+	// abs 本身是 symlink：解析目标继续判定（Readlink 不跟随，深度计数防环）。
 	target, err := os.Readlink(abs)
 	if err != nil {
 		return nil, err
@@ -115,31 +119,45 @@ func (s *Sandboxed) realpathWrite(ctx context.Context, req Request, abs, workspa
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(filepath.Dir(abs), target)
 	}
-	targetStat, err := os.Stat(target)
-	if err == nil {
-		if targetStat.Mode()&os.ModeSymlink == 0 {
-			// 目标是普通文件/目录，直接走二次 Lexical。
-			return checkResolved(target)
-		}
-		// 目标是 symlink：递归解析。
-		return s.realpathWrite(ctx, req, target, workspace)
-	}
-	if !os.IsNotExist(err) {
-		return nil, err
-	}
-	// broken symlink：目标不存在。从 target 向上回溯到第一个存在的祖先，
-	// 把 "ancestor + basename(target)" 作为推断实体，再二次 Lexical。
-	probe := target
+	return s.realpathWriteN(ctx, req, target, workspace, wsEntity, depth+1)
+}
+
+// resolveNewPath 判定“待创建”路径的实际落点：沿 abs 向上找最深**存在**的祖先，
+// EvalSymlinks 解析出真实位置，再把剩余后缀拼回做 Lexical 校验。
+// 缺失组件不可能成为 symlink 后门，故只需验证存在前缀；任一层失败即拒绝。
+func (s *Sandboxed) resolveNewPath(ctx context.Context, req Request, abs, workspace, wsEntity string) (*Resolved, error) {
+	suffix := ""
+	probe := abs
 	for {
+		resolved, err := filepath.EvalSymlinks(probe)
+		if err == nil {
+			return s.checkEntity(ctx, req, abs, workspace, wsEntity, filepath.Join(resolved, suffix))
+		}
+		if !os.IsNotExist(err) {
+			return nil, err // ELOOP 等：fail-closed
+		}
 		parent := filepath.Dir(probe)
 		if parent == probe {
+			// 到达根仍无存在祖先：不可达路径，防御性拒绝。
 			return nil, s.denied(ctx, req, abs, workspace)
 		}
-		if _, err := os.Stat(parent); err == nil {
-			return checkResolved(filepath.Join(parent, filepath.Base(probe)))
-		}
+		suffix = filepath.Join(filepath.Base(probe), suffix)
 		probe = parent
 	}
+}
+
+// checkEntity 对 EvalSymlinks 解析后的实体路径做二次 Lexical 校验：
+// 实体在 wsEntity（workspace 实体位置）内则放行，否则拒绝。
+func (s *Sandboxed) checkEntity(ctx context.Context, req Request, abs, workspace, wsEntity, entity string) (*Resolved, error) {
+	entityAbs, err := filepath.Abs(entity)
+	if err != nil {
+		return nil, err
+	}
+	rel, err := filepath.Rel(wsEntity, entityAbs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, s.denied(ctx, req, abs, workspace)
+	}
+	return s.allowed(ctx, req, abs, workspace)
 }
 
 // denied 构造结构化 PathDeniedError，并发 fs/resolve 审计事件（decision=denied）。

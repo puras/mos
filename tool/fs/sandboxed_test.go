@@ -221,3 +221,44 @@ func TestSandboxedResolveWithoutBusIsSilent(t *testing.T) {
 		t.Fatalf("无 bus 时应正常工作: %v", err)
 	}
 }
+
+// TestSandboxedNewFileThroughSymlinkDirDenied（PoC，预计 FAIL）：
+// workspace 内的中间目录是越界 symlink，叶子文件不存在。
+// realpathWrite 的"全新文件"快速通道只看 Lstat==NotExist 就放行，
+// 但实际写入会沿中间 symlink 组件落到 workspace 外。
+func TestSandboxedNewFileThroughSymlinkDirDenied(t *testing.T) {
+	p, dir := newJailedPolicy(t, ModeSaaSJailed)
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(dir, "escape")); err != nil {
+		t.Skipf("不支持 symlink: %v", err)
+	}
+
+	fsys := &Sandboxed{Policy: p}
+	_, err := fsys.Resolve(context.Background(), Request{
+		Path: filepath.Join(dir, "escape", "new.txt"), Op: OpWrite,
+	})
+	var pd *PathDeniedError
+	if !errors.As(err, &pd) {
+		t.Fatalf("经越界 symlink 目录写新文件应被拒绝，got=%v", err)
+	}
+}
+
+// TestSandboxedDanglingChainThroughSymlinkAncestorDenied（PoC，预计 FAIL）：
+// 更深一层——存在的前缀本身是越界 symlink，其后整段不存在。
+// EvalSymlinks 对整条路径报 NotExist 时同样不能盲放行。
+func TestSandboxedDanglingChainThroughSymlinkAncestorDenied(t *testing.T) {
+	p, dir := newJailedPolicy(t, ModeSaaSJailed)
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(dir, "escape")); err != nil {
+		t.Skipf("不支持 symlink: %v", err)
+	}
+
+	fsys := &Sandboxed{Policy: p}
+	_, err := fsys.Resolve(context.Background(), Request{
+		Path: filepath.Join(dir, "escape", "deep", "new.txt"), Op: OpWrite,
+	})
+	var pd *PathDeniedError
+	if !errors.As(err, &pd) {
+		t.Fatalf("越界 symlink 后的悬空链写新文件应被拒绝，got=%v", err)
+	}
+}
