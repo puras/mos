@@ -20,6 +20,7 @@ import (
 	"hegq.net/mos/llm"
 	"hegq.net/mos/planner"
 	"hegq.net/mos/tool"
+	"hegq.net/mos/tool/fs"
 )
 
 // Assistant 是组装好的智能体实例：模型对象 + 工具集 + 框架概念（策略/规划/审计/记忆）。
@@ -34,7 +35,8 @@ type Assistant struct {
 	persistence session.Persistence
 	checkpoints checkpoint.Store
 	bus         *event.EventBus
-	registry    *handle.Registry // 会话句柄注册表（Handle 入口）
+	registry    *handle.Registry   // 会话句柄注册表（Handle 入口）
+	runContext  *driver.RunContext // 共享 RunContext（file-tool-jail Task 14：FS 暴露给工具层）
 }
 
 // DefaultSystemPrompt 是框架内置的默认系统引导词，开箱即用。
@@ -79,6 +81,9 @@ const DefaultSystemPrompt = `你是 MoS 智能体，一个通过调用工具解�
 // model、tools 与 Config 中的框架概念均由调用方注入（nil 时使用框架默认实现），
 // 本函数不关心模型接入配置与具体工具实现。
 func New(model llm.ChatModel, tools []tool.Tool, cfg Config) (*Assistant, error) {
+	if cfg.FileAccess.WorkspaceRoot == "" {
+		return nil, fmt.Errorf("assistant.New: Config.FileAccess.WorkspaceRoot 必填（fail-closed，详见 docs/superpowers/plans/2026-08-17-file-tool-jail.md）")
+	}
 	reg := tool.NewRegistry()
 	for _, t := range tools {
 		if err := reg.Register(t); err != nil {
@@ -139,6 +144,7 @@ func New(model llm.ChatModel, tools []tool.Tool, cfg Config) (*Assistant, error)
 		persistence: cfg.Persistence,
 		checkpoints: cfg.CheckpointStore,
 		bus:         cfg.Bus,
+		runContext:  rt,
 	}
 	a.registry = handle.NewRegistry(a.newAgentForSession, cfg.CheckpointStore, cfg.Bus)
 	return a, nil
@@ -183,7 +189,28 @@ func buildRunContext(model llm.ChatModel, reg *tool.Registry, cfg Config) *drive
 	default:
 		rt.SystemPrompt = cfg.SystemPrompt
 	}
+	rt.FS = buildFileSystem(cfg)
 	return rt
+}
+
+// buildFileSystem 按 FileAccessConfig 的 jail 开关选 fs 实现（fail-closed）。
+// 任一 Jail* 为 true → Sandboxed（jail 生效）；两者都 false → Local（显式全开放透传）。
+//
+// jail 开关的唯一事实来源是 FileAccessConfig.Jail*，**不是** Policy 的具体类型：
+// 第三方 Policy 实现（未实现 Mode 方法）配 JailWrites=true 时同样必须拿到 Sandboxed，
+// 否则 jail 静默失效（fail-open）。Sandboxed.Mode() 内部由同一份 FileAccessPolicy 推导，
+// 与 DefaultPolicy.Mode() 保持同形映射。
+func buildFileSystem(cfg Config) fs.FileSystem {
+	policy := &fs.FileAccessPolicy{
+		WorkspaceRoot: cfg.FileAccess.WorkspaceRoot,
+		JailReads:     cfg.FileAccess.JailReads,
+		JailWrites:    cfg.FileAccess.JailWrites,
+		WritableExtra: cfg.FileAccess.WritableExtra,
+	}
+	if policy.JailReads || policy.JailWrites {
+		return &fs.Sandboxed{Policy: policy}
+	}
+	return fs.NewLocal(fs.ModeDangerFull)
 }
 
 // assembleDriver 按配置装配驱动（架构 v2 §3.5 按名选组件）：
@@ -211,6 +238,15 @@ func (a *Assistant) Agent() *driver.Agent { return a.agent }
 
 // Config 返回当前配置。
 func (a *Assistant) Config() Config { return a.config }
+
+// FS 返回装配好的文件能力实例（file-tool-jail Task 14）。
+// 工具调用方在 ctx 注入：`fs.WithFileSystem(ctx, a.FS())`（Task 15–18 接入）。
+func (a *Assistant) FS() fs.FileSystem {
+	if a == nil || a.runContext == nil {
+		return nil
+	}
+	return a.runContext.FS
+}
 
 // Policy 返回当前安全策略。
 func (a *Assistant) Policy() driver.Policy { return a.policy }

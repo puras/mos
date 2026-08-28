@@ -121,7 +121,7 @@ func TestE2E_ActivateSkillFlow(t *testing.T) {
 	writeSKILL(t, filepath.Join(dir, "git", "SKILL.md"),
 		"---\nname: git-helper\ndescription: git 操作\nallowed-tools:\n  - read_file\n---\n# Git Body\n")
 
-	a, err := New(activateSkillModel(), nil, Config{SkillsDir: dir})
+	a, err := New(activateSkillModel(), nil, Config{FileAccess: FileAccessConfig{WorkspaceRoot: t.TempDir()}, SkillsDir: dir})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestE2E_SkillAllowedToolBlocked(t *testing.T) {
 	writeSKILL(t, filepath.Join(dir, "safe", "SKILL.md"),
 		"---\nname: safe-reader\ndescription: 仅读\nallowed-tools:\n  - read_file\n---\n# safe\n")
 
-	a, err := New(safeReaderBlockedModel(), []tool.Tool{builtin.Shell{}}, Config{SkillsDir: dir})
+	a, err := New(safeReaderBlockedModel(), []tool.Tool{builtin.Shell{}}, Config{FileAccess: FileAccessConfig{WorkspaceRoot: t.TempDir()}, SkillsDir: dir})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

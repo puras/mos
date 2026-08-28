@@ -20,6 +20,7 @@ import (
 	"hegq.net/mos/agent/telemetry"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/tool"
+	"hegq.net/mos/tool/fs"
 )
 
 // ErrToolDenied 表示工具调用被单调守卫拒绝（非致命：结果反馈给模型继续）。
@@ -157,8 +158,12 @@ func ApplyOutcomes(ctx context.Context, rt *driver.RunContext, sess *session.Ses
 // ExecuteHook 是 tool/execute 链尾的默认执行器：实际调用工具并填充结果。
 // 平台可在其前注册包装钩子（超时/重试/指标），经 next 委托到本执行器。
 //
-// 工具执行前向 ctx 注入 *session.Session（agent.WithSession）：activate_skill
-// 等工具需要 sess 写事件 / 读本轮状态。rt.Session 由 driver 在每轮装配。
+// 工具执行前向 ctx 注入三样能力：
+//   - *session.Session（agent.WithSession）：activate_skill 等工具写事件 / 读本轮状态；
+//   - rt.FS（fs.WithFileSystem）：内置文件工具（read_file / write_file / find_files /
+//     grep）经 fs.FromContext(ctx) 取用；未注入即 *fs.NotConfiguredError（fail-closed）。
+//     注入点集中在此（三个驱动共用 execpath 通道），一处覆盖全部路径；
+//   - rt.Bus（fs.WithBus）：Sandboxed.Resolve 的 fs/resolve 审计事件出口。
 func ExecuteHook(rt *driver.RunContext) hook.Hook {
 	return func(ctx context.Context, ev *hook.HookEvent, next hook.Next) (*hook.HookEvent, error) {
 		if ev.ToolCall == nil {
@@ -166,6 +171,12 @@ func ExecuteHook(rt *driver.RunContext) hook.Hook {
 		}
 		if rt != nil && rt.Session != nil {
 			ctx = agent.WithSession(ctx, rt.Session)
+		}
+		if rt != nil && rt.FS != nil {
+			ctx = fs.WithFileSystem(ctx, rt.FS)
+		}
+		if rt != nil && rt.Bus != nil {
+			ctx = fs.WithBus(ctx, rt.Bus)
 		}
 		result, err := rt.Tools.Call(ctx, ev.ToolCall.Name, json.RawMessage(ev.ToolCall.Args))
 		ev.Result = result

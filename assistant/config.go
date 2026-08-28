@@ -85,6 +85,10 @@ type Config struct {
 	// Sandbox shell 命令执行沙箱（M1.6 隔离层）：工作目录 jail + 资源限制 + 进程组超时。
 	// 为 nil 时 shell 工具使用默认执行方式（10s 超时 + 64KB 截断）。
 	Sandbox *tool.Sandbox
+	// FileAccess 文件工具访问策略（M3.x — file-tool-jail plan）：
+	// 由 assistant.New 校验 WorkspaceRoot 必填（fail-closed）。
+	// 透传给 tool/fs seam 装配层（Task 14），构造 Sandboxed/Local 与文件策略。
+	FileAccess FileAccessConfig
 	// Truncator 工具结果截断器（M2.3 上下文工程）：对模型可见的工具结果做
 	// 行数/字节上限瘦身，超限时截断并携带逃生通道提示（完整结果落盘 + read_file 回读）。
 	// 为 nil 时启用框架默认实现（64KB / 2000 行，见 agent.NewDefaultTruncator）。
@@ -120,4 +124,13 @@ type Config struct {
 	// Bus 事件总线（Agent 域事件广播：agent/created 等）。nil 时装配层创建默认 EventBus
 	// （修复 RunContext.Bus 始终为 nil 的旧缺陷，Notify 经此广播）。
 	Bus *event.EventBus
+}
+
+// FileAccessConfig 描述文件工具的访问策略。
+// WorkspaceRoot 必填；空值由 assistant.New 校验失败（fail-closed，Task 10）。
+type FileAccessConfig struct {
+	WorkspaceRoot string   // 文件系统 jail 根目录
+	JailReads     bool     // 是否对读做 jail；DSH SaaS/read-only = true
+	JailWrites    bool     // 是否对写做 jail；DSH 默认 = true
+	WritableExtra []string // 附加可写根（如构建产物目录）
 }

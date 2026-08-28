@@ -6,13 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/fs"
+	iofs "io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
 	"hegq.net/mos/tool"
+	"hegq.net/mos/tool/fs"
 )
 
 const (
@@ -34,14 +35,32 @@ type findParams struct {
 func (FindFiles) Name() string        { return "find_files" }
 func (FindFiles) Description() string { return "按文件名通配模式在目录树中搜索文件" }
 func (FindFiles) Parameters() any     { return &findParams{} }
-func (FindFiles) Execute(_ context.Context, args json.RawMessage) (any, error) {
+
+// resolveRoot 解析搜索根（file-tool-jail Task 17/18）：Root 空时默认 workspace root，
+// 非空时以 OpList 解析 jail。ctx 未注入 fs 时 fail-closed 返回 *fs.NotConfiguredError。
+func resolveRoot(ctx context.Context, p string) (string, error) {
+	fsys := fs.FromContext(ctx)
+	if fsys == nil {
+		return "", &fs.NotConfiguredError{}
+	}
+	if p == "" {
+		p = "."
+	}
+	r, err := fsys.Resolve(ctx, fs.Request{Path: p, Op: fs.OpList})
+	if err != nil {
+		return "", err
+	}
+	return r.TargetKey, nil
+}
+
+func (FindFiles) Execute(ctx context.Context, args json.RawMessage) (any, error) {
 	p, err := tool.Parse[findParams](args)
 	if err != nil {
 		return nil, err
 	}
-	root := p.Root
-	if root == "" {
-		root = "."
+	root, err := resolveRoot(ctx, p.Root)
+	if err != nil {
+		return nil, err
 	}
 	maxDepth := p.MaxDepth
 	if maxDepth <= 0 {
@@ -53,7 +72,7 @@ func (FindFiles) Execute(_ context.Context, args json.RawMessage) (any, error) {
 	}
 
 	var matches []string
-	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	walkErr := filepath.WalkDir(root, func(path string, d iofs.DirEntry, err error) error {
 		if err != nil {
 			return nil // 跳过无权限/不存在的子目录
 		}
@@ -100,7 +119,7 @@ type grepParams struct {
 func (Grep) Name() string        { return "grep" }
 func (Grep) Description() string { return "按正则表达式在目录树中搜索文件内容" }
 func (Grep) Parameters() any     { return &grepParams{} }
-func (Grep) Execute(_ context.Context, args json.RawMessage) (any, error) {
+func (Grep) Execute(ctx context.Context, args json.RawMessage) (any, error) {
 	p, err := tool.Parse[grepParams](args)
 	if err != nil {
 		return nil, err
@@ -109,9 +128,9 @@ func (Grep) Execute(_ context.Context, args json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("无效正则: %w", err)
 	}
-	root := p.Root
-	if root == "" {
-		root = "."
+	root, err := resolveRoot(ctx, p.Root)
+	if err != nil {
+		return nil, err
 	}
 	maxMatches := p.MaxMatches
 	if maxMatches <= 0 {
@@ -120,7 +139,7 @@ func (Grep) Execute(_ context.Context, args json.RawMessage) (any, error) {
 
 	var results []string
 	count := 0
-	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	walkErr := filepath.WalkDir(root, func(path string, d iofs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}

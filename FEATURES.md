@@ -8,6 +8,7 @@
 
 | 日期 | 版本 | 更新内容 |
 | --- | --- | --- |
+| 2026-08-17 | v2.19 | 文件工具 Jail 落地：新增 `tool/fs` 能力 seam（`FileSystem` / `Sandboxed` / `Local` / `WritableRoots`）+ `FileAccessConfig`（`WorkspaceRoot` 必填，**破坏性变更**）+ 四个文件工具全部接入 `fs.FromContext` + `fs/resolve` 审计事件 |
 | 2026-08-17 | v2.18 | M2.8 全量落地：异步 Approval（`agent/approval`）+ Checkpointer（`agent/checkpoint`）+ AgentHandle/Registry（`agent/handle`）+ TaskState 持久化；Confirmer 改废弃（桥接为 Approval） |
 | 2026-08-15 | v2 | 按 v2 架构重写全文件：删除 v1 API（`WithXxx` 选项 / 命令式 run / `agent.New(model, reg, ...)`）描述，改为 RunContext + LoopDriver + HookBus + 事件日志体系；补充 policy 拆分后结构 |
 
@@ -43,6 +44,13 @@ MoS 是 SDK，不参与服务化能力范畴：Web UI / API 网关 / 任务调�
 - 扩展工具包 `tool/extension`：shell（沙箱受限执行）、web_search（DuckDuckGo / Tavily / Serper / Brave / SearXNG）
 - 工具输出截断（M2.3）：行数 / 字节双重限制 + 按工具类型智能截断 + 逃生通道（完整结果落盘、提示模型按偏移回读）
 - 沙箱 `tool.Sandbox`：工作目录 jail + 超时 + 输出上限 + 进程资源限制 + 环境裁剪 + 网络控制
+- 文件工具 Jail（`tool/fs`）：文件系统 capability seam（`SeamRegistry.KindFileSystem`，对齐 dsh `ctx.fs` + `sandboxPolicy` + `shell.sandboxMode` 三 seam 同形）
+  - `FileAccessConfig{WorkspaceRoot, JailReads, JailWrites, WritableExtra}`：`WorkspaceRoot` 必填，零值使 `assistant.New` 启动失败（fail-closed）
+  - `Sandboxed` 双层校验：Lexical（`filepath.Abs` + `Rel` 前缀比对）+ Realpath（`EvalSymlinks` 后二次 Lexical，含 broken symlink 向上回溯）；`Op=Write` 强制走 Realpath 防 symlink TOCTOU，读路径按 dsh 语义透传
+  - `WritableRoots(p)` 共享可写根（workspace + `/tmp` + `os.TempDir()` + `WritableExtra`），与 shell policy 共用同一函数防配置漂移
+  - 四个内置文件工具（read_file / write_file / find_files / grep）统一经 `fs.FromContext(ctx)` 取能力，ctx 缺失即 `*fs.NotConfiguredError`（fail-closed）；`find_files` / `grep` 的 `root` 留空时锚定 workspace 而非进程 cwd
+  - 注入点集中在 `react.executeHook`（三个驱动都经 `react.NewReAct` 装配），审计事件 `fs/resolve` 记录每次路径决策（allowed / denied + 原因），入 Session 日志可回放
+  - 部署 preset：单机 = `local-jailed`（写 jail、读开放）；SaaS = `saas-jailed`（读写都 jail）；诊断/迁移 = `danger-full`（须显式设置）
 
 ### 3.3 Agent 核心（`agent/`，v2 重构落地）
 - **事件总线 `EventBus`**：四调度模式（emit 观察 / waterfall 改写 / parallel 并行 / serial 裁决），事件目录集中在 `agent/events.go`
@@ -79,8 +87,9 @@ MoS 是 SDK，不参与服务化能力范畴：Web UI / API 网关 / 任务调�
 - `driver.Policy` 执行前拦截：`assistant.DefaultPolicy` 按职责拆分为三文件——`policy.go`（策略核心：Allow / Register / 检查器装配）、`policy_shell.go`（shell 命令分级校验）、`policy_file.go`（路径校验）
   - 绝对危险命令（shutdown / dd / mkfs / fork 炸弹 / 写块设备）无条件拒绝
   - 受限危险命令（rm / sudo / chmod / mv / kill / 解释器 `-c/-e` 入口 / find 删除语义）须 WorkDir 内 + 人工确认
-  - 路径越界防护（withinDir）+ 命令前缀白名单 + fail-closed（未知工具默认拒绝）
+  - 路径越界防护（`withinDir` 走 `fs.WritableRoots`，与 fs sandbox 共根防配置漂移）+ 命令前缀白名单 + fail-closed（未知工具默认拒绝）
 - `Sandbox` 执行中隔离：工作目录 jail + 超时 + 输出上限 + 进程资源限制 + 环境裁剪 + 网络控制
+- 文件工具 jail（`tool/fs`，见 §3.2）：与 Policy 层校验互补——Policy 管"该不该调用"，fs seam 管"放行后实际落到哪个路径"（Realpath 实体比对防 symlink TOCTOU）
 - 异步人工确认（M2.8）：`agent/approval`——需确认操作由策略返回 `*approval.RequiredError`，驱动 `policyGuard` 发起 `Approval.Request` → `SuspendError` 挂起 → 平台 `Resolve` → `AgentHandle.Resume` 续跑（one-shot，默认拒绝 fail-closed）；旧 `Confirmer`（CLI y/N）经 `approval.NewConfirmerAdapter` 桥接保留（`Immediate` 立即决策，不挂起）
 
 ### 3.7 组装层（`assistant/`）

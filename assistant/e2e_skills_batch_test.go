@@ -47,7 +47,7 @@ func TestE2E_TwoActivateSkillsSameBatch(t *testing.T) {
 			"---\nname: "+n+"\ndescription: d\nallowed-tools:\n  - tool_"+n+"\n---\n# "+n+"\n")
 	}
 
-	a, err := New(twoActivateModel{}, nil, Config{SkillsDir: dir})
+	a, err := New(twoActivateModel{}, nil, Config{FileAccess: FileAccessConfig{WorkspaceRoot: t.TempDir()}, SkillsDir: dir})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

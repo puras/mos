@@ -9,6 +9,7 @@ import (
 
 	"hegq.net/mos/agent/approval"
 	"hegq.net/mos/llm"
+	"hegq.net/mos/tool/fs"
 )
 
 // Checker 是单个工具的策略检查器：返回 error 表示拒绝该次调用。
@@ -36,14 +37,37 @@ type DefaultPolicy struct {
 	// nil 表示无法确认，受限危险命令 fail-closed 拒绝。旧 Confirmer 经
 	// approval.NewConfirmerAdapter 桥接为 Approval。
 	Approval approval.Approval
+	// FileAccess 文件工具访问策略（M3.x — file-tool-jail plan）：
+	// 由 Mode() 推导 fs.Mode（local-jailed / saas-jailed / danger-full），
+	// 供 fs seam 装配层（Task 14）选 Sandboxed/Local 实现。
+	FileAccess FileAccessConfig
 
 	mu       sync.RWMutex
 	checkers map[string]Checker // 工具名 → 检查器；未注册默认拒绝（fail-closed）
 }
 
+// Mode 推导自 FileAccessConfig（与 tool/fs.Sandboxed.Mode 同形映射）。
+// 对位 DSH sandboxPolicy：读写都 jail → SaaS 级 read-only；只 jail 一侧 → workspace-write。
+// 零值 FileAccessConfig{}（JailReads=false, JailWrites=false）→ ModeDangerFull（显式全开放）。
+func (p *DefaultPolicy) Mode() fs.Mode {
+	switch {
+	case p.FileAccess.JailReads && p.FileAccess.JailWrites:
+		return fs.ModeSaaSJailed
+	case p.FileAccess.JailReads || p.FileAccess.JailWrites:
+		return fs.ModeLocalJailed
+	default:
+		return fs.ModeDangerFull
+	}
+}
+
 // NewDefaultPolicy 创建默认安全策略（注册内置工具检查器）。
+// workDir 同时作为 FileAccess.WorkspaceRoot 镜像（policy_file / checkFile 共用同一根）。
 func NewDefaultPolicy(shellAllowed []string, workDir string) *DefaultPolicy {
-	p := &DefaultPolicy{ShellAllowed: shellAllowed, WorkDir: workDir}
+	p := &DefaultPolicy{
+		ShellAllowed: shellAllowed,
+		WorkDir:      workDir,
+		FileAccess:   FileAccessConfig{WorkspaceRoot: workDir, JailReads: workDir != "", JailWrites: workDir != ""},
+	}
 	p.checkers = map[string]Checker{
 		"shell":               p.checkShell,
 		"read_file":           p.checkFileField("path"),

@@ -2,20 +2,24 @@ package assistant
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"hegq.net/mos/agent"
 	"hegq.net/mos/agent/approval"
+	"hegq.net/mos/agent/event"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/memory"
 	"hegq.net/mos/tool"
 	"hegq.net/mos/tool/builtin"
+	"hegq.net/mos/tool/fs"
 )
 
 func toolCall(name, args string) *llm.ToolCall {
@@ -96,7 +100,7 @@ func TestDefaultSystemPrompt(t *testing.T) {
 
 	// 未配置时注入框架默认引导
 	m := &captureModel{}
-	a, err := New(m, nil, Config{})
+	a, err := New(m, nil, Config{FileAccess: FileAccessConfig{WorkspaceRoot: t.TempDir()}})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -112,7 +116,7 @@ func TestDefaultSystemPrompt(t *testing.T) {
 
 	// 显式配置覆盖默认
 	m2 := &captureModel{}
-	a2, err := New(m2, nil, Config{SystemPrompt: "自定义引导"})
+	a2, err := New(m2, nil, Config{FileAccess: FileAccessConfig{WorkspaceRoot: t.TempDir()}, SystemPrompt: "自定义引导"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -140,7 +144,7 @@ func TestAssistantSystemAssemblerAuto(t *testing.T) {
 	}
 
 	m := &captureModel{}
-	a, err := New(m, nil, Config{SkillsDir: root})
+	a, err := New(m, nil, Config{FileAccess: FileAccessConfig{WorkspaceRoot: t.TempDir()}, SkillsDir: root})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -167,7 +171,7 @@ func TestAssistantSystemAssemblerCustom(t *testing.T) {
 	})
 
 	m := &captureModel{}
-	a, err := New(m, nil, Config{Assembler: custom, SystemPrompt: "不应出现"})
+	a, err := New(m, nil, Config{FileAccess: FileAccessConfig{WorkspaceRoot: t.TempDir()}, Assembler: custom, SystemPrompt: "不应出现"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -195,7 +199,7 @@ func TestAssistant_RegistersActivateSkill(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	a, err := New(&captureModel{}, nil, Config{SkillsDir: root})
+	a, err := New(&captureModel{}, nil, Config{FileAccess: FileAccessConfig{WorkspaceRoot: t.TempDir()}, SkillsDir: root})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -226,6 +230,7 @@ func TestAssistant_DisableActivateSkill(t *testing.T) {
 	}
 
 	a, err := New(&captureModel{}, nil, Config{
+		FileAccess:           FileAccessConfig{WorkspaceRoot: t.TempDir()},
 		SkillsDir:            root,
 		DisableActivateSkill: true,
 	})
@@ -242,7 +247,7 @@ func TestAssistant_DisableActivateSkill(t *testing.T) {
 
 // SkillsDir 为空时不注册 activate_skill（无 Skills 来源也无意义）。
 func TestAssistant_NoSkillsDir_NoActivateSkill(t *testing.T) {
-	a, err := New(&captureModel{}, nil, Config{})
+	a, err := New(&captureModel{}, nil, Config{FileAccess: FileAccessConfig{WorkspaceRoot: t.TempDir()}})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -268,6 +273,7 @@ func TestAssistantRetrieverInjection(t *testing.T) {
 	ctx := context.Background()
 	m := &captureModel{}
 	a, err := New(m, nil, Config{
+		FileAccess: FileAccessConfig{WorkspaceRoot: t.TempDir()},
 		Retriever: &stubRetriever{docs: []memory.Document{
 			{Source: "doc-x", Content: "远程数据库连接串位于配置中心", Score: 0.7},
 		}},
@@ -299,6 +305,7 @@ func TestAssistantRetrieverMinScoreGap(t *testing.T) {
 	m := &captureModel{}
 	var events []agent.Event
 	a, err := New(m, nil, Config{
+		FileAccess: FileAccessConfig{WorkspaceRoot: t.TempDir()},
 		Retriever: &stubRetriever{docs: []memory.Document{
 			{Source: "doc-x", Content: "与查询无关", Score: 0.1},
 		}},
@@ -344,12 +351,14 @@ func (directModel) ChatStream(context.Context, *llm.Request, func(llm.StreamChun
 // 策略装配后仍生效：路径越界的文件调用会被拒绝。
 func TestAssistantPolicyApplied(t *testing.T) {
 	workDir := t.TempDir()
-	a, err := New(directModel{}, nil, Config{Policy: NewDefaultPolicy(nil, workDir)})
+	// FileAccess.WorkspaceRoot 与 Policy.WorkDir 用同一目录（Task 12 重构后两者联动）：
+	// 越界路径选 /etc/passwd（不在 workDir / os.TempDir / WritableExtra 任一根下）。
+	a, err := New(directModel{}, nil, Config{FileAccess: FileAccessConfig{WorkspaceRoot: workDir}, Policy: NewDefaultPolicy(nil, workDir)})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	// 直接验证策略拒绝
-	err = a.Policy().Allow(context.Background(), toolCall("write_file", `{"path":"`+filepath.Join(workDir, "..", "evil.txt")+`"}`))
+	err = a.Policy().Allow(context.Background(), toolCall("write_file", `{"path":"/etc/passwd"}`))
 	if err == nil {
 		t.Fatal("path traversal should be rejected by policy")
 	}
@@ -363,7 +372,9 @@ type mockApproval struct{}
 func (mockApproval) Request(context.Context, approval.ApprovalRequest) (approval.ApprovalID, error) {
 	return "mock-approval-id", nil
 }
-func (mockApproval) Resolve(context.Context, approval.ApprovalID, approval.ApprovalDecision) error { return nil }
+func (mockApproval) Resolve(context.Context, approval.ApprovalID, approval.ApprovalDecision) error {
+	return nil
+}
 
 // requireApproval 断言策略返回需要人工确认的标记（M2.8：决策由驱动层 Approval 处理）。
 func requireApproval(t *testing.T, err error) {
@@ -586,7 +597,7 @@ func TestTUIModeRestrictedShellRejected(t *testing.T) {
 		t.Fatal("TUI 模式不应挂载审批器")
 	}
 
-	a, err := New(tuiShellModel(workDir), []tool.Tool{builtin.Shell{}}, Config{Policy: policy})
+	a, err := New(tuiShellModel(workDir), []tool.Tool{builtin.Shell{}}, Config{FileAccess: FileAccessConfig{WorkspaceRoot: t.TempDir()}, Policy: policy})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -614,5 +625,247 @@ func TestTUIModeRestrictedShellRejected(t *testing.T) {
 	// 工具未实际执行：拒绝反馈不会包含 shell 的真实输出（如 rm 报错信息）
 	if strings.Contains(toolMsg.Content, "No such file") {
 		t.Fatalf("history[2] = %q, shell should not have executed", toolMsg.Content)
+	}
+}
+
+// TestAssistantProvidesFileSystemSandboxed 验证 New 按 Policy.Mode()=SaaSJailed 装配 Sandboxed。
+func TestAssistantProvidesFileSystemSandboxed(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Config{FileAccess: FileAccessConfig{
+		WorkspaceRoot: dir,
+		JailReads:     true,
+		JailWrites:    true,
+	}}
+	cfg.Policy = NewDefaultPolicy(nil, dir)
+	a, err := New(directModel{}, nil, cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	fsys := a.FS()
+	if fsys == nil {
+		t.Fatal("FS 未装配")
+	}
+	if fsys.Mode() != fs.ModeSaaSJailed {
+		t.Errorf("Mode=%s want=saas-jailed", fsys.Mode())
+	}
+	// 越界应被 Sandboxed 拒
+	if _, err := fsys.Resolve(context.Background(), fs.Request{Path: "/etc/passwd", Op: fs.OpRead}); err == nil {
+		t.Error("Sandboxed 应拒绝越界读")
+	}
+}
+
+// TestAssistantProvidesFileSystemLocalWhenDangerFull 验证零值 JailReads/JailWrites → Local 透传。
+func TestAssistantProvidesFileSystemLocalWhenDangerFull(t *testing.T) {
+	dir := t.TempDir()
+	a, err := New(directModel{}, nil, Config{
+		FileAccess: FileAccessConfig{WorkspaceRoot: dir},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	fsys := a.FS()
+	if fsys == nil {
+		t.Fatal("FS 未装配")
+	}
+	if fsys.Mode() != fs.ModeDangerFull {
+		t.Errorf("Mode=%s want=danger-full", fsys.Mode())
+	}
+}
+
+// thirdPartyPolicy 是只实现 driver.Policy 接口（无 Mode 方法）的第三方策略，
+// 用于验证 buildFileSystem 不依赖 *DefaultPolicy 类型断言推导 jail 开关。
+type thirdPartyPolicy struct{}
+
+func (thirdPartyPolicy) Allow(context.Context, *llm.ToolCall) error { return nil }
+
+// fsProbeTool 在 Execute 里抓取 ctx 中的 FileSystem，用于验证注入点已生效。
+type fsProbeTool struct{ got chan fs.FileSystem }
+
+func (fsProbeTool) Name() string        { return "fs_probe" }
+func (fsProbeTool) Description() string { return "探测 ctx 中的 FileSystem（测试用）" }
+func (fsProbeTool) Parameters() any     { return map[string]any{"type": "object"} }
+func (p fsProbeTool) Execute(ctx context.Context, _ json.RawMessage) (any, error) {
+	select {
+	case p.got <- fs.FromContext(ctx):
+	default:
+	}
+	return "ok", nil
+}
+
+// probeModel 首轮调 fs_probe，次轮直接作答。
+type probeModel struct{}
+
+func (probeModel) Capabilities() llm.Capability { return llm.CapFunctionCalling }
+func (probeModel) Chat(_ context.Context, req *llm.Request) (*llm.Response, error) {
+	for _, msg := range req.Messages {
+		if msg.Role == llm.RoleTool {
+			return &llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: "done"}}, nil
+		}
+	}
+	return &llm.Response{Message: llm.Message{
+		Role:      llm.RoleAssistant,
+		ToolCalls: []llm.ToolCall{{ID: "p1", Name: "fs_probe", Args: `{}`}},
+	}}, nil
+}
+func (probeModel) ChatStream(context.Context, *llm.Request, func(llm.StreamChunk) error) (*llm.Response, error) {
+	return nil, llm.ErrUnsupported
+}
+
+// TestToolCtxCarriesFileSystem 验证工具执行时 ctx 里已注入 RunContext.FS。
+// 这是 Task 15–18 四个文件工具改造的前提：它们都用 fs.FromContext(ctx) 取能力，
+// 若注入点缺失则全部 fail-closed 为 *NotConfiguredError（工具直接不可用）。
+func TestToolCtxCarriesFileSystem(t *testing.T) {
+	dir := t.TempDir()
+	probe := fsProbeTool{got: make(chan fs.FileSystem, 1)}
+	pol := NewDefaultPolicy(nil, dir)
+	if err := pol.Register("fs_probe", func(context.Context, string) error { return nil }); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	a, err := New(probeModel{}, []tool.Tool{probe}, Config{
+		FileAccess: FileAccessConfig{WorkspaceRoot: dir, JailReads: true, JailWrites: true},
+		Policy:     pol,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := a.Run(context.Background(), a.NewSession(), "探测"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	select {
+	case got := <-probe.got:
+		if got == nil {
+			t.Fatal("工具 ctx 未注入 FileSystem（Task 15–18 会全线 fail-closed）")
+		}
+		if got.Mode() != fs.ModeSaaSJailed {
+			t.Errorf("注入的 FS Mode=%s want=saas-jailed", got.Mode())
+		}
+	default:
+		t.Fatal("工具未被执行")
+	}
+}
+
+// TestBuildFileSystemJailsWithThirdPartyPolicy 验证 fail-closed：第三方 Policy 实现
+// （没有 Mode 方法）配 JailWrites=true 时，仍必须拿到 Sandboxed 而非 Local 透传。
+// jail 开关的唯一事实来源是 FileAccessConfig.Jail*，不是 Policy 的具体类型。
+func TestBuildFileSystemJailsWithThirdPartyPolicy(t *testing.T) {
+	dir := t.TempDir()
+	a, err := New(directModel{}, nil, Config{
+		FileAccess: FileAccessConfig{WorkspaceRoot: dir, JailReads: true, JailWrites: true},
+		Policy:     thirdPartyPolicy{},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	fsys := a.FS()
+	if fsys == nil {
+		t.Fatal("FS 未装配")
+	}
+	if fsys.Mode() != fs.ModeSaaSJailed {
+		t.Errorf("Mode=%s want=saas-jailed（第三方 Policy 不应导致 jail 失效）", fsys.Mode())
+	}
+	if _, err := fsys.Resolve(context.Background(), fs.Request{Path: "/etc/passwd", Op: fs.OpWrite}); err == nil {
+		t.Error("JailWrites=true 时越界写必须被拒绝（fail-open 缺口）")
+	}
+}
+
+// TestBuildFileSystemJailReadsOnlyIsLocalJailed 验证只 jail 读时映射到 local-jailed。
+func TestBuildFileSystemJailReadsOnlyIsLocalJailed(t *testing.T) {
+	dir := t.TempDir()
+	a, err := New(directModel{}, nil, Config{
+		FileAccess: FileAccessConfig{WorkspaceRoot: dir, JailReads: true},
+		Policy:     thirdPartyPolicy{},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := a.FS().Mode(); got != fs.ModeLocalJailed {
+		t.Errorf("Mode=%s want=local-jailed", got)
+	}
+}
+
+// TestNewRequiresWorkspaceRoot 验证 FileAccess.WorkspaceRoot 必填（Task 10 fail-closed）：
+// 零值 FileAccessConfig{}.WorkspaceRoot=="" 时 assistant.New 必须立即返回错误，
+// 且错误文案点名 WorkspaceRoot，便于上层排查。
+func TestNewRequiresWorkspaceRoot(t *testing.T) {
+	_, err := New(directModel{}, nil, Config{})
+	if err == nil {
+		t.Fatal("空 WorkspaceRoot 应使 New 失败")
+	}
+	if !strings.Contains(err.Error(), "WorkspaceRoot") {
+		t.Errorf("错误文案应点名 WorkspaceRoot，got=%s", err.Error())
+	}
+}
+
+// readFileModel 首轮调 read_file 读指定路径，次轮直接作答。
+type readFileModel struct{ path string }
+
+func (readFileModel) Capabilities() llm.Capability { return llm.CapFunctionCalling }
+func (m readFileModel) Chat(_ context.Context, req *llm.Request) (*llm.Response, error) {
+	for _, msg := range req.Messages {
+		if msg.Role == llm.RoleTool {
+			return &llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: "done"}}, nil
+		}
+	}
+	args, _ := json.Marshal(map[string]any{"path": m.path})
+	return &llm.Response{Message: llm.Message{
+		Role:      llm.RoleAssistant,
+		ToolCalls: []llm.ToolCall{{ID: "r1", Name: "read_file", Args: string(args)}},
+	}}, nil
+}
+func (readFileModel) ChatStream(context.Context, *llm.Request, func(llm.StreamChunk) error) (*llm.Response, error) {
+	return nil, llm.ErrUnsupported
+}
+
+// TestFsResolveEventEmittedEndToEnd 验证 fs/resolve 审计事件在真实驱动路径上真的发出。
+// Task 19 建好了事件契约与 Sandboxed 的发射逻辑，但装配层若不把 bus 注入 ctx，
+// BusFromContext 恒为 nil → 事件永久静默，审计能力形同不存在。
+func TestFsResolveEventEmittedEndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "audit.txt")
+	if err := os.WriteFile(target, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("准备文件失败: %v", err)
+	}
+
+	bus := event.NewEventBus()
+	var mu sync.Mutex
+	var got []event.FsResolveData
+	bus.On(event.SessionEventFsResolve, event.ModeEmit, func(_ context.Context, payload any) (any, error) {
+		if d, ok := payload.(event.FsResolveData); ok {
+			mu.Lock()
+			got = append(got, d)
+			mu.Unlock()
+		}
+		return nil, nil
+	})
+
+	a, err := New(readFileModel{path: target}, []tool.Tool{builtin.ReadFile{}}, Config{
+		FileAccess: FileAccessConfig{WorkspaceRoot: dir, JailReads: true, JailWrites: true},
+		Policy:     NewDefaultPolicy(nil, dir),
+		Bus:        bus,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := a.Run(context.Background(), a.NewSession(), "读文件"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) == 0 {
+		t.Fatal("未收到 fs/resolve 事件（装配层未把 bus 注入 ctx，审计通道空转）")
+	}
+	ev := got[0]
+	if ev.Decision != "allowed" {
+		t.Errorf("decision=%q want=allowed", ev.Decision)
+	}
+	if ev.Op != "read" {
+		t.Errorf("op=%q want=read", ev.Op)
+	}
+	if ev.Mode != "saas-jailed" {
+		t.Errorf("mode=%q want=saas-jailed", ev.Mode)
+	}
+	if ev.Target != target {
+		t.Errorf("target=%q want=%q", ev.Target, target)
 	}
 }

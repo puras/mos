@@ -20,6 +20,7 @@ import (
 	"hegq.net/mos/memory"
 	"hegq.net/mos/planner"
 	"hegq.net/mos/tool"
+	"hegq.net/mos/tool/fs"
 )
 
 // Policy 是工具调用的安全策略检查点（Harness Engineering）。
@@ -94,6 +95,10 @@ type RunContext struct {
 	// Checkpoints 是 checkpoint 存储（架构 v2 §3.8，参考 LangChain checkpointer）。
 	// 可选：nil 时挂起点不落盘（SuspendError 仍冒泡，但无法跨进程恢复）。
 	Checkpoints checkpoint.Store
+	// FS 是文件工具 capability（架构 v2 §3.5，file-tool-jail plan Task 14）：
+	// 由 assistant.New 按 Config.FileAccess + Config.Policy.Mode() 构造 Sandboxed 或 Local。
+	// 工具调用方拿到 ctx 时应自行 `fs.WithFileSystem(ctx, rt.FS)`（Task 15–18 接入点）。
+	FS fs.FileSystem
 	// ResumeCheckpoint 是 Handle.Resume 注入的恢复点：driver 从挂起轮直接进入
 	// 工具批量执行（跳过 LLM 调用与日志），approval guard 按 Decisions[call.ID] 查表放行。
 	ResumeCheckpoint *checkpoint.Checkpoint
