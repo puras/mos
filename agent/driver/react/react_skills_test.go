@@ -64,16 +64,16 @@ func TestSkillAllowListGuard_NoSubset_Noop(t *testing.T) {
 	}
 }
 
-// TestEmitSkillDeactivate_WritesEvent 验证 sess.TurnSkills 非空时 emitSkillDeactivate
+// TestFinalizeRunSkills_WritesEvent 验证 sess.TurnSkills 非空时 agent.FinalizeRunSkills
 // 写 skill/deactivate 事件到 Session Event Log，并在写完后清零 TurnSkills +
-// TurnToolSubset（下轮重新累积）。
-func TestEmitSkillDeactivate_WritesEvent(t *testing.T) {
+// TurnToolSubset（下一个 Run 重新累积）。
+func TestFinalizeRunSkills_WritesEvent(t *testing.T) {
 	sess := session.NewSession("test-deactivate")
 	agent.AddTurnSkill(sess, agent.Skill{Name: "git", Description: "git helper"})
 	agent.AddTurnSkill(sess, agent.Skill{Name: "deploy", Description: "deploy helper"})
 	sess.TurnToolSubset = []string{"git", "shell"}
 
-	emitSkillDeactivate(context.Background(), sess)
+	agent.FinalizeRunSkills(sess)
 
 	if got := lastSkillDeactivateNames(sess); len(got) != 2 || got[0] != "git" || got[1] != "deploy" {
 		t.Errorf("lastSkillDeactivateNames = %v, want [git deploy]", got)
@@ -86,13 +86,13 @@ func TestEmitSkillDeactivate_WritesEvent(t *testing.T) {
 	}
 }
 
-// TestEmitSkillDeactivate_NoActivatedSkills 验证 sess.TurnSkills 为空时 emitSkillDeactivate
-// no-op（不写事件，也不动 TurnToolSubset）。
-func TestEmitSkillDeactivate_NoActivatedSkills(t *testing.T) {
+// TestFinalizeRunSkills_NoActivatedSkills 验证 sess.TurnSkills 为空时
+// agent.FinalizeRunSkills no-op（不写事件，也不动 TurnToolSubset）。
+func TestFinalizeRunSkills_NoActivatedSkills(t *testing.T) {
 	sess := session.NewSession("test-deactivate-noop")
 	sess.TurnToolSubset = []string{"untouched"} // 应保持原状
 
-	emitSkillDeactivate(context.Background(), sess)
+	agent.FinalizeRunSkills(sess)
 
 	if got := lastSkillDeactivateNames(sess); len(got) != 0 {
 		t.Errorf("expected no event, got %v", got)

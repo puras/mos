@@ -142,6 +142,8 @@ func (a *Agent) Run(ctx context.Context, sess *session.Session, input string) (s
 	rt := a.RT
 	rt.Session = sess
 	rt.Stream = false
+	defer agent.FinalizeRunSkills(sess)
+	agent.ResetRunSkills(sess)
 	return a.Driver.Run(ctx, rt, input)
 }
 
@@ -154,6 +156,8 @@ func (a *Agent) RunStream(ctx context.Context, sess *session.Session, input stri
 	rt := a.RT
 	rt.Session = sess
 	rt.Stream = true
+	defer agent.FinalizeRunSkills(sess)
+	agent.ResetRunSkills(sess)
 	return a.Driver.Run(ctx, rt, input)
 }
 

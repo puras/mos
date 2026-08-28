@@ -111,15 +111,9 @@ func (d *ReActDriver) Run(ctx context.Context, rt *driver.RunContext, input stri
 	sess := rt.Session
 	ctx = tool.WithSandbox(ctx, rt.Sandbox)
 
-	// Skills 激活态作用域 = 本次 Run（不是单轮）：
-	// 模型只能在"下一轮"用上技能正文的指引，若轮结束就清零，allowed-tools 白名单
-	// 在模型真正调工具前已失效，硬限制形同虚设。故起始清零、Run 收尾统一 deactivate，
-	// 中间各轮持续生效（多技能取并集）。
-	// 已知边界：TurnSkills 不进 checkpoint（json:"-"），跨挂起-恢复不保留——
-	// resume 会重放挂起轮的工具批，该批内若含 activate_skill 则重新激活。
-	sess.TurnSkills = nil
-	sess.TurnToolSubset = nil
-	defer emitSkillDeactivate(ctx, sess)
+	// Skills 激活态生命周期在 driver.Agent.Run 边界统一处理（agent.ResetRunSkills /
+	// FinalizeRunSkills）——本函数被 plan-execute/reflection 按步直调时不做清零，
+	// 激活态因此在整个外层 Run 内跨步骤持续（见 agent/skills_activate.go 说明）。
 
 	// 任务状态初始化：首次运行记录原始目标，进入 running。
 	// （resume 路径由 Handle.Resume 预加载持久化的 TaskState，Goal 已非空。）
@@ -268,30 +262,6 @@ func (d *ReActDriver) runTurnInner(ctx context.Context, rt *driver.RunContext, s
 	}
 
 	return d.finalizeToolBatch(ctx, rt, sess, turn, step, calls, &action, outs)
-}
-
-// emitSkillDeactivate 在 Run 收尾统一写 skill/deactivate 事件：把本次 Run 激活过的
-// Skill 清单（sess.TurnSkills 的 Name 字段）作为 Names 字段落库，并清零激活态；
-// 无激活 Skill 时为 no-op。
-//
-// 由 Run 以 defer 调用（正常完成 / 出错 / 挂起冒泡都会走到），是 Skills 强化
-// "取消激活态"的唯一观测点，对齐架构 v2 §3.5 Skills 生命周期。
-// 作用域是本次 Run 而非单轮——见 Run 起始处的说明。
-func emitSkillDeactivate(ctx context.Context, sess *session.Session) {
-	if sess == nil {
-		return
-	}
-	if len(sess.TurnSkills) == 0 {
-		return
-	}
-	names := make([]string, len(sess.TurnSkills))
-	for i, s := range sess.TurnSkills {
-		names[i] = s.Name
-	}
-	_ = sess.Append(event.SessionEventSkillDeactivate, event.MarshalData(event.SkillDeactivateData{Names: names}))
-	// 清零激活态——下次 Run 重新累积
-	sess.TurnSkills = nil
-	sess.TurnToolSubset = nil
 }
 
 // runResumeTurn 是 M2.8 恢复路径：跳过 LLM 调用与日志，从 checkpoint 重新执行
