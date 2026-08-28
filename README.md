@@ -203,7 +203,8 @@ a, err := assistant.New(model, tools, assistant.Config{
 
 激活的作用域是**本次 Run**（一次 `Run` 调用内跨轮持续生效），不跨 Run、不跨会话——
 模型通常在某一轮激活、在后续轮按正文指引干活，若轮末就清零，`allowed-tools` 会在模型
-真正用上技能前失效，硬限制形同虚设。
+真正用上技能前失效，硬限制形同虚设。生命周期绑定在 `Agent.Run` / `RunStream` 边界，
+因此 scripted / plan-execute / reflection 各驱动语义一致。
 
 装配期扫描结果以 `skill/load` 事件每会话落库一次，便于审计"当时加载了哪些技能"。
 全部技能统一列入清单（框架不做路径过滤——哪些技能与当前项目相关属业务判断，

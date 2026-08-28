@@ -79,8 +79,13 @@ type Skill struct {
 
 - **自动注册**：当 `assistant.Config.SkillsDir != ""` 时 `assistant.New` 自动注册
 - **可关闭**：`assistant.Config.DisableActivateSkill bool` 默认 false
-- **作用域**：本次 Run 内生效（Run 首部清零、Run 收尾 defer 统一 deactivate；
-  跨轮持续生效使 allowed-tools 硬限制真正可用——见 §5.4 变更说明）
+- **作用域**：本次 Run 内生效——生命周期绑定在 `driver.Agent.Run` / `RunStream`
+  边界（起始 `agent.ResetRunSkills`、收尾 `defer agent.FinalizeRunSkills`）。
+  跨轮持续生效使 allowed-tools 硬限制真正可用——见 §5.4 变更说明。
+  边界放在 Agent 层而非各 Driver 内：scripted 经自身 Agent.Run 自动获得同语义；
+  plan-execute / reflection 的内嵌 ReAct 执行器按步直调裸 ReActDriver、不经过
+  Agent 边界，激活态因此在整个外层 Run 内跨步骤持续（若放 react.Run 内层，
+  scripted 会跨 Run 泄漏白名单、plan-execute 会退化成 per-step 作用域）
 
 ### 5.2 工具签名
 
@@ -201,19 +206,19 @@ type SkillDeactivateData struct {
 
 ## 9. driver 集成点
 
-### 9.1 `react.runTurnInner`
+### 9.1 `driver.Agent.Run` / `RunStream`（激活态生命周期边界）
 
-- Run 开始：`sess.TurnSkills = nil`，`sess.TurnToolSubset = nil`，
-  `defer emitSkillDeactivate(ctx, sess)` 注册 Run 收尾钩子
-- `activate_skill` 工具执行后：`agent.AddTurnSkill(sess, target)` 累积（跨轮持续）
-- Run 结束（完成 / SuspendError 挂起冒泡 / 失败）：defer 统一写事件并清零：
-  ```go
-  if len(sess.TurnSkills) > 0 {
-      sess.Append(event.SkillDeactivate, SkillDeactivateData{Names: ...})
-      sess.TurnSkills = nil
-      sess.TurnToolSubset = nil
-  }
-  ```
+所有驱动的统一入口，因此作用域语义只需一处定义：
+
+```go
+defer agent.FinalizeRunSkills(sess) // 写 skill/deactivate（Names = 本次 Run 全部）+ 清零
+agent.ResetRunSkills(sess)          // 清零上个 Run 残留（防跨 Run 白名单泄漏）
+return a.Driver.Run(ctx, rt, input)
+```
+
+- `activate_skill` 工具执行后：`agent.AddTurnSkill(sess, target)` 累积（本次 Run 内跨轮持续）
+- Run 结束（完成 / SuspendError 挂起冒泡 / 失败）：defer 统一写事件并清零
+- `react.Run` / `runTurnInner` 不做清零——内嵌执行器场景下轮边界不是作用域边界
 
 ### 9.2 `executeTool` 前置校验
 
