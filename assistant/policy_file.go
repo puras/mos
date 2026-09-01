@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"hegq.net/mos/tool/fs"
+	fs "hegq.net/mos/filesystem"
 )
 
 // checkFile 校验文件路径不超出工作目录。

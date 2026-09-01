@@ -19,7 +19,7 @@ import (
 	"hegq.net/mos/memory"
 	"hegq.net/mos/tool"
 	"hegq.net/mos/tool/builtin"
-	"hegq.net/mos/tool/fs"
+	fs "hegq.net/mos/filesystem"
 )
 
 func toolCall(name, args string) *llm.ToolCall {

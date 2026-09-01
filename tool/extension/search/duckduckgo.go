@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"hegq.net/mos/httpx"
 )
 
 // duckduckgoDefaultEndpoint 是 DuckDuckGo HTML 版搜索地址（免费，无需 API Key）。
@@ -49,7 +51,7 @@ func (p *DuckDuckGoProvider) Search(ctx context.Context, query string, numResult
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpx.FromContext(ctx).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("搜索失败: %w", err)
 	}

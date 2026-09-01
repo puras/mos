@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"hegq.net/mos/tool/fs"
+	fs "hegq.net/mos/filesystem"
 )
 
 func TestWithinDirAllowsExtraWritable(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"hegq.net/mos/tool"
+	"hegq.net/mos/sandbox"
 )
 
 func TestShellExecute(t *testing.T) {
@@ -24,10 +24,10 @@ func TestShellExecute(t *testing.T) {
 	}
 }
 
-// 沙箱路径（M1.6）：配置了执行沙箱时，Shell 在 WorkDir（jail）内执行。
+// 沙箱路径（v2.24 capability seam）：注入 sandbox.Runner 后 Shell 在 WorkDir（jail）内执行。
 func TestShellExecuteWithSandbox(t *testing.T) {
 	dir := t.TempDir()
-	ctx := tool.WithSandbox(context.Background(), &tool.Sandbox{WorkDir: dir})
+	ctx := sandbox.WithRunner(context.Background(), &sandbox.Local{WorkDir: dir})
 	res, err := Shell{}.Execute(ctx, json.RawMessage(`{"command":"pwd"}`))
 	if err != nil {
 		t.Fatalf("execute: %v", err)

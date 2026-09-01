@@ -23,7 +23,7 @@ import (
 	"hegq.net/mos/llm"
 	"hegq.net/mos/memory"
 	"hegq.net/mos/planner"
-	"hegq.net/mos/tool"
+	"hegq.net/mos/sandbox"
 )
 
 // 兼容别名：ErrToolDenied / ToolDeniedError 已迁至 execpath，沿旧的语义名称继续可读。
@@ -109,7 +109,7 @@ func (d *ReActDriver) Run(ctx context.Context, rt *driver.RunContext, input stri
 		NewReAct(rt)
 	}
 	sess := rt.Session
-	ctx = tool.WithSandbox(ctx, rt.Sandbox)
+	ctx = sandbox.WithRunner(ctx, rt.Runner)
 
 	// Skills 激活态生命周期在 driver.Agent.Run 边界统一处理（agent.ResetRunSkills /
 	// FinalizeRunSkills）——本函数被 plan-execute/reflection 按步直调时不做清零，

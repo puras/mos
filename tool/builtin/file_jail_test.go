@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"hegq.net/mos/tool/fs"
+	fs "hegq.net/mos/filesystem"
 )
 
 // jailCtx 返回注入了 workspace jail 的 ctx（读写都 jail）。
@@ -91,7 +91,7 @@ func TestWriteFileNotConfiguredError(t *testing.T) {
 func TestFindFilesRootEscapesDenied(t *testing.T) {
 	dir := t.TempDir()
 	args, _ := json.Marshal(map[string]any{"root": "/etc", "pattern": "*"})
-	_, err := FindFiles{}.Execute(jailCtx(t, dir), args)
+	_, err := Glob{}.Execute(jailCtx(t, dir), args)
 	var pd *fs.PathDeniedError
 	if !errors.As(err, &pd) {
 		t.Fatalf("应返回 *PathDeniedError，got=%v", err)
@@ -104,7 +104,7 @@ func TestFindFilesDefaultsToWorkspaceRoot(t *testing.T) {
 		t.Fatalf("准备文件失败: %v", err)
 	}
 	args, _ := json.Marshal(map[string]any{"pattern": "*.go"})
-	r, err := FindFiles{}.Execute(jailCtx(t, dir), args)
+	r, err := Glob{}.Execute(jailCtx(t, dir), args)
 	if err != nil {
 		t.Fatalf("Execute 失败: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestFindFilesDefaultsToWorkspaceRoot(t *testing.T) {
 
 func TestFindFilesNotConfiguredError(t *testing.T) {
 	args, _ := json.Marshal(map[string]any{"pattern": "*"})
-	_, err := FindFiles{}.Execute(context.Background(), args)
+	_, err := Glob{}.Execute(context.Background(), args)
 	var nc *fs.NotConfiguredError
 	if !errors.As(err, &nc) {
 		t.Fatalf("未注入 fs 应返回 *fs.NotConfiguredError，got=%v", err)
@@ -174,7 +174,7 @@ func TestWalkDoesNotFollowSymlinkedDirs(t *testing.T) {
 	ctx := jailCtx(t, dir)
 
 	fargs, _ := json.Marshal(map[string]any{"root": dir, "pattern": "*.go"})
-	fr, err := FindFiles{}.Execute(ctx, fargs)
+	fr, err := Glob{}.Execute(ctx, fargs)
 	if err != nil {
 		t.Fatalf("FindFiles: %v", err)
 	}

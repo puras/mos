@@ -16,7 +16,7 @@ import (
 	"hegq.net/mos/agent/event"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/planner"
-	"hegq.net/mos/tool"
+	"hegq.net/mos/sandbox"
 )
 
 // VerifyFunc 校验计划交付物（可选，架构 v2 §3.3"校验交付物"）：
@@ -79,7 +79,7 @@ func (d *PlanExecuteDriver) Run(ctx context.Context, rt *driver.RunContext, inpu
 		d.executor = &react.ReActDriver{}
 	}
 	sess := rt.Session
-	ctx = tool.WithSandbox(ctx, rt.Sandbox)
+	ctx = sandbox.WithRunner(ctx, rt.Runner)
 
 	// 任务状态初始化：首次运行记录原始目标，进入 running。
 	if sess.State.Goal == "" {

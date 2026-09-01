@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"hegq.net/mos/httpx"
 )
 
 const (
@@ -41,8 +43,9 @@ func newRequest(ctx context.Context, method, url string, body any) (*http.Reques
 }
 
 // doJSON 发起请求并将 JSON 响应解码到 out；非 200 状态码报错。
+// 客户端经 httpx seam 解析（请求构建时的 ctx 已随 req 携带，注入链路见 execpath.ExecuteHook）。
 func doJSON(req *http.Request, out any) error {
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpx.FromContext(req.Context()).Do(req)
 	if err != nil {
 		return err
 	}

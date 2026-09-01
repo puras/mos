@@ -9,7 +9,7 @@ import (
 
 	"hegq.net/mos/agent/approval"
 	"hegq.net/mos/llm"
-	"hegq.net/mos/tool/fs"
+	fs "hegq.net/mos/filesystem"
 )
 
 // Checker 是单个工具的策略检查器：返回 error 表示拒绝该次调用。

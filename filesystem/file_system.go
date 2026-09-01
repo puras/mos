@@ -1,6 +1,7 @@
-// Package fs 实现文件系统 capability seam（架构 v2 §3.5，对齐 dsh ctx.fs + sandboxPolicy）。
+// Package filesystem 实现文件系统 capability seam（架构 v2 §3.5，对齐 dsh ctx.fs + sandboxPolicy）。
 // Resolve 在 Lexical + Realpath 双层校验后返回可访问的目标路径；越界返回 *PathDeniedError。
-package fs
+// 原位于 tool/fs；v2.24 拆为顶层包以统一 capability 包结构（与 sandbox / httpx 平级）。
+package filesystem
 
 import (
 	"context"

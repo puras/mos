@@ -24,8 +24,11 @@ type Tool interface {
 }
 
 // SequentialTool 是可选的执行模式标记（对齐 PI per-tool executionMode）：
-// 工具实现该接口且 Sequential() 返回 true 时，包含其调用的一整批工具调用
-// 回退为串行执行（并发批量路径见 agent/executor）。
+// 工具实现该接口且 Sequential() 返回 true 时，该工具在批量执行中被标记为串行项，
+// 即它会与同批内其他工具并发执行，但该工具自身的多次调用（如循环重试）会串行进行；
+// 或者更常见的情况——整批工具调用中若任意一个实现了 SequentialTool 并返回 true，
+// 该项在批内与前后项串行执行，而非与它们并发。
+// 注意：这不会让整批退化为串行，只是让该工具在批内串行排队（并发批量路径见 agent/executor）。
 type SequentialTool interface {
 	Tool
 	Sequential() bool
@@ -211,9 +214,8 @@ func typeToSchema(t reflect.Type) (map[string]any, error) {
 // mos tag 支持 desc=描述 与 required=true|false，例如：mos:"desc=数量,required=true"。
 func structToSchema(t reflect.Type) (map[string]any, error) {
 	props := map[string]any{}
-	required := []string{}
-	for i := 0; i < t.NumField(); i++ {
-		f := t.Field(i)
+	var required []string
+	for f := range t.Fields() {
 		if f.PkgPath != "" { // 未导出字段跳过
 			continue
 		}
@@ -265,7 +267,7 @@ func parseMosTag(f reflect.StructField) (string, bool) {
 		return "", false
 	}
 	desc, required := "", false
-	for _, part := range strings.Split(tag, ",") {
+	for part := range strings.SplitSeq(tag, ",") {
 		kv := strings.SplitN(part, "=", 2)
 		switch strings.TrimSpace(kv[0]) {
 		case "desc":

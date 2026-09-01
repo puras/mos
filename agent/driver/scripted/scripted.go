@@ -23,7 +23,7 @@ import (
 	"hegq.net/mos/agent/telemetry"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/planner"
-	"hegq.net/mos/tool"
+	"hegq.net/mos/sandbox"
 )
 
 // DefaultMaxSteps 是脚本步数上限（防脚本爆炸 + 防提示词膨胀）。
@@ -80,7 +80,7 @@ func (d *ScriptedDriver) Run(ctx context.Context, rt *driver.RunContext, input s
 		react.InstallDefaults(rt)
 	}
 	sess := rt.Session
-	ctx = tool.WithSandbox(ctx, rt.Sandbox)
+	ctx = sandbox.WithRunner(ctx, rt.Runner)
 
 	if sess.State.Goal == "" {
 		sess.State.Goal = input

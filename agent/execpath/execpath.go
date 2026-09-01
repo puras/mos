@@ -18,9 +18,10 @@ import (
 	"hegq.net/mos/agent/hook"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/agent/telemetry"
+	"hegq.net/mos/httpx"
 	"hegq.net/mos/llm"
 	"hegq.net/mos/tool"
-	"hegq.net/mos/tool/fs"
+	fs "hegq.net/mos/filesystem"
 )
 
 // ErrToolDenied 表示工具调用被单调守卫拒绝（非致命：结果反馈给模型继续）。
@@ -43,7 +44,7 @@ type ToolOutcome struct {
 //   - preflight（串行）：单调守卫决策（**先于** tool/call 日志——挂起时不落日志），
 //     拒绝 = 拦截集合（显式失败回填）；挂起（*approval.SuspendError）= 整批中止（返回第二返回值）；
 //   - execute（有界并发）：pre-execute → execute → post-execute 钩子链；任一工具声明
-//     SequentialTool 时整批回退串行（对齐 PI per-tool executionMode）；
+//     SequentialTool 时该项在批内串行执行（对齐 PI per-tool executionMode）；
 //   - finalize（调用方）：结果按模型调用顺序回填（本函数只产出按源序的 Outcome）。
 //
 // 守卫拒绝返回 *ToolDeniedError（非致命，结果反馈给模型）；DoomLoop 致命错误原样返回
@@ -158,12 +159,14 @@ func ApplyOutcomes(ctx context.Context, rt *driver.RunContext, sess *session.Ses
 // ExecuteHook 是 tool/execute 链尾的默认执行器：实际调用工具并填充结果。
 // 平台可在其前注册包装钩子（超时/重试/指标），经 next 委托到本执行器。
 //
-// 工具执行前向 ctx 注入三样能力：
+// 工具执行前向 ctx 注入四样能力：
 //   - *session.Session（agent.WithSession）：activate_skill 等工具写事件 / 读本轮状态；
-//   - rt.FS（fs.WithFileSystem）：内置文件工具（read_file / write_file / find_files /
+//   - rt.FS（fs.WithFileSystem）：内置文件工具（read_file / write_file / glob /
 //     grep）经 fs.FromContext(ctx) 取用；未注入即 *fs.NotConfiguredError（fail-closed）。
 //     注入点集中在此（三个驱动共用 execpath 通道），一处覆盖全部路径；
-//   - rt.Bus（fs.WithBus）：Sandboxed.Resolve 的 fs/resolve 审计事件出口。
+//   - rt.Bus（fs.WithBus）：Sandboxed.Resolve 的 fs/resolve 审计事件出口；
+//   - rt.HTTPClient（httpx.WithClient）：联网工具（web_fetch / web_search）经
+//     httpx.FromContext(ctx) 取用；nil 不注入，兜底 httpx.Default（带超时）。
 func ExecuteHook(rt *driver.RunContext) hook.Hook {
 	return func(ctx context.Context, ev *hook.HookEvent, next hook.Next) (*hook.HookEvent, error) {
 		if ev.ToolCall == nil {
@@ -177,6 +180,9 @@ func ExecuteHook(rt *driver.RunContext) hook.Hook {
 		}
 		if rt != nil && rt.Bus != nil {
 			ctx = fs.WithBus(ctx, rt.Bus)
+		}
+		if rt != nil && rt.HTTPClient != nil {
+			ctx = httpx.WithClient(ctx, rt.HTTPClient)
 		}
 		result, err := rt.Tools.Call(ctx, ev.ToolCall.Name, json.RawMessage(ev.ToolCall.Args))
 		ev.Result = result

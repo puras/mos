@@ -15,7 +15,7 @@ import (
 	"hegq.net/mos/llm"
 	"hegq.net/mos/tool"
 	"hegq.net/mos/tool/builtin"
-	"hegq.net/mos/tool/fs"
+	fs "hegq.net/mos/filesystem"
 )
 
 // newTestTruncator 构造小上限截断器，便于在测试中触发截断。

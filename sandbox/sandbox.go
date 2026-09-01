@@ -1,4 +1,12 @@
-package tool
+// Package sandbox 提供 shell 命令的隔离执行能力（capability seam）。
+//
+// Runner 是公共接口；具体实现：
+//   - Local：完整六层隔离（工作目录 jail + 进程组击杀 + ulimit + 环境裁剪 + 输出截断 + 网络隔离尽力而为）
+//   - Default：兜底实现，含进程组击杀与超时截断，无 ulimit/环境裁剪（修复 v2.23 前 Shell 默认路径无沙箱的 bug）
+//
+// 诚实的边界：本包是本地轻量实现；完整网络命名空间隔离依赖远程沙箱后端（M4：Docker / containerd）。
+// 原位于 tool/sandbox.go；v2.24 拆为顶层包以统一 capability 包结构（与 filesystem / httpx 平级）。
+package sandbox
 
 import (
 	"bytes"
@@ -12,7 +20,15 @@ import (
 	"time"
 )
 
-// Sandbox 是 shell 命令的隔离执行器（M1.6 执行沙箱，本地轻量实现）。
+// Runner 是命令执行隔离器的抽象（capability seam）。
+// 平台可注入自定义 Runner（如 Docker / containerd 后端）。
+type Runner interface {
+	// Run 在隔离环境中执行命令，返回（stdout+stderr 合并输出, 执行错误）。
+	// 执行错误为 *exec.ExitError 时表示命令正常结束但退出码非零；超时返回描述性错误。
+	Run(ctx context.Context, command string) (string, error)
+}
+
+// Local 是完整六层隔离的命令执行器（M1.6 执行沙箱，本地轻量实现）。
 // 它回答纵深防御的隔离层问题：Policy 拦截"该不该调用"，沙箱限制"放行后能造成多大破坏"。
 //
 // 隔离手段：
@@ -20,11 +36,9 @@ import (
 //   - 单次调用超时：超时后终止整个进程组（含子进程，避免孤儿）；
 //   - 输出大小上限：超出即截断并丢弃后续内容；
 //   - 进程资源限制：CPU 时间 / 虚拟内存 / 单文件大小（经 ulimit 预置，0 表示不限制）；
-//   - 环境裁剪：仅保留白名单环境变量，NoNet 时剥离代理配置。
-//
-// 诚实的边界：本地实现的网络隔离是尽力而为（裁剪代理变量无法阻止直连）；
-// 完整网络命名空间隔离依赖远程沙箱后端（M4：Docker / containerd），不在本实现范围内。
-type Sandbox struct {
+//   - 环境裁剪：仅保留白名单环境变量，NoNet 时剥离代理配置；
+//   - 网络隔离尽力而为：裁剪代理环境变量（无法阻止直连）。
+type Local struct {
 	WorkDir    string        // 命令执行根目录（jail）；空使用进程当前目录
 	Timeout    time.Duration // 单次调用超时；0 使用默认 10s
 	MaxOutput  int64         // 输出上限（字节）；0 使用默认 64KB
@@ -39,9 +53,8 @@ const (
 	sandboxDefaultMaxOut  = 64 << 10 // 64KB
 )
 
-// Run 在沙箱内执行 shell 命令，返回（stdout+stderr 合并输出, 执行错误）。
-// 执行错误为 *exec.ExitError 时表示命令正常结束但退出码非零；超时返回描述性错误。
-func (s *Sandbox) Run(ctx context.Context, command string) (string, error) {
+// Run 实现 Runner：完整六层隔离的命令执行。
+func (s *Local) Run(ctx context.Context, command string) (string, error) {
 	if s == nil {
 		return "", errors.New("sandbox: nil sandbox")
 	}
@@ -96,7 +109,7 @@ func (s *Sandbox) Run(ctx context.Context, command string) (string, error) {
 }
 
 // buildCommand 用 ulimit 预置进程资源限制（软限制，仅作用于本命令及其子进程）。
-func (s *Sandbox) buildCommand(command string) string {
+func (s *Local) buildCommand(command string) string {
 	var limits []string
 	if s.CpuSeconds > 0 {
 		limits = append(limits, fmt.Sprintf("ulimit -t %d", s.CpuSeconds))
@@ -114,7 +127,7 @@ func (s *Sandbox) buildCommand(command string) string {
 }
 
 // environment 裁剪环境变量：仅保留白名单变量，避免向模型执行的命令泄露主机敏感配置。
-func (s *Sandbox) environment() []string {
+func (s *Local) environment() []string {
 	allowed := []string{"PATH", "HOME", "LANG", "TMPDIR", "PWD", "USER", "SHELL", "LC_ALL"}
 	env := make([]string, 0, len(allowed)+2)
 	for _, key := range allowed {
@@ -129,6 +142,45 @@ func (s *Sandbox) environment() []string {
 		)
 	}
 	return env
+}
+
+// Default 是 Runner 的兜底实现：含进程组击杀 + 超时 + 输出截断，但无 ulimit / 无环境裁剪。
+// 用于 ctx 未注入 Runner 时的回退，确保即使平台忘记配 Runner 也至少有进程组隔离
+// （修复 v2.23 前 Shell 默认路径无沙箱的 bug——只调 exec.CommandContext 不杀子进程）。
+type Default struct{}
+
+// Run 实现 Runner：兜底隔离。
+// 默认 10s 超时 + 64KB 输出截断 + 进程组击杀（Setpgid + SIGKILL 进程组）。
+// 不做 ulimit / 不裁剪环境变量——避免对默认调用方产生意外的副作用。
+func (Default) Run(ctx context.Context, command string) (string, error) {
+	if strings.TrimSpace(command) == "" {
+		return "", errors.New("sandbox: empty command")
+	}
+	ctx, cancel := context.WithTimeout(ctx, sandboxDefaultTimeout)
+	defer cancel()
+
+	cmd := exec.Command("/bin/sh", "-c", command)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	var out limitedBuffer
+	out.max = sandboxDefaultMaxOut
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("sandbox: 启动命令失败: %w", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	select {
+	case err := <-done:
+		return out.finish(), err
+	case <-ctx.Done():
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		<-done
+		return out.finish() + "\n[命令执行超时，已终止]", fmt.Errorf("sandbox: 命令执行超时（%v）", sandboxDefaultTimeout)
+	}
 }
 
 // limitedBuffer 是带输出上限的缓冲 writer：达到上限后丢弃后续内容并标记截断。
@@ -161,17 +213,27 @@ func (b *limitedBuffer) finish() string {
 	return out
 }
 
-// ---- ctx 注入：工具从上下文取沙箱，未配置时用默认执行方式 ----
+// ---- ctx 注入：工具从上下文取 Runner ----
 
-type sandboxCtxKey struct{}
+type ctxKey struct{}
 
-// WithSandbox 将沙箱放入上下文，供工具执行时取用。
-func WithSandbox(ctx context.Context, s *Sandbox) context.Context {
-	return context.WithValue(ctx, sandboxCtxKey{}, s)
+// WithRunner 把 Runner 注入 ctx。
+func WithRunner(ctx context.Context, r Runner) context.Context {
+	return context.WithValue(ctx, ctxKey{}, r)
 }
 
-// SandboxFrom 从上下文取沙箱；未配置时返回 nil。
-func SandboxFrom(ctx context.Context) *Sandbox {
-	s, _ := ctx.Value(sandboxCtxKey{}).(*Sandbox)
-	return s
+// FromContext 从 ctx 取出 Runner；未注入返回 Default{}（含进程组击杀的兜底）。
+// 永远不返回 nil——Shell 工具不再有"默认路径无沙箱"的 bug。
+func FromContext(ctx context.Context) Runner {
+	r, _ := ctx.Value(ctxKey{}).(Runner)
+	if r != nil {
+		return r
+	}
+	return Default{}
 }
+
+// Compile-time 接口断言
+var (
+	_ Runner = (*Local)(nil)
+	_ Runner = Default{}
+)

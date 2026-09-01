@@ -3,10 +3,6 @@ package builtin
 import (
 	"context"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -28,74 +24,8 @@ func TestCurrentTimeExecute(t *testing.T) {
 	}
 }
 
-func TestWebFetchExecute(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		io := `<html><head><title>测试页</title><script>var x=1;</script></head>
-			<body><h1>你好</h1><p>世界&nbsp;!</p></body></html>`
-		w.Write([]byte(io))
-	}))
-	defer srv.Close()
-
-	res, err := WebFetch{}.Execute(context.Background(), json.RawMessage(`{"url":"`+srv.URL+`"}`))
-	if err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-	m := res.(map[string]any)
-	if m["title"] != "测试页" {
-		t.Fatalf("title = %v", m["title"])
-	}
-	content, _ := m["content"].(string)
-	if !strings.Contains(content, "你好") || !strings.Contains(content, "世界 !") {
-		t.Fatalf("content = %q", content)
-	}
-	if strings.Contains(content, "script") {
-		t.Fatalf("script should be stripped: %q", content)
-	}
-	// 非 http 地址应拒绝
-	if _, err := (WebFetch{}).Execute(context.Background(), json.RawMessage(`{"url":"file:///etc/passwd"}`)); err == nil {
-		t.Fatal("file url should fail")
-	}
-}
-
-func TestFileTools(t *testing.T) {
-	dir := t.TempDir()
-	fp := filepath.Join(dir, "sub", "a.txt")
-	// file-tool-jail：文件工具经 ctx 取 fs capability；读写都 jail 到 dir。
-	ctx := jailCtx(t, dir)
-
-	// 写入（自动建父目录）
-	if _, err := (WriteFile{}).Execute(ctx, mustJSON(map[string]any{"path": fp, "content": "hello"})); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	// 读取
-	res, err := ReadFile{}.Execute(ctx, mustJSON(map[string]any{"path": fp}))
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if res.(map[string]any)["content"] != "hello" {
-		t.Fatalf("read content = %v", res)
-	}
-	// 搜索
-	fres, err := FindFiles{}.Execute(ctx, mustJSON(map[string]any{"root": dir, "pattern": "*.txt"}))
-	if err != nil {
-		t.Fatalf("find: %v", err)
-	}
-	if len(fres.(map[string]any)["matches"].([]string)) != 1 {
-		t.Fatalf("find matches = %v", fres)
-	}
-	// 内容检索
-	gres, err := Grep{}.Execute(ctx, mustJSON(map[string]any{"root": dir, "pattern": "hello"}))
-	if err != nil {
-		t.Fatalf("grep: %v", err)
-	}
-	gm := gres.(map[string]any)
-	if gm["count"].(int) != 1 {
-		t.Fatalf("grep count = %v", gm)
-	}
-}
-
-// Default 应包含且仅包含 7 个内置工具。
+// Default 应包含且仅包含 6 个内置工具（v2.24：web_fetch 已迁至 tool/extension）。
+// 文件工具的 jail 行为见 file_jail_test.go（详尽边界测试）。
 func TestDefault(t *testing.T) {
 	names := map[string]bool{}
 	for _, tl := range Default() {
@@ -104,21 +34,13 @@ func TestDefault(t *testing.T) {
 		}
 		names[tl.Name()] = true
 	}
-	want := []string{"shell", "current_time", "read_file", "write_file", "find_files", "grep", "web_fetch"}
+	want := []string{"shell", "current_time", "read_file", "write_file", "glob", "grep"}
 	if len(names) != len(want) {
-		t.Fatalf("Default() has %d tools, want %d", len(names), len(want))
+		t.Fatalf("Default() has %d tools, want %d (%v)", len(names), len(want), names)
 	}
 	for _, n := range want {
 		if !names[n] {
 			t.Fatalf("Default() missing %q", n)
 		}
 	}
-}
-
-func mustJSON(v any) json.RawMessage {
-	b, err := json.Marshal(v)
-	if err != nil {
-		panic(err)
-	}
-	return b
 }

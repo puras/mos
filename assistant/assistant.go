@@ -20,7 +20,7 @@ import (
 	"hegq.net/mos/llm"
 	"hegq.net/mos/planner"
 	"hegq.net/mos/tool"
-	"hegq.net/mos/tool/fs"
+	fs "hegq.net/mos/filesystem"
 )
 
 // Assistant 是组装好的智能体实例：模型对象 + 工具集 + 框架概念（策略/规划/审计/记忆）。
@@ -156,7 +156,8 @@ func buildRunContext(model llm.ChatModel, reg *tool.Registry, cfg Config) *drive
 		Tools:               reg,
 		Planner:             cfg.Planner,
 		Memory:              cfg.Memory,
-		Sandbox:             cfg.Sandbox,
+		Runner:              cfg.Runner,
+		HTTPClient:          cfg.HTTPClient,
 		Policy:              cfg.Policy,
 		Auditor:             cfg.Auditor,
 		Observer:            cfg.Observer,

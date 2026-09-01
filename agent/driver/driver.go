@@ -7,6 +7,7 @@ package driver
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sync"
 
 	"hegq.net/mos/agent"
@@ -19,8 +20,9 @@ import (
 	"hegq.net/mos/llm"
 	"hegq.net/mos/memory"
 	"hegq.net/mos/planner"
+	"hegq.net/mos/sandbox"
 	"hegq.net/mos/tool"
-	"hegq.net/mos/tool/fs"
+	fs "hegq.net/mos/filesystem"
 )
 
 // Policy 是工具调用的安全策略检查点（Harness Engineering）。
@@ -45,7 +47,8 @@ type RunContext struct {
 	Tools        *tool.Registry
 	Planner      planner.Planner       // 决策器（默认 planner.NewReAct(model)，ReActDriver 内部使用）
 	Memory       memory.Memory         // 可选记忆后端（MVP 保留接口，接入见后续 Seam 迭代）
-	Sandbox      *tool.Sandbox         // shell 命令执行沙箱
+	Runner       sandbox.Runner         // shell 命令执行隔离器（v2.24 从 tool.Sandbox 拆出，capability seam）
+	HTTPClient   *http.Client           // HTTP 客户端（capability seam，v2.24）：联网工具经 httpx.FromContext 取用；nil 时兜底 httpx.Default
 	Policy       Policy                // 工具调用安全策略（注入 Guards，单调守卫）
 	Auditor      agent.Auditor         // 工具结果审计门（默认 NewDefaultAuditor）
 	Observer     agent.Observer        // 观测回调（emit 投影入口，API 不变）

@@ -3,7 +3,7 @@ package assistant
 import (
 	"testing"
 
-	"hegq.net/mos/tool/fs"
+	fs "hegq.net/mos/filesystem"
 )
 
 func TestDefaultPolicyModeLocalJailed(t *testing.T) {

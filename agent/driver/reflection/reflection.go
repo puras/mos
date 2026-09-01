@@ -16,7 +16,7 @@ import (
 	"hegq.net/mos/agent/event"
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/planner"
-	"hegq.net/mos/tool"
+	"hegq.net/mos/sandbox"
 )
 
 // defaultMaxIterations 是默认最大评审-修订迭代数（一次生成 + 至多 N 轮修订）。
@@ -89,7 +89,7 @@ func (d *ReflectionDriver) Run(ctx context.Context, rt *driver.RunContext, input
 		return "", fmt.Errorf("agent: reflection requires a reflector (rt.Reflector or WithReflector)")
 	}
 	sess := rt.Session
-	ctx = tool.WithSandbox(ctx, rt.Sandbox)
+	ctx = sandbox.WithRunner(ctx, rt.Runner)
 
 	if sess.State.Goal == "" {
 		sess.State.Goal = input

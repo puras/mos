@@ -8,6 +8,7 @@ package assistant
 
 import (
 	"context"
+	"net/http"
 
 	"hegq.net/mos/agent"
 	"hegq.net/mos/agent/approval"
@@ -17,7 +18,7 @@ import (
 	"hegq.net/mos/agent/session"
 	"hegq.net/mos/memory"
 	"hegq.net/mos/planner"
-	"hegq.net/mos/tool"
+	"hegq.net/mos/sandbox"
 )
 
 // Config 是智能体的运行配置（框架层 API 契约）。
@@ -82,9 +83,14 @@ type Config struct {
 	RetrieverMinScore float64
 	// Observer 任务循环事件回调（可观测工具调用与思考过程）。
 	Observer agent.Observer
-	// Sandbox shell 命令执行沙箱（M1.6 隔离层）：工作目录 jail + 资源限制 + 进程组超时。
-	// 为 nil 时 shell 工具使用默认执行方式（10s 超时 + 64KB 截断）。
-	Sandbox *tool.Sandbox
+	// Runner shell 命令执行隔离器（capability seam，v2.24 从 tool.Sandbox 拆出）：
+	// 平台可注入自定义 Runner（Docker / containerd 后端）；为 nil 时 shell 工具
+	// 经 sandbox.FromContext 兜底为 Default（含进程组击杀，避免孤儿进程）。
+	Runner sandbox.Runner
+	// HTTPClient 联网工具共享的 HTTP 客户端（capability seam，v2.24）：
+	// web_fetch / web_search 经 httpx.FromContext(ctx) 取用。
+	// 为 nil 时兜底 httpx.Default（60s 超时）；平台可注入统一代理/重试/指标的客户端。
+	HTTPClient *http.Client
 	// FileAccess 文件工具访问策略（M3.x — file-tool-jail plan）：
 	// 由 assistant.New 校验 WorkspaceRoot 必填（fail-closed）。
 	// 透传给 tool/fs seam 装配层（Task 14），构造 Sandboxed/Local 与文件策略。

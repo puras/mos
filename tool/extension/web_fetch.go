@@ -1,4 +1,4 @@
-package builtin
+package extension
 
 import (
 	"context"
@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"hegq.net/mos/httpx"
 	"hegq.net/mos/tool"
 )
 
@@ -49,7 +50,7 @@ func (WebFetch) Execute(ctx context.Context, args json.RawMessage) (any, error) 
 	}
 	req.Header.Set("User-Agent", "MoS-Agent/0.1")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpx.FromContext(ctx).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("抓取失败: %w", err)
 	}
