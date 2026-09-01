@@ -6,3 +6,7 @@
 
 # Claude Code 本地会话配置与临时 worktree
 .claude/
+
+# 示例编译产物与运行时工作目录
+examples/cli/moscli
+examples/cli/temp/
