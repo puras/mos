@@ -7,7 +7,6 @@ package anthropic
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -20,6 +19,7 @@ import (
 	pkgusage "hegq.net/mogo/pkg/usage"
 
 	"hegq.net/mos/llm"
+	"hegq.net/mos/llm/transport"
 )
 
 const (
@@ -33,26 +33,35 @@ type Chat struct {
 	apiKey  string
 	baseURL string
 	model   string
-	client  *http.Client
+	hc      *transport.Client
 }
 
-// New 根据配置创建 Chat，支持键：api_key / base_url / model。
+// New 根据配置创建 Chat，支持键：api_key / base_url / model / http_timeout。
+// http_timeout 为 Go duration 字符串（如 "60s"）；为空时每次请求经 httpx seam
+// 解析客户端（无硬超时，依赖调用方 ctx 取消）。
 func New(cfg llm.Config) (llm.ChatModel, error) {
-	p := &Chat{
-		apiKey:  cfg["api_key"],
-		baseURL: strings.TrimRight(cfg["base_url"], "/"),
-		model:   cfg["model"],
-		client:  &http.Client{},
-	}
-	if p.apiKey == "" {
+	apiKey := cfg["api_key"]
+	if apiKey == "" {
 		return nil, errors.New("anthropic: missing required config \"api_key\"")
 	}
-	if p.model == "" {
+	model := cfg["model"]
+	if model == "" {
 		return nil, errors.New("anthropic: missing required config \"model\"")
 	}
-	if p.baseURL == "" {
-		p.baseURL = defaultBaseURL
+	baseURL := strings.TrimRight(cfg["base_url"], "/")
+	if baseURL == "" {
+		baseURL = defaultBaseURL
 	}
+	p := &Chat{apiKey: apiKey, baseURL: baseURL, model: model}
+	hc, err := transport.New(transport.Config{
+		Endpoint:    func(bool) string { return p.endpoint() },
+		AuthHeaders: map[string]string{"x-api-key": apiKey, "anthropic-version": apiVersion},
+		ParseError:  parseAnthropicError,
+	}, cfg)
+	if err != nil {
+		return nil, err
+	}
+	p.hc = hc
 	return p, nil
 }
 
@@ -76,33 +85,14 @@ func (p *Chat) doChat(ctx context.Context, req *llm.Request, stream bool, emit f
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: marshal request: %w", err)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint(), bytes.NewReader(body))
+	resp, err := p.hc.Do(ctx, stream, body)
 	if err != nil {
-		return nil, fmt.Errorf("anthropic: new request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", p.apiKey)
-	httpReq.Header.Set("anthropic-version", apiVersion)
-
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("anthropic: do request: %w", err)
+		return nil, fmt.Errorf("anthropic: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		data, _ := io.ReadAll(resp.Body)
-		var errResp struct {
-			Type  string `json:"type"`
-			Error *struct {
-				Type    string `json:"type"`
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if json.Unmarshal(data, &errResp) == nil && errResp.Error != nil {
-			return nil, fmt.Errorf("anthropic: %s: %s", errResp.Error.Type, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("anthropic: unexpected status %d: %s", resp.StatusCode, string(data))
+		return nil, transport.ParseStatusError("anthropic", resp, parseAnthropicError)
 	}
 
 	if stream {
@@ -308,6 +298,17 @@ type anthropicError struct {
 	Message string `json:"message"`
 }
 
+// parseAnthropicError 解析 Anthropic 错误响应体（非 200 路径，供 transport.ParseStatusError 使用）。
+func parseAnthropicError(statusCode int, body []byte) (string, bool) {
+	var errResp struct {
+		Error *anthropicError `json:"error"`
+	}
+	if json.Unmarshal(body, &errResp) == nil && errResp.Error != nil {
+		return fmt.Sprintf("%s: %s", errResp.Error.Type, errResp.Error.Message), true
+	}
+	return "", false
+}
+
 type messagesResponse struct {
 	Content []pkganthropic.AnthropicContentBlockUnion `json:"content"`
 	Usage   *pkganthropic.AnthropicUsage              `json:"usage"`
@@ -344,28 +345,9 @@ func (p *Chat) handleResponse(r io.Reader) (*llm.Response, error) {
 	}
 	return &llm.Response{
 		Message:      msg,
-		Usage:        toLLMUsage(pkgusage.FromAnthropic(raw.Usage)),
+		Usage:        transport.UsageFrom(pkgusage.FromAnthropic(raw.Usage)),
 		FinishReason: anthropicStopReason(raw.Stop),
 	}, nil
-}
-
-// toLLMUsage 将 MoGO 统一用量映射为 MoS 统一结构，含缓存/推理明细。
-func toLLMUsage(u *pkgusage.Usage) llm.Usage {
-	out := llm.Usage{}
-	if u == nil {
-		return out
-	}
-	out.PromptTokens = int(u.InputTokens)
-	out.CompletionTokens = int(u.OutputTokens)
-	out.TotalTokens = int(u.TotalTokens)
-	if u.Cache != nil {
-		out.Details.Input.CacheRead = int(u.Cache.ReadInputTokens)
-		out.Details.Input.CacheWrite = int(u.Cache.CreationInputTokens)
-	}
-	if u.Thinking != nil {
-		out.Details.Output.Reasoning = int(u.Thinking.ThinkingTokens)
-	}
-	return out
 }
 
 // handleStream 解析 Anthropic SSE 事件流，聚合文本与工具调用。
@@ -486,7 +468,7 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 	}
 	resp.FinishReason = finishReason
 	if usage != nil {
-		resp.Usage = toLLMUsage(usage)
+		resp.Usage = transport.UsageFrom(usage)
 	}
 	return resp, nil
 }
