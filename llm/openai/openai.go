@@ -8,7 +8,6 @@ package openai
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,12 +15,12 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	pkgopenai "hegq.net/mogo/pkg/protocol/openai"
 	pkgusage "hegq.net/mogo/pkg/usage"
 
 	"hegq.net/mos/llm"
+	"hegq.net/mos/llm/transport"
 )
 
 const defaultBaseURL = "https://api.openai.com/v1"
@@ -31,33 +30,36 @@ type Chat struct {
 	apiKey  string
 	baseURL string
 	model   string
-	client  *http.Client
+	hc      *transport.Client
 }
 
 // New 根据配置创建 Chat，支持键：api_key / base_url / model / http_timeout。
-// http_timeout 为 Go duration 字符串（如 "60s"、"2m"），设置底层 http.Client 的
-// 单次请求超时；为空时不限制（依赖调用方 ctx 取消）。
+// http_timeout 为 Go duration 字符串（如 "60s"、"2m"），设置单次请求超时；
+// 为空时每次请求经 httpx seam 解析客户端（无硬超时，依赖调用方 ctx 取消）。
+// api_key 可空（本地 Ollama 等无鉴权端点）。
 func New(cfg llm.Config) (llm.ChatModel, error) {
-	client := &http.Client{}
-	if v := strings.TrimSpace(cfg["http_timeout"]); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil {
-			return nil, fmt.Errorf("openai: invalid http_timeout %q: %w", v, err)
-		}
-		client.Timeout = d
+	model := cfg["model"]
+	if model == "" {
+		return nil, errors.New("openai: missing required config \"model\"")
+	}
+	baseURL := strings.TrimRight(cfg["base_url"], "/")
+	if baseURL == "" {
+		baseURL = defaultBaseURL
 	}
 	p := &Chat{
 		apiKey:  cfg["api_key"],
-		baseURL: strings.TrimRight(cfg["base_url"], "/"),
-		model:   cfg["model"],
-		client:  client,
+		baseURL: baseURL,
+		model:   model,
 	}
-	if p.model == "" {
-		return nil, errors.New("openai: missing required config \"model\"")
+	hc, err := transport.New(transport.Config{
+		Endpoint:    func(bool) string { return p.baseURL + "/chat/completions" },
+		AuthHeaders: map[string]string{"Authorization": "Bearer " + p.apiKey},
+		ParseError:  parseOpenAIError,
+	}, cfg)
+	if err != nil {
+		return nil, err
 	}
-	if p.baseURL == "" {
-		p.baseURL = defaultBaseURL
-	}
+	p.hc = hc
 	return p, nil
 }
 
@@ -83,38 +85,33 @@ func (p *Chat) doChat(ctx context.Context, req *llm.Request, stream bool, emit f
 		return nil, fmt.Errorf("openai: marshal request: %w", err)
 	}
 	body = injectReasoningContent(body, req.Messages)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
+	resp, err := p.hc.Do(ctx, stream, body)
 	if err != nil {
-		return nil, fmt.Errorf("openai: new request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if p.apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	}
-
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("openai: do request: %w", err)
+		return nil, fmt.Errorf("openai: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		data, _ := io.ReadAll(resp.Body)
-		var errResp pkgopenai.OpenAIErrorResponse
-		if json.Unmarshal(data, &errResp) == nil && errResp.Error.Message != "" {
-			code := ""
-			if errResp.Error.Code != nil {
-				code = *errResp.Error.Code
-			}
-			return nil, fmt.Errorf("openai: %s (%s)", errResp.Error.Message, code)
-		}
-		return nil, fmt.Errorf("openai: unexpected status %d: %s", resp.StatusCode, string(data))
+		return nil, transport.ParseStatusError("openai", resp, parseOpenAIError)
 	}
 
 	if stream {
 		return p.handleStream(resp.Body, emit)
 	}
 	return p.handleResponse(resp.Body)
+}
+
+// parseOpenAIError 解析 OpenAI 错误响应体（非 200 路径，供 transport.ParseStatusError 使用）。
+func parseOpenAIError(statusCode int, body []byte) (string, bool) {
+	var errResp pkgopenai.OpenAIErrorResponse
+	if json.Unmarshal(body, &errResp) == nil && errResp.Error.Message != "" {
+		code := ""
+		if errResp.Error.Code != nil {
+			code = *errResp.Error.Code
+		}
+		return fmt.Sprintf("%s (%s)", errResp.Error.Message, code), true
+	}
+	return "", false
 }
 
 func (p *Chat) buildRequest(req *llm.Request, stream bool) *pkgopenai.OpenAIChatCompletionParams {
@@ -413,31 +410,8 @@ func (p *Chat) handleResponse(r io.Reader) (*llm.Response, error) {
 	}
 	return &llm.Response{
 		Message: fromChatMessage(raw.Choices[0].Message),
-		Usage:   toLLMUsage(pkgusage.FromOpenAICompletion(raw.Usage)),
+		Usage:   transport.UsageFrom(pkgusage.FromOpenAICompletion(raw.Usage)),
 	}, nil
-}
-
-// toLLMUsage 将 MoGO 统一用量映射为 MoS 统一结构，含缓存/推理/音频明细。
-func toLLMUsage(u *pkgusage.Usage) llm.Usage {
-	out := llm.Usage{}
-	if u == nil {
-		return out
-	}
-	out.PromptTokens = int(u.InputTokens)
-	out.CompletionTokens = int(u.OutputTokens)
-	out.TotalTokens = int(u.TotalTokens)
-	if u.Cache != nil {
-		out.Details.Input.CacheRead = int(u.Cache.CachedTokens)
-		out.Details.Input.CacheWrite = int(u.Cache.CreationInputTokens)
-	}
-	if u.Reasoning != nil {
-		out.Details.Output.Reasoning = int(u.Reasoning.ReasoningTokens)
-	}
-	if u.Audio != nil {
-		out.Details.Input.Audio = int(u.Audio.InputAudioTokens)
-		out.Details.Output.Audio = int(u.Audio.OutputAudioTokens)
-	}
-	return out
 }
 
 // handleStream 逐行解析 SSE 数据，聚合内容与工具调用增量。
@@ -504,7 +478,7 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 	resp := &llm.Response{Message: msg}
 	resp.FinishReason = acc.finish
 	if acc.usage != nil {
-		resp.Usage = toLLMUsage(pkgusage.FromOpenAICompletion(acc.usage))
+		resp.Usage = transport.UsageFrom(pkgusage.FromOpenAICompletion(acc.usage))
 	}
 	return resp, nil
 }
