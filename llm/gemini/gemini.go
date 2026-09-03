@@ -11,7 +11,6 @@ package gemini
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -25,6 +24,7 @@ import (
 	pkgusage "hegq.net/mogo/pkg/usage"
 
 	"hegq.net/mos/llm"
+	"hegq.net/mos/llm/transport"
 )
 
 const defaultBaseURL = "https://generativelanguage.googleapis.com/v1beta"
@@ -34,26 +34,35 @@ type Chat struct {
 	apiKey  string
 	baseURL string
 	model   string
-	client  *http.Client
+	hc      *transport.Client
 }
 
-// New 根据配置创建 Chat，支持键：api_key / base_url / model。
+// New 根据配置创建 Chat，支持键：api_key / base_url / model / http_timeout。
+// http_timeout 为 Go duration 字符串（如 "60s"）；为空时每次请求经 httpx seam
+// 解析客户端（无硬超时，依赖调用方 ctx 取消）。
 func New(cfg llm.Config) (llm.ChatModel, error) {
-	p := &Chat{
-		apiKey:  cfg["api_key"],
-		baseURL: strings.TrimRight(cfg["base_url"], "/"),
-		model:   cfg["model"],
-		client:  &http.Client{},
-	}
-	if p.apiKey == "" {
+	apiKey := cfg["api_key"]
+	if apiKey == "" {
 		return nil, errors.New("gemini: missing required config \"api_key\"")
 	}
-	if p.model == "" {
+	model := cfg["model"]
+	if model == "" {
 		return nil, errors.New("gemini: missing required config \"model\"")
 	}
-	if p.baseURL == "" {
-		p.baseURL = defaultBaseURL
+	baseURL := strings.TrimRight(cfg["base_url"], "/")
+	if baseURL == "" {
+		baseURL = defaultBaseURL
 	}
+	p := &Chat{apiKey: apiKey, baseURL: baseURL, model: model}
+	hc, err := transport.New(transport.Config{
+		Endpoint:    p.endpoint, // stream 决定 generateContent / streamGenerateContent?alt=sse
+		AuthHeaders: map[string]string{"x-goog-api-key": apiKey},
+		ParseError:  parseGeminiError,
+	}, cfg)
+	if err != nil {
+		return nil, err
+	}
+	p.hc = hc
 	return p, nil
 }
 
@@ -78,32 +87,29 @@ func (p *Chat) doChat(ctx context.Context, req *llm.Request, stream bool, emit f
 	if err != nil {
 		return nil, fmt.Errorf("gemini: marshal request: %w", err)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint(stream), bytes.NewReader(body))
+	resp, err := p.hc.Do(ctx, stream, body)
 	if err != nil {
-		return nil, fmt.Errorf("gemini: new request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-goog-api-key", p.apiKey)
-
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("gemini: do request: %w", err)
+		return nil, fmt.Errorf("gemini: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		data, _ := io.ReadAll(resp.Body)
-		var errResp pkggemini.GeminiErrorResponse
-		if json.Unmarshal(data, &errResp) == nil && errResp.Error != nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("gemini: %s", errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("gemini: unexpected status %d: %s", resp.StatusCode, string(data))
+		return nil, transport.ParseStatusError("gemini", resp, parseGeminiError)
 	}
 
 	if stream {
 		return p.handleStream(resp.Body, emit)
 	}
 	return p.handleResponse(resp.Body)
+}
+
+// parseGeminiError 解析 Gemini 错误响应体（非 200 路径，供 transport.ParseStatusError 使用）。
+func parseGeminiError(statusCode int, body []byte) (string, bool) {
+	var errResp pkggemini.GeminiErrorResponse
+	if json.Unmarshal(body, &errResp) == nil && errResp.Error != nil && errResp.Error.Message != "" {
+		return errResp.Error.Message, true
+	}
+	return "", false
 }
 
 // endpoint 返回模型端点：模型名位于 URL path（Gemini 协议约定）。
@@ -311,7 +317,7 @@ func (p *Chat) handleResponse(r io.Reader) (*llm.Response, error) {
 	}
 	return &llm.Response{
 		Message:      msg,
-		Usage:        toLLMUsage(pkggemini.ExtractGeminiUsage(raw.UsageMetadata)),
+		Usage:        transport.UsageFrom(pkggemini.ExtractGeminiUsage(raw.UsageMetadata)),
 		FinishReason: geminiFinishReason(raw.Candidates[0].FinishReason),
 	}, nil
 }
@@ -373,7 +379,7 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 	resp := &llm.Response{Message: msg}
 	resp.FinishReason = acc.finish
 	if acc.usage != nil {
-		resp.Usage = toLLMUsage(acc.usage)
+		resp.Usage = transport.UsageFrom(acc.usage)
 	}
 	return resp, nil
 }
@@ -382,24 +388,6 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 // 与流式路径一致（MAX_TOKENS → max_tokens，供截断检测识别）。
 func geminiFinishReason(r string) string {
 	return strings.ToLower(r)
-}
-
-// toLLMUsage 将 MoGO 统一用量映射为 MoS 统一结构（缓存命中 → CacheRead，思考 token → Reasoning）。
-func toLLMUsage(u *pkgusage.Usage) llm.Usage {
-	out := llm.Usage{}
-	if u == nil {
-		return out
-	}
-	out.PromptTokens = int(u.InputTokens)
-	out.CompletionTokens = int(u.OutputTokens)
-	out.TotalTokens = int(u.TotalTokens)
-	if u.Cache != nil {
-		out.Details.Input.CacheRead = int(u.Cache.CachedTokens)
-	}
-	if u.Thinking != nil {
-		out.Details.Output.Reasoning = int(u.Thinking.ThinkingTokens)
-	}
-	return out
 }
 
 // ---- 流式聚合 ----
