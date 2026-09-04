@@ -256,3 +256,126 @@ func TestChatContentPartsImage(t *testing.T) {
 		t.Fatalf("request body missing image block:\n%s", gotBody)
 	}
 }
+
+func TestChatThinkingRequest(t *testing.T) {
+	var gotBody string
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`)
+	})
+	defer srv.Close()
+
+	effort := "high"
+	_, err := p.Chat(context.Background(), &llm.Request{
+		Messages:        []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+		ReasoningEffort: &effort,
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	// high → budget 16384；默认 max_tokens 1024 <= budget，应提升为 16384+1024。
+	if !strings.Contains(gotBody, `"thinking":{"type":"enabled","budget_tokens":16384}`) {
+		t.Fatalf("request body missing thinking config:\n%s", gotBody)
+	}
+	if !strings.Contains(gotBody, `"max_tokens":17408`) {
+		t.Fatalf("max_tokens should be raised above budget:\n%s", gotBody)
+	}
+
+	// 显式 max_tokens 已高于 budget 时保持不动。
+	gotBody = ""
+	maxTokens := 32768
+	_, err = p.Chat(context.Background(), &llm.Request{
+		Messages:        []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+		ReasoningEffort: &effort,
+		MaxTokens:       &maxTokens,
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if !strings.Contains(gotBody, `"max_tokens":32768`) {
+		t.Fatalf("explicit max_tokens should be kept:\n%s", gotBody)
+	}
+}
+
+func TestChatThinkingResponse(t *testing.T) {
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{
+			"content":[
+				{"type":"thinking","thinking":"先想想…","signature":"sig"},
+				{"type":"text","text":"答案是 42"}
+			],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`)
+	})
+	defer srv.Close()
+
+	resp, err := p.Chat(context.Background(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.Message.ReasoningContent != "先想想…" {
+		t.Fatalf("ReasoningContent = %q", resp.Message.ReasoningContent)
+	}
+	if resp.Message.Content != "答案是 42" {
+		t.Fatalf("Content = %q", resp.Message.Content)
+	}
+}
+
+func TestChatStreamThinking(t *testing.T) {
+	sse := strings.Join([]string{
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"先想想…"}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":0}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"答案是 42"}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":1}`,
+		``,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}`,
+		``,
+	}, "\n")
+
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse)
+	})
+	defer srv.Close()
+
+	var reasoningDeltas []string
+	resp, err := p.ChatStream(context.Background(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+	}, func(c llm.StreamChunk) error {
+		if c.Reasoning != "" {
+			reasoningDeltas = append(reasoningDeltas, c.Reasoning)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	if resp.Message.ReasoningContent != "先想想…" {
+		t.Fatalf("ReasoningContent = %q", resp.Message.ReasoningContent)
+	}
+	if resp.Message.Content != "答案是 42" {
+		t.Fatalf("Content = %q", resp.Message.Content)
+	}
+	if strings.Join(reasoningDeltas, "") != "先想想…" {
+		t.Fatalf("reasoning deltas = %v", reasoningDeltas)
+	}
+}

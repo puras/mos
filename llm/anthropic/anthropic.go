@@ -118,6 +118,18 @@ func (p *Chat) buildRequest(req *llm.Request, stream bool) *pkganthropic.Anthrop
 	if req.MaxTokens != nil {
 		ar.MaxTokens = *req.MaxTokens
 	}
+	// ReasoningEffort → extended thinking（enabled + budget_tokens）。
+	// budget 约束 ≥1024 且 < max_tokens，上限不足时提升。
+	if effort := req.ReasoningEffort; effort != nil {
+		budget := thinkingBudget(*effort)
+		ar.Thinking = pkganthropic.AnthropicThinkingConfigEnabled{
+			Type:         pkganthropic.AnthropicThinkingConfigEnabledTypeEnabled,
+			BudgetTokens: budget,
+		}
+		if int64(ar.MaxTokens) <= budget {
+			ar.MaxTokens = int(budget) + defaultMaxTokens
+		}
+	}
 
 	var systemParts []string
 	for _, m := range req.Messages {
@@ -171,6 +183,19 @@ func (p *Chat) buildRequest(req *llm.Request, stream bool) *pkganthropic.Anthrop
 		))
 	}
 	return ar
+}
+
+// thinkingBudget 将统一 ReasoningEffort（low|medium|high）映射为 Anthropic
+// extended thinking 的 budget_tokens 档位。
+func thinkingBudget(effort string) int64 {
+	switch effort {
+	case "low":
+		return 1024
+	case "high":
+		return 16384
+	default: // medium 及未识别值
+		return 4096
+	}
 }
 
 // anthropicUserContent 将统一 user 消息展开为 Anthropic content 数组。
@@ -332,6 +357,11 @@ func (p *Chat) handleResponse(r io.Reader) (*llm.Response, error) {
 			if err := json.Unmarshal(block.Text, &b); err == nil {
 				msg.Content += b.Text
 			}
+		case string(pkganthropic.AnthropicThinkingBlockTypeThinking):
+			var b pkganthropic.AnthropicThinkingBlock
+			if err := json.Unmarshal(block.Thinking, &b); err == nil {
+				msg.ReasoningContent += b.Thinking
+			}
 		case string(pkganthropic.AnthropicToolUseBlockTypeToolUse):
 			var b pkganthropic.AnthropicToolUseBlock
 			if err := json.Unmarshal(block.ToolUse, &b); err == nil {
@@ -354,6 +384,7 @@ func (p *Chat) handleResponse(r io.Reader) (*llm.Response, error) {
 func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm.Response, error) {
 	var (
 		content      strings.Builder
+		reasoning    strings.Builder
 		toolCalls    []llm.ToolCall
 		curBlock     *streamToolBlock
 		finishReason string
@@ -363,7 +394,8 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 		if curBlock == nil {
 			return nil
 		}
-		if curBlock.kind == "tool_use" {
+		switch curBlock.kind {
+		case "tool_use":
 			tc := llm.ToolCall{ID: curBlock.id, Name: curBlock.name, Args: curBlock.args.String()}
 			toolCalls = append(toolCalls, tc)
 			if emit != nil {
@@ -371,6 +403,8 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 					return err
 				}
 			}
+		case "thinking":
+			reasoning.WriteString(curBlock.text.String())
 		}
 		curBlock = nil
 		return nil
@@ -420,6 +454,18 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 						}
 					}
 				}
+			case string(pkganthropic.AnthropicThinkingDeltaBlockTypeThinkingDelta):
+				var b pkganthropic.AnthropicThinkingDeltaBlock
+				if err := json.Unmarshal(e.Delta.ThinkingDelta, &b); err == nil {
+					if curBlock != nil && curBlock.kind == "thinking" {
+						curBlock.text.WriteString(b.Thinking)
+					}
+					if emit != nil {
+						if err := emit(llm.StreamChunk{Reasoning: b.Thinking}); err != nil {
+							return nil, err
+						}
+					}
+				}
 			case string(pkganthropic.AnthropicInputJSONDeltaBlockTypeInputJSONDelta):
 				if curBlock != nil {
 					var b pkganthropic.AnthropicInputJSONDeltaBlock
@@ -459,13 +505,12 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 		return nil, fmt.Errorf("anthropic: read stream: %w", err)
 	}
 
-	resp := &llm.Response{
-		Message: llm.Message{
-			Role:      llm.RoleAssistant,
-			Content:   content.String(),
-			ToolCalls: toolCalls,
-		},
+	msg := llm.Message{Role: llm.RoleAssistant, Content: content.String()}
+	if reasoning.Len() > 0 {
+		msg.ReasoningContent = reasoning.String()
 	}
+	msg.ToolCalls = toolCalls
+	resp := &llm.Response{Message: msg}
 	resp.FinishReason = finishReason
 	if usage != nil {
 		resp.Usage = transport.UsageFrom(usage)
@@ -482,12 +527,13 @@ func anthropicStopReason(s *string) string {
 	return *s
 }
 
-// streamToolBlock 记录流式内容块的工具调用增量。
+// streamToolBlock 记录流式内容块的增量（tool_use 的参数 JSON、thinking 的文本）。
 type streamToolBlock struct {
 	kind string
 	id   string
 	name string
 	args strings.Builder
+	text strings.Builder // thinking 块文本增量
 }
 
 // rawString 将字符串编码为 JSON 原始值（用于 Content / System 等 string 形态字段）。
