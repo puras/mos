@@ -10,3 +10,4 @@
 # 示例编译产物与运行时工作目录
 examples/cli/moscli
 examples/cli/temp/
+examples/protocli/mosprotocli

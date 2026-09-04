@@ -1,31 +1,30 @@
-# mos CLI 示例
+# mos 示例
 
-一个最小可运行 CLI，展示如何用 `assistant.New` + `assistant.Assistant.Run` 集成 mos。
-
-接 OpenAI 兼容协议（例：MoGo 网关 `https://go.hegq.net/v1`）。配置走 `.env` 文件——
+仓库内两个最小可运行示例，配置都走各自目录的 `.env` 文件——
 `.env` 在仓库 `.gitignore` 内不入仓；`.env.example` 是占位模板可入仓。
 
-## 准备
+| 示例 | 目录 | 定位 |
+|---|---|---|
+| 智能体 CLI | `examples/cli` | `assistant.New` + `assistant.Assistant.Run` 一行装配（模型 + 工具 + 安全策略） |
+| 协议 CLI | `examples/protocli` | `llm.ChatModel` 统一协议抽象，不经 assistant / 工具层，OpenAI / Anthropic 双协议切换 |
+
+## examples/cli：智能体 CLI
+
+接 OpenAI 兼容协议（例：MoGo 网关 `https://go.hegq.net/v1`）。
 
 ```bash
 cd examples/cli
 cp .env.example .env
 # 编辑 .env，填入真实的 OPENAI_API_KEY / MOS_BASE_URL / MOS_MODEL
-```
-
-## 跑
-
-```bash
 go run .
 ```
 
 启动时自动加载本目录 `.env`，无需手动 `source`。
 
-输入 `q` 退出。
+- 输入 `q` 退出；工作区是当前目录的 `temp/`（自动创建）
+- 工具：时间 / 读 / 写 / shell 四个内置，高风险操作前可挂审批回调
 
-工作区是当前目录的 `temp/`（自动创建）。
-
-## 切换到流式
+### 切换到流式
 
 ```go
 out, err := a.RunStream(ctx, sess, line)
@@ -33,10 +32,10 @@ out, err := a.RunStream(ctx, sess, line)
 
 模型文本增量会实时输出（前提是底层模型支持流式）。
 
-## 加审批
+### 加审批
 
 ```go
-import "hegq.net/mos/assistant"
+import "github.com/puras/mos/assistant"
 
 confirm := func(ctx context.Context, req assistant.ConfirmRequest) (bool, error) {
     fmt.Fprintf(os.Stderr, "[确认] 工具=%s 原因=%s (y/N): ", req.ToolName, req.Reason)
@@ -53,19 +52,22 @@ a, _ := assistant.New(model, tools, assistant.Config{
 
 模型在 shell / write_file 等高风险操作前会停在这里等用户答复。
 
-## 切回 Anthropic / Gemini
+## examples/protocli：协议 CLI
 
-改 `main.go` 里的 import 与 `New(...)` 调用：
+演示 `llm.ChatModel` 统一抽象：同一份 REPL 代码，经 `-p` 在
+OpenAI 兼容协议（DeepSeek / 通义 / GLM / Ollama 等同构）与
+Anthropic 原生协议之间切换，Request / Response 在两协议间完全同形。
 
-```go
-import "hegq.net/mos/llm/anthropic"
+```bash
+cd examples/protocli
+cp .env.example .env
+# 编辑 .env，填入 OPENAI_* / ANTHROPIC_* 两组配置
 
-model, _ := anthropic.New(llm.Config{
-    "api_key":  os.Getenv("ANTHROPIC_API_KEY"),
-    "base_url": "https://api.anthropic.com",
-    "model":    "claude-3-5-sonnet-latest",
-    "version":  "2023-06-01",
-})
+go run .                       # 协议取 .env 的 MOS_PROTOCOL，默认 openai
+go run . -p anthropic          # 切 Anthropic 原生协议
+go run . -p openai -stream     # 流式输出（ChatStream 增量打印）
 ```
 
-`.env` 也对应换成 `ANTHROPIC_API_KEY=...`。
+- 输入 `q` 退出，`/clear` 开新会话（清空多轮历史）
+- 每轮打印 token 用量（in / out / total），验证统一 `llm.Usage` 结构跨协议一致
+- 调用失败时撤回该条用户输入，历史不损坏，可直接重试
