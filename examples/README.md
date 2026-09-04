@@ -76,3 +76,21 @@ go run . -p anthropic -think   # 开思考模式（-effort low|medium|high，默
 - 思考内容以暗色输出（`Message.ReasoningContent` / `StreamChunk.Reasoning`），正文正常显示
 - 每轮打印 token 用量（in / out / total），验证统一 `llm.Usage` 结构跨协议一致
 - 调用失败时撤回该条用户输入，历史不损坏，可直接重试
+
+### Wrap 标准包装器
+
+`llm` 包的标准装饰器（`llm/wrap.go`）可自由组合，本示例用命令行开关装配，
+启动横幅展示包装链（内 → 外 = 执行顺序外层先行）：
+
+```bash
+go run . -log -timeout 90s -retry 3 -fallback -cache 10m
+#   包装: fallback(openai) > timeout(1m30s) > retry(3×2s) > cache(10m0s) > log
+```
+
+| 开关 | 包装器 | 行为 |
+|---|---|---|
+| `-log` | `WithLogging` | stderr 打印每次调用的耗时 / 用量 / 错误 |
+| `-retry N -retry-wait d` | `WithRetry` | 非流式失败按固定间隔重试（流式增量已下发不重试） |
+| `-timeout d` | `WithTimeout` | 单次调用超时（Chat 与 ChatStream 均生效） |
+| `-fallback` | `WithFallback` | 主模型失败切备用（自动取另一协议的 `.env` 配置） |
+| `-cache d` | `WithCache` | 非流式结果按请求内容缓存 TTL（流式不缓存） |

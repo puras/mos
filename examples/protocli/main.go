@@ -1,5 +1,6 @@
 // Package main 演示 llm.ChatModel 统一协议抽象：同一份 REPL 代码
-// 经 -p openai / -p anthropic 切换协议与 LLM 直接交互（不经 assistant / 工具层）。
+// 经 -p openai / -p anthropic 切换协议与 LLM 直接交互（不经 assistant / 工具层），
+// 并演示 llm 标准包装器（Wrap）的可插拔组合：日志 / 重试 / 超时 / 灾备 / 缓存。
 //
 // 启动时自动加载同目录 .env 文件（不存在时回退到系统环境变量）。
 // 跑法：
@@ -8,6 +9,7 @@
 //   go run . -p anthropic          # 切 Anthropic 原生协议
 //   go run . -p openai -stream     # 流式输出（ChatStream 增量打印）
 //   go run . -p anthropic -think   # 开思考模式（ReasoningEffort 按协议映射）
+//   go run . -log -retry 3 -fallback   # 包装器组合：日志 + 重试 + 灾备
 //
 // 运行中可切换（对下一轮生效）：
 //   /stream   切换流式开/关
@@ -23,6 +25,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/puras/mos/llm"
 	"github.com/puras/mos/llm/anthropic"
@@ -34,6 +37,14 @@ func main() {
 	stream := flag.Bool("stream", false, "流式输出（模型文本增量实时打印）")
 	think := flag.Bool("think", false, "思考模式（ReasoningEffort 按协议映射：openai→reasoning_effort，anthropic→thinking budget_tokens）")
 	effort := flag.String("effort", "medium", "思考投入档位：low | medium | high（-think 开启时生效）")
+
+	// Wrap 标准包装器（llm/wrap.go）：全部可选，按 内→外 依次包裹模型。
+	retryN := flag.Int("retry", 1, "非流式调用总尝试次数（含首次；<=1 不重试）")
+	retryWait := flag.Duration("retry-wait", 2*time.Second, "重试间隔")
+	callTimeout := flag.Duration("timeout", 0, "单次调用超时（0 不限；流式同样生效，注意留足长输出余量）")
+	cacheTTL := flag.Duration("cache", 0, "非流式结果缓存 TTL（0 关闭；相同请求内容命中）")
+	useFallback := flag.Bool("fallback", false, "失败时切换备用模型（取另一协议的 .env 配置）")
+	logging := flag.Bool("log", false, "调用日志（stderr 打印耗时 / 用量 / 错误）")
 	flag.Parse()
 
 	loadDotEnv(".env")
@@ -49,10 +60,54 @@ func main() {
 	model, err := newModel(*protocol)
 	check(err)
 
+	// 包装链（内 → 外）：fallback > timeout > retry > cache > log。
+	// 执行顺序 = 外层先执行：log 最外（任何失败/命中都被记录），
+	// cache 次之（命中则不打到底层），retry 重跑整条内链（含灾备切换）。
+	var chain []string
+	if *useFallback {
+		backupProto := otherProtocol(*protocol)
+		backup, err := newModel(backupProto)
+		if err != nil {
+			check(fmt.Errorf("-fallback 构造备用模型失败（协议 %s，检查 .env 配置）: %w", backupProto, err))
+		}
+		model = llm.WithFallback(model, backup)
+		chain = append(chain, "fallback("+backupProto+")")
+	}
+	if *callTimeout > 0 {
+		model = llm.WithTimeout(model, *callTimeout)
+		chain = append(chain, "timeout("+callTimeout.String()+")")
+	}
+	if *retryN > 1 {
+		model = llm.WithRetry(model, *retryN, *retryWait)
+		chain = append(chain, fmt.Sprintf("retry(%d×%s)", *retryN, retryWait.String()))
+	}
+	if *cacheTTL > 0 {
+		model = llm.WithCache(model, *cacheTTL)
+		chain = append(chain, "cache("+cacheTTL.String()+")")
+	}
+	if *logging {
+		model = llm.WithLogging(model, func(r llm.CallResult) {
+			tag := "chat"
+			if r.Stream {
+				tag = "stream"
+			}
+			if r.Err != nil {
+				fmt.Fprintf(os.Stderr, "[llm:%s] %v err=%v\n", tag, r.Elapsed, r.Err)
+				return
+			}
+			fmt.Fprintf(os.Stderr, "[llm:%s] %v tokens(in=%d out=%d total=%d)\n", tag, r.Elapsed,
+				r.Resp.Usage.PromptTokens, r.Resp.Usage.CompletionTokens, r.Resp.Usage.TotalTokens)
+		})
+		chain = append(chain, "log")
+	}
+
 	fmt.Printf("协议 CLI 已就绪。\n")
 	fmt.Printf("  协议: %s\n  模型: %s @ %s\n", *protocol,
 		os.Getenv(envKey(*protocol, "MODEL")),
 		displayBaseURL(*protocol))
+	if len(chain) > 0 {
+		fmt.Printf("  包装: %s\n", strings.Join(chain, " > "))
+	}
 	printSwitches(*stream, *think, *effort)
 	fmt.Println("输入 q 退出；/stream /think 运行中切换；/clear 开新会话。")
 
@@ -178,6 +233,14 @@ func displayBaseURL(protocol string) string {
 	default:
 		return "https://api.openai.com/v1"
 	}
+}
+
+// otherProtocol 返回另一协议名（-fallback 备用模型取另一协议的 .env 配置）。
+func otherProtocol(protocol string) string {
+	if protocol == "anthropic" {
+		return "openai"
+	}
+	return "anthropic"
 }
 
 func strPtr(s string) *string { return &s }
