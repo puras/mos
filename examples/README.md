@@ -66,8 +66,13 @@ cp .env.example .env
 go run .                       # 协议取 .env 的 MOS_PROTOCOL，默认 openai
 go run . -p anthropic          # 切 Anthropic 原生协议
 go run . -p openai -stream     # 流式输出（ChatStream 增量打印）
+go run . -p anthropic -think   # 开思考模式（-effort low|medium|high，默认 medium）
 ```
 
 - 输入 `q` 退出，`/clear` 开新会话（清空多轮历史）
+- `/stream`、`/think` 运行中切换流式与思考模式（对下一轮生效）
+- 思考模式经统一 `ReasoningEffort` 按协议映射：openai → `reasoning_effort` 参数，
+  anthropic → extended thinking（`thinking.budget_tokens`，low/medium/high → 1024/4096/16384）
+- 思考内容以暗色输出（`Message.ReasoningContent` / `StreamChunk.Reasoning`），正文正常显示
 - 每轮打印 token 用量（in / out / total），验证统一 `llm.Usage` 结构跨协议一致
 - 调用失败时撤回该条用户输入，历史不损坏，可直接重试
