@@ -6,13 +6,13 @@ import (
 	"reflect"
 	"testing"
 
-	"hegq.net/mos/agent/checkpoint"
-	"hegq.net/mos/agent/driver"
-	"hegq.net/mos/agent/driver/react"
-	"hegq.net/mos/agent/session"
-	"hegq.net/mos/agent/telemetry"
-	"hegq.net/mos/planner"
-	"hegq.net/mos/tool"
+	"github.com/puras/mos/agent/checkpoint"
+	"github.com/puras/mos/agent/driver"
+	"github.com/puras/mos/agent/driver/react"
+	"github.com/puras/mos/agent/session"
+	"github.com/puras/mos/agent/telemetry"
+	"github.com/puras/mos/planner"
+	"github.com/puras/mos/tool"
 )
 
 // order 记录假工具执行顺序（并发时经互斥保护）。

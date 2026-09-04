@@ -3,7 +3,7 @@ package transport
 import (
 	"testing"
 
-	pkgusage "hegq.net/mogo/pkg/usage"
+	pkgusage "github.com/puras/moproto/usage"
 )
 
 // 迁移前三个适配器各自 toLLMUsage 的行为矩阵（每协议只有自己来源字段非零），

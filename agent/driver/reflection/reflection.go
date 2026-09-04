@@ -10,13 +10,13 @@ import (
 	"fmt"
 	"strings"
 
-	"hegq.net/mos/agent"
-	"hegq.net/mos/agent/driver"
-	"hegq.net/mos/agent/driver/react"
-	"hegq.net/mos/agent/event"
-	"hegq.net/mos/agent/session"
-	"hegq.net/mos/planner"
-	"hegq.net/mos/sandbox"
+	"github.com/puras/mos/agent"
+	"github.com/puras/mos/agent/driver"
+	"github.com/puras/mos/agent/driver/react"
+	"github.com/puras/mos/agent/event"
+	"github.com/puras/mos/agent/session"
+	"github.com/puras/mos/planner"
+	"github.com/puras/mos/sandbox"
 )
 
 // defaultMaxIterations 是默认最大评审-修订迭代数（一次生成 + 至多 N 轮修订）。

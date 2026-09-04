@@ -3,8 +3,8 @@ package agent
 import (
 	"context"
 
-	"hegq.net/mos/agent/session"
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/agent/session"
+	"github.com/puras/mos/llm"
 )
 
 // Auditor 审计一次工具调用的结果，决定哪些"事实"可以被写入任务状态。

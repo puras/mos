@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/llm"
 )
 
 // doomLoopDetector 检测 Doom Loop（M2.5 上下文工程）：

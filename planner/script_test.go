@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/llm"
 )
 
 // fakeModel 返回固定响应（供 Script/ReAct 规划器测试）。

@@ -8,11 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"hegq.net/mos/agent/approval"
-	"hegq.net/mos/agent/hook"
-	"hegq.net/mos/agent/session"
-	"hegq.net/mos/llm"
-	"hegq.net/mos/planner"
+	"github.com/puras/mos/agent/approval"
+	"github.com/puras/mos/agent/hook"
+	"github.com/puras/mos/agent/session"
+	"github.com/puras/mos/llm"
+	"github.com/puras/mos/planner"
 )
 
 func sampleCheckpoint(sid string) *Checkpoint {

@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"hegq.net/mos/httpx"
-	"hegq.net/mos/tool"
+	"github.com/puras/mos/httpx"
+	"github.com/puras/mos/tool"
 )
 
 const (

@@ -1,7 +1,7 @@
 // Package anthropic 提供 Anthropic Claude 原生协议的 Chat 适配器。
 //
 // wire 层（请求结构体、content block union、SSE 事件解析、用量转换）复用 MoGO 的
-// hegq.net/mogo/pkg/protocol/anthropic 与 hegq.net/mogo/pkg/usage，
+// github.com/puras/moproto/protocol/anthropic 与 github.com/puras/moproto/usage，
 // 本包只保留统一 llm.ChatModel 抽象与协议映射逻辑。
 package anthropic
 
@@ -15,11 +15,11 @@ import (
 	"net/http"
 	"strings"
 
-	pkganthropic "hegq.net/mogo/pkg/protocol/anthropic"
-	pkgusage "hegq.net/mogo/pkg/usage"
+	pkganthropic "github.com/puras/moproto/protocol/anthropic"
+	pkgusage "github.com/puras/moproto/usage"
 
-	"hegq.net/mos/llm"
-	"hegq.net/mos/llm/transport"
+	"github.com/puras/mos/llm"
+	"github.com/puras/mos/llm/transport"
 )
 
 const (
@@ -289,7 +289,7 @@ func toAnthropicInputSchema(params any) pkganthropic.AnthropicToolInputSchema {
 
 // ---- 响应解析 ----
 //
-// mogo 的 AnthropicMessageResponse 可直接解码（content 为带自定义 Unmarshal 的
+// moproto 的 AnthropicMessageResponse 可直接解码（content 为带自定义 Unmarshal 的
 // AnthropicContentBlockUnion 切片），这里保留最小镜像仅用于统一错误结构。
 
 // anthropicError 是响应错误结构的解码镜像（9 种错误变体均为 Type + Message）。

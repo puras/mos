@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/llm"
 )
 
 func newTestModel(t *testing.T, handler http.HandlerFunc) (*Chat, *httptest.Server) {
@@ -222,7 +222,7 @@ func TestChatUsageCacheDetails(t *testing.T) {
 	if d.CacheWrite != 120 || d.CacheRead != 80 {
 		t.Fatalf("cache details = %+v", d)
 	}
-	// mogo 1f5264c9 口径：TotalTokens = 全上下文大小 =
+	// moproto 口径：TotalTokens = 全上下文大小 =
 	// input + output + cache 写入 + cache 读取 = 200+50+120+80。
 	if resp.Usage.TotalTokens != 450 {
 		t.Fatalf("total = %d", resp.Usage.TotalTokens)

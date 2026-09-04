@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"hegq.net/mos/agent/approval"
+	"github.com/puras/mos/agent/approval"
 )
 
 // checkShell 校验 shell 命令：绝对危险拒绝 → 白名单 → 受限危险（路径受限 + 确认）。

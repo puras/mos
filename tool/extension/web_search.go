@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	"hegq.net/mos/tool"
-	"hegq.net/mos/tool/extension/search"
+	"github.com/puras/mos/tool"
+	"github.com/puras/mos/tool/extension/search"
 )
 
 // WebSearch 搜索互联网获取实时信息，返回标题、链接与摘要列表。

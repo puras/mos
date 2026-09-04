@@ -9,11 +9,11 @@ import (
 	"errors"
 	"time"
 
-	"hegq.net/mos/agent/approval"
-	"hegq.net/mos/agent/hook"
-	"hegq.net/mos/agent/session"
-	"hegq.net/mos/llm"
-	"hegq.net/mos/planner"
+	"github.com/puras/mos/agent/approval"
+	"github.com/puras/mos/agent/hook"
+	"github.com/puras/mos/agent/session"
+	"github.com/puras/mos/llm"
+	"github.com/puras/mos/planner"
 )
 
 // Checkpoint 是一次挂起点的不可变快照（序列化落盘，恢复时反序列化）：

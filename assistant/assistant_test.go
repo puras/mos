@@ -11,15 +11,15 @@ import (
 	"sync"
 	"testing"
 
-	"hegq.net/mos/agent"
-	"hegq.net/mos/agent/approval"
-	"hegq.net/mos/agent/event"
-	"hegq.net/mos/agent/session"
-	"hegq.net/mos/llm"
-	"hegq.net/mos/memory"
-	"hegq.net/mos/tool"
-	"hegq.net/mos/tool/builtin"
-	fs "hegq.net/mos/filesystem"
+	"github.com/puras/mos/agent"
+	"github.com/puras/mos/agent/approval"
+	"github.com/puras/mos/agent/event"
+	"github.com/puras/mos/agent/session"
+	"github.com/puras/mos/llm"
+	"github.com/puras/mos/memory"
+	"github.com/puras/mos/tool"
+	"github.com/puras/mos/tool/builtin"
+	fs "github.com/puras/mos/filesystem"
 )
 
 func toolCall(name, args string) *llm.ToolCall {

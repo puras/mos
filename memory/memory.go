@@ -5,7 +5,7 @@ package memory
 import (
 	"context"
 
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/llm"
 )
 
 // Memory 是会话工作记忆的存储抽象。

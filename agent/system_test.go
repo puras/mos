@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"hegq.net/mos/agent/event"
-	"hegq.net/mos/agent/session"
+	"github.com/puras/mos/agent/event"
+	"github.com/puras/mos/agent/session"
 )
 
 func TestSystemAssembler_EmitsSkillLoad(t *testing.T) {

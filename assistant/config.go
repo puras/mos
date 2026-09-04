@@ -10,15 +10,15 @@ import (
 	"context"
 	"net/http"
 
-	"hegq.net/mos/agent"
-	"hegq.net/mos/agent/approval"
-	"hegq.net/mos/agent/checkpoint"
-	"hegq.net/mos/agent/driver"
-	"hegq.net/mos/agent/event"
-	"hegq.net/mos/agent/session"
-	"hegq.net/mos/memory"
-	"hegq.net/mos/planner"
-	"hegq.net/mos/sandbox"
+	"github.com/puras/mos/agent"
+	"github.com/puras/mos/agent/approval"
+	"github.com/puras/mos/agent/checkpoint"
+	"github.com/puras/mos/agent/driver"
+	"github.com/puras/mos/agent/event"
+	"github.com/puras/mos/agent/session"
+	"github.com/puras/mos/memory"
+	"github.com/puras/mos/planner"
+	"github.com/puras/mos/sandbox"
 )
 
 // Config 是智能体的运行配置（框架层 API 契约）。

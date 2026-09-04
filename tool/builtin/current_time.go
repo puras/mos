@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"hegq.net/mos/tool"
+	"github.com/puras/mos/tool"
 )
 
 // CurrentTime 返回当前日期时间，可指定时区。

@@ -5,8 +5,8 @@ import (
 	"reflect"
 	"testing"
 
-	"hegq.net/mos/agent/event"
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/agent/event"
+	"github.com/puras/mos/llm"
 )
 
 // TestSessionSaveRestoreRoundTrip 覆盖事件日志与任务状态的序列化往返：

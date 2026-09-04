@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
-	"hegq.net/mos/agent/driver"
-	"hegq.net/mos/agent/session"
-	"hegq.net/mos/agent/telemetry"
-	"hegq.net/mos/tool"
+	"github.com/puras/mos/agent/driver"
+	"github.com/puras/mos/agent/session"
+	"github.com/puras/mos/agent/telemetry"
+	"github.com/puras/mos/tool"
 )
 
 // findSpan 递归查找指定名字的 span 记录。

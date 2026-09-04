@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	fs "hegq.net/mos/filesystem"
+	fs "github.com/puras/mos/filesystem"
 )
 
 // checkFile 校验文件路径不超出工作目录。

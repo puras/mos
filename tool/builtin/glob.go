@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"hegq.net/mos/tool"
-	fs "hegq.net/mos/filesystem"
+	"github.com/puras/mos/tool"
+	fs "github.com/puras/mos/filesystem"
 )
 
 const (

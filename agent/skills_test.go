@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"hegq.net/mos/agent/session"
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/agent/session"
+	"github.com/puras/mos/llm"
 )
 
 const skillDoc = `---

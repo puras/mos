@@ -3,8 +3,8 @@ package openai
 import (
 	"testing"
 
-	pkgopenai "hegq.net/mogo/pkg/protocol/openai"
-	"hegq.net/mos/llm"
+	pkgopenai "github.com/puras/moproto/protocol/openai"
+	"github.com/puras/mos/llm"
 )
 
 func TestMediaURL(t *testing.T) {

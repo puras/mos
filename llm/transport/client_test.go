@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"hegq.net/mos/httpx"
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/httpx"
+	"github.com/puras/mos/llm"
 )
 
 func newTestClient(t *testing.T, llmCfg llm.Config, handler http.HandlerFunc) (*Client, *httptest.Server) {

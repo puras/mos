@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/llm"
 )
 
 // ---- mock 模型：离线演示用 ----

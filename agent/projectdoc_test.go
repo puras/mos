@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"hegq.net/mos/agent/session"
+	"github.com/puras/mos/agent/session"
 )
 
 func TestLoadProjectDocsUpwardRecursion(t *testing.T) {

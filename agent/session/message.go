@@ -1,6 +1,6 @@
 package session
 
-import "hegq.net/mos/llm"
+import "github.com/puras/mos/llm"
 
 // InternalMessage 是 Agent 内部的两层消息结构中的第一层（M2.4 翻译边界）。
 // 相比 llm.Message（LLM 标准消息，第二层），附加运行期元数据：

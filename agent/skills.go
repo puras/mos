@@ -7,7 +7,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"hegq.net/mos/agent/session"
+	"github.com/puras/mos/agent/session"
 )
 
 // SkillFile 是技能声明文件名（对齐 Agent Skills 规范：SKILL.md）。

@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"hegq.net/mos/agent"
-	"hegq.net/mos/agent/event"
-	"hegq.net/mos/agent/session"
+	"github.com/puras/mos/agent"
+	"github.com/puras/mos/agent/event"
+	"github.com/puras/mos/agent/session"
 )
 
 // fakeScopeDriver 模拟"Run 中途激活技能"的驱动：Run 内激活一个新 Skill，

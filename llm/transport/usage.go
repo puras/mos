@@ -1,15 +1,15 @@
 package transport
 
 import (
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/llm"
 
-	pkgusage "hegq.net/mogo/pkg/usage"
+	pkgusage "github.com/puras/moproto/usage"
 )
 
-// UsageFrom 将 mogo 统一用量映射为 MoS llm.Usage，收编三个适配器各自的
+// UsageFrom 将 moproto 统一用量映射为 MoS llm.Usage，收编三个适配器各自的
 // toLLMUsage 并归一字段命名差异。
 //
-// mogo 的 *pkgusage.Usage 是协议无关的统一类型，每个协议的 FromXxx 只填充
+// moproto 的 *pkgusage.Usage 是协议无关的统一类型，每个协议的 FromXxx 只填充
 // 自己协议的字段、其余为零值，因此语义冲突字段（缓存命中的
 // ReadInputTokens vs CachedTokens、推理的 ThinkingTokens vs ReasoningTokens）
 // 取 max 即无损等价于"取非零的那个"。

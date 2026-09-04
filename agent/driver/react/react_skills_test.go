@@ -6,12 +6,12 @@ import (
 	"strings"
 	"testing"
 
-	"hegq.net/mos/agent"
-	"hegq.net/mos/agent/driver"
-	"hegq.net/mos/agent/event"
-	"hegq.net/mos/agent/hook"
-	"hegq.net/mos/agent/session"
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/agent"
+	"github.com/puras/mos/agent/driver"
+	"github.com/puras/mos/agent/event"
+	"github.com/puras/mos/agent/hook"
+	"github.com/puras/mos/agent/session"
+	"github.com/puras/mos/llm"
 )
 
 // newTestRunContext 构造只含 Session 字段的 *driver.RunContext，供 skillAllowListGuard

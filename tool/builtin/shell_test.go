@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"hegq.net/mos/sandbox"
+	"github.com/puras/mos/sandbox"
 )
 
 func TestShellExecute(t *testing.T) {

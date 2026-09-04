@@ -8,13 +8,13 @@ import (
 	"fmt"
 	"strings"
 
-	"hegq.net/mos/agent/driver"
-	"hegq.net/mos/agent/driver/planexecute"
-	"hegq.net/mos/agent/driver/react"
-	"hegq.net/mos/agent/driver/reflection"
-	"hegq.net/mos/agent/driver/scripted"
-	"hegq.net/mos/agent/session"
-	"hegq.net/mos/planner"
+	"github.com/puras/mos/agent/driver"
+	"github.com/puras/mos/agent/driver/planexecute"
+	"github.com/puras/mos/agent/driver/react"
+	"github.com/puras/mos/agent/driver/reflection"
+	"github.com/puras/mos/agent/driver/scripted"
+	"github.com/puras/mos/agent/session"
+	"github.com/puras/mos/planner"
 )
 
 // DriverRouter 按任务输入选择 LoopDriver。

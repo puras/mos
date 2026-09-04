@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/llm"
 )
 
 // fakeMemory 是测试用的可编程记忆实现。

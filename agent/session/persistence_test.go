@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"hegq.net/mos/agent/event"
+	"github.com/puras/mos/agent/event"
 )
 
 func TestJSONLRoundTrip(t *testing.T) {

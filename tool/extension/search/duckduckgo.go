@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"hegq.net/mos/httpx"
+	"github.com/puras/mos/httpx"
 )
 
 // duckduckgoDefaultEndpoint 是 DuckDuckGo HTML 版搜索地址（免费，无需 API Key）。

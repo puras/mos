@@ -3,7 +3,7 @@ package event
 import (
 	"encoding/json"
 
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/llm"
 )
 
 // 会话事件类型（durable，append-only 日志，见架构 v2 §3.2 / §4.1）。

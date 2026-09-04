@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/llm"
 )
 
 // ScriptStep 是脚本中的一步（直接工具调用）。

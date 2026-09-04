@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"hegq.net/mos/agent/approval"
-	"hegq.net/mos/agent/hook"
-	"hegq.net/mos/tool"
+	"github.com/puras/mos/agent/approval"
+	"github.com/puras/mos/agent/hook"
+	"github.com/puras/mos/tool"
 )
 
 // requestHumanParams 是 request_human_input 工具参数：question 必填，context 供平台展示。

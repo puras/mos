@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/llm"
 )
 
 // mockChatModel 是可编程的 ChatModel（测试 ReAct 决策器）。

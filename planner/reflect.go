@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/llm"
 )
 
 // Review 是反思器对产出的评审结果（Basic Reflection 的 Reflect 阶段）。

@@ -4,8 +4,8 @@
 package agent
 
 import (
-	"hegq.net/mos/agent/session"
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/agent/session"
+	"github.com/puras/mos/llm"
 )
 
 // EventType 表示运行时事件的类型。

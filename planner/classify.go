@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/llm"
 )
 
 // DriverName 是任务路由可选的驱动名（架构 v2 §3.6）。

@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"hegq.net/mos/agent/driver"
-	"hegq.net/mos/agent/session"
-	"hegq.net/mos/llm"
-	"hegq.net/mos/planner"
-	"hegq.net/mos/tool"
+	"github.com/puras/mos/agent/driver"
+	"github.com/puras/mos/agent/session"
+	"github.com/puras/mos/llm"
+	"github.com/puras/mos/planner"
+	"github.com/puras/mos/tool"
 )
 
 // countingReadFile 记录实际执行次数（验证截断时工具不执行）。

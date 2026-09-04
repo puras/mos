@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"hegq.net/mos/agent/approval"
-	"hegq.net/mos/agent/checkpoint"
-	"hegq.net/mos/agent/event"
-	"hegq.net/mos/agent/session"
-	"hegq.net/mos/llm"
-	"hegq.net/mos/tool"
-	"hegq.net/mos/tool/builtin"
+	"github.com/puras/mos/agent/approval"
+	"github.com/puras/mos/agent/checkpoint"
+	"github.com/puras/mos/agent/event"
+	"github.com/puras/mos/agent/session"
+	"github.com/puras/mos/llm"
+	"github.com/puras/mos/tool"
+	"github.com/puras/mos/tool/builtin"
 )
 
 // suspendWriteModel 模拟审批流：第一次模型调用发起 write_file（触发审批挂起），

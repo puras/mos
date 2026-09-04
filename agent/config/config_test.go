@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"hegq.net/mos/agent/seam"
-	"hegq.net/mos/llm"
-	"hegq.net/mos/planner"
+	"github.com/puras/mos/agent/seam"
+	"github.com/puras/mos/llm"
+	"github.com/puras/mos/planner"
 )
 
 // ---- mock 模型：离线演示用 ----

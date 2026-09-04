@@ -3,7 +3,7 @@ package gemini
 import (
 	"testing"
 
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/llm"
 )
 
 func TestToGeminiSchema(t *testing.T) {

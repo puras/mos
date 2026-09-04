@@ -6,9 +6,9 @@ import (
 	"strings"
 	"sync"
 
-	"hegq.net/mos/agent/event"
-	"hegq.net/mos/agent/session"
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/agent/event"
+	"github.com/puras/mos/agent/session"
+	"github.com/puras/mos/llm"
 )
 
 // SystemSlot 标识系统提示词的一个分段槽位（M2.6 动态组装）。

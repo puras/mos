@@ -4,8 +4,8 @@ import (
 	"errors"
 	"fmt"
 
-	"hegq.net/mos/planner"
-	"hegq.net/mos/tool"
+	"github.com/puras/mos/planner"
+	"github.com/puras/mos/tool"
 )
 
 // validateScript 校验脚本（确定性安全闸，fail-closed）：

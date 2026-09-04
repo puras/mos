@@ -18,11 +18,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"hegq.net/mos/assistant"
-	"hegq.net/mos/llm"
-	"hegq.net/mos/llm/openai"
-	"hegq.net/mos/tool"
-	"hegq.net/mos/tool/builtin"
+	"github.com/puras/mos/assistant"
+	"github.com/puras/mos/llm"
+	"github.com/puras/mos/llm/openai"
+	"github.com/puras/mos/tool"
+	"github.com/puras/mos/tool/builtin"
 )
 
 func main() {

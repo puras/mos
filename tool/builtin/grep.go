@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 
-	"hegq.net/mos/tool"
+	"github.com/puras/mos/tool"
 )
 
 const grepMaxFileSize = 1 << 20 // 单文件扫描上限 1MB

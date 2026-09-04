@@ -7,8 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"hegq.net/mos/tool"
-	fs "hegq.net/mos/filesystem"
+	"github.com/puras/mos/tool"
+	fs "github.com/puras/mos/filesystem"
 )
 
 // WriteFile 写入或追加文件内容。

@@ -2,7 +2,7 @@
 // 该协议被 DeepSeek、通义千问、GLM、Ollama 等主流服务广泛支持。
 //
 // wire 层（请求结构体、union、SSE 解析、用量转换）复用 MoGO 的
-// hegq.net/mogo/pkg/protocol/openai 与 hegq.net/mogo/pkg/usage，
+// github.com/puras/moproto/protocol/openai 与 github.com/puras/moproto/usage，
 // 本包只保留统一 llm.ChatModel 抽象与协议映射逻辑。
 package openai
 
@@ -16,11 +16,11 @@ import (
 	"net/http"
 	"strings"
 
-	pkgopenai "hegq.net/mogo/pkg/protocol/openai"
-	pkgusage "hegq.net/mogo/pkg/usage"
+	pkgopenai "github.com/puras/moproto/protocol/openai"
+	pkgusage "github.com/puras/moproto/usage"
 
-	"hegq.net/mos/llm"
-	"hegq.net/mos/llm/transport"
+	"github.com/puras/mos/llm"
+	"github.com/puras/mos/llm/transport"
 )
 
 const defaultBaseURL = "https://api.openai.com/v1"
@@ -237,8 +237,8 @@ func toOpenAIMessage(m llm.Message) pkgopenai.OpenAIChatCompletionMessageParamUn
 }
 
 // injectReasoningContent 在请求体中为 assistant 消息注入 reasoning_content（DeepSeek/Qwen 扩展）。
-// mogo 请求侧 assistant 消息暂无该字段（响应侧已支持），此处按消息顺序做最小字节级注入，
-// 只重编码 messages 数组，其余字段保留原始字节；待 mogo 支持后可移除。
+// moproto 请求侧 assistant 消息暂无该字段（响应侧已支持），此处按消息顺序做最小字节级注入，
+// 只重编码 messages 数组，其余字段保留原始字节；待 moproto 支持后可移除。
 func injectReasoningContent(body []byte, messages []llm.Message) []byte {
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(body, &top); err != nil {
@@ -370,11 +370,11 @@ func audioFormat(mime string) string {
 
 // ---- 响应解析 ----
 //
-// mogo 的响应结构（OpenAIChatCompletion 等）是 marshal 导向的（工具调用为 union 接口切片，
+// moproto 的响应结构（OpenAIChatCompletion 等）是 marshal 导向的（工具调用为 union 接口切片，
 // encoding/json 无法直接反序列化），因此这里保留一个最小的解码镜像结构，
-// 其中 usage / 错误 / 工具调用元素仍使用 mogo 类型解码。
+// 其中 usage / 错误 / 工具调用元素仍使用 moproto 类型解码。
 
-// chatChoiceMessage 是响应 message 的解码镜像，tool_calls 以原始字节暂存后逐条用 mogo union 解析。
+// chatChoiceMessage 是响应 message 的解码镜像，tool_calls 以原始字节暂存后逐条用 moproto union 解析。
 type chatChoiceMessage struct {
 	Role             string            `json:"role"`
 	Content          string            `json:"content"`

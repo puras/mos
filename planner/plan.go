@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/llm"
 )
 
 // PlanStep 是计划中的一步（Plan&Execute 执行单元）。

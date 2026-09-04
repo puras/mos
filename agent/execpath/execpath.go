@@ -11,17 +11,17 @@ import (
 	"fmt"
 	"strconv"
 
-	"hegq.net/mos/agent"
-	"hegq.net/mos/agent/approval"
-	"hegq.net/mos/agent/driver"
-	"hegq.net/mos/agent/executor"
-	"hegq.net/mos/agent/hook"
-	"hegq.net/mos/agent/session"
-	"hegq.net/mos/agent/telemetry"
-	"hegq.net/mos/httpx"
-	"hegq.net/mos/llm"
-	"hegq.net/mos/tool"
-	fs "hegq.net/mos/filesystem"
+	"github.com/puras/mos/agent"
+	"github.com/puras/mos/agent/approval"
+	"github.com/puras/mos/agent/driver"
+	"github.com/puras/mos/agent/executor"
+	"github.com/puras/mos/agent/hook"
+	"github.com/puras/mos/agent/session"
+	"github.com/puras/mos/agent/telemetry"
+	"github.com/puras/mos/httpx"
+	"github.com/puras/mos/llm"
+	"github.com/puras/mos/tool"
+	fs "github.com/puras/mos/filesystem"
 )
 
 // ErrToolDenied 表示工具调用被单调守卫拒绝（非致命：结果反馈给模型继续）。

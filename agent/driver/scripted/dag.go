@@ -7,14 +7,14 @@ import (
 	"regexp"
 	"strings"
 
-	"hegq.net/mos/agent/approval"
-	"hegq.net/mos/agent/driver"
-	"hegq.net/mos/agent/event"
-	"hegq.net/mos/agent/execpath"
-	"hegq.net/mos/agent/executor"
-	"hegq.net/mos/agent/session"
-	"hegq.net/mos/llm"
-	"hegq.net/mos/planner"
+	"github.com/puras/mos/agent/approval"
+	"github.com/puras/mos/agent/driver"
+	"github.com/puras/mos/agent/event"
+	"github.com/puras/mos/agent/execpath"
+	"github.com/puras/mos/agent/executor"
+	"github.com/puras/mos/agent/session"
+	"github.com/puras/mos/llm"
+	"github.com/puras/mos/planner"
 )
 
 // 步骤状态。

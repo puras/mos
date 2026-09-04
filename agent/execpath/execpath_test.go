@@ -6,12 +6,12 @@ import (
 	"errors"
 	"testing"
 
-	"hegq.net/mos/agent"
-	"hegq.net/mos/agent/driver"
-	"hegq.net/mos/agent/hook"
-	"hegq.net/mos/agent/session"
-	"hegq.net/mos/llm"
-	"hegq.net/mos/tool"
+	"github.com/puras/mos/agent"
+	"github.com/puras/mos/agent/driver"
+	"github.com/puras/mos/agent/hook"
+	"github.com/puras/mos/agent/session"
+	"github.com/puras/mos/llm"
+	"github.com/puras/mos/tool"
 )
 
 type stubTool struct{ name, desc string }

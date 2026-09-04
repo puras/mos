@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"hegq.net/mos/agent"
-	"hegq.net/mos/agent/event"
-	"hegq.net/mos/agent/session"
-	"hegq.net/mos/tool"
+	"github.com/puras/mos/agent"
+	"github.com/puras/mos/agent/event"
+	"github.com/puras/mos/agent/session"
+	"github.com/puras/mos/tool"
 )
 
 // ActivateSkill 是技能激活工具（MoS Skills 强化 Task 6）：

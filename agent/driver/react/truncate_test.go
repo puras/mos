@@ -9,13 +9,13 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"hegq.net/mos/agent"
-	"hegq.net/mos/agent/driver"
-	"hegq.net/mos/agent/session"
-	"hegq.net/mos/llm"
-	"hegq.net/mos/tool"
-	"hegq.net/mos/tool/builtin"
-	fs "hegq.net/mos/filesystem"
+	"github.com/puras/mos/agent"
+	"github.com/puras/mos/agent/driver"
+	"github.com/puras/mos/agent/session"
+	"github.com/puras/mos/llm"
+	"github.com/puras/mos/tool"
+	"github.com/puras/mos/tool/builtin"
+	fs "github.com/puras/mos/filesystem"
 )
 
 // newTestTruncator 构造小上限截断器，便于在测试中触发截断。

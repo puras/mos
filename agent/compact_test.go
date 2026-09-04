@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"hegq.net/mos/agent/session"
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/agent/session"
+	"github.com/puras/mos/llm"
 )
 
 // 构造一轮 tool 交互：assistant 调用 + tool 结果

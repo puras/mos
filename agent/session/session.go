@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"hegq.net/mos/agent/event"
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/agent/event"
+	"github.com/puras/mos/llm"
 )
 
 // sessionFormatVersion 是会话日志格式版本（SessionHeader.Version）。

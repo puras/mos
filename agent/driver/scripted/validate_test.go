@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"hegq.net/mos/planner"
-	"hegq.net/mos/tool"
+	"github.com/puras/mos/planner"
+	"github.com/puras/mos/tool"
 )
 
 // stubTool 是 validate_test 用的最小工具：Parameters() 返回带 properties 的 schema，

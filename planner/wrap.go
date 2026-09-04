@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/llm"
 )
 
 // 标准包装器（Standard Wrappers）。

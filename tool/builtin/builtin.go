@@ -10,7 +10,7 @@
 // tool/extension 扩展工具包，与本包 Default() 拼接装配。
 package builtin
 
-import "hegq.net/mos/tool"
+import "github.com/puras/mos/tool"
 
 // Default 返回内置工具集的完整列表：shell、current_time、read_file、
 // write_file、glob、grep。

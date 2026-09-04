@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/llm"
 )
 
 // 翻译边界核心行为：标准消息原样转换、自定义/摘要转 user、exclude 过滤。

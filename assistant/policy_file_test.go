@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	fs "hegq.net/mos/filesystem"
+	fs "github.com/puras/mos/filesystem"
 )
 
 func TestWithinDirAllowsExtraWritable(t *testing.T) {

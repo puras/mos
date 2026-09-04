@@ -5,7 +5,7 @@
 // 与 extended thinking（thoughtsTokenCount）。模型名位于 URL path，而非请求体。
 //
 // wire 层（请求/响应结构体、Schema、SSE 帧解析、用量转换）复用 MoGO 的
-// hegq.net/mogo/pkg/protocol/gemini 与 hegq.net/mogo/pkg/usage，
+// github.com/puras/moproto/protocol/gemini 与 github.com/puras/moproto/usage，
 // 本包只保留统一 llm.ChatModel 抽象与协议映射逻辑。
 package gemini
 
@@ -20,11 +20,11 @@ import (
 	"net/http"
 	"strings"
 
-	pkggemini "hegq.net/mogo/pkg/protocol/gemini"
-	pkgusage "hegq.net/mogo/pkg/usage"
+	pkggemini "github.com/puras/moproto/protocol/gemini"
+	pkgusage "github.com/puras/moproto/usage"
 
-	"hegq.net/mos/llm"
-	"hegq.net/mos/llm/transport"
+	"github.com/puras/mos/llm"
+	"github.com/puras/mos/llm/transport"
 )
 
 const defaultBaseURL = "https://generativelanguage.googleapis.com/v1beta"

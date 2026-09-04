@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"hegq.net/mos/httpx"
+	"github.com/puras/mos/httpx"
 )
 
 const (

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/llm"
 )
 
 // Tool 是一个可被 LLM 调用的工具。

@@ -9,13 +9,13 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"hegq.net/mos/agent/driver"
-	"hegq.net/mos/agent/seam"
-	"hegq.net/mos/assistant"
-	"hegq.net/mos/llm"
-	"hegq.net/mos/planner"
-	"hegq.net/mos/tool"
-	"hegq.net/mos/tool/builtin"
+	"github.com/puras/mos/agent/driver"
+	"github.com/puras/mos/agent/seam"
+	"github.com/puras/mos/assistant"
+	"github.com/puras/mos/llm"
+	"github.com/puras/mos/planner"
+	"github.com/puras/mos/tool"
+	"github.com/puras/mos/tool/builtin"
 )
 
 // Config 是 YAML 声明式装配配置（字段对齐 assistant.Config 的核心概念；

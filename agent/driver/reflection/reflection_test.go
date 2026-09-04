@@ -7,12 +7,12 @@ import (
 	"strings"
 	"testing"
 
-	"hegq.net/mos/agent/driver"
-	"hegq.net/mos/agent/event"
-	"hegq.net/mos/agent/session"
-	"hegq.net/mos/llm"
-	"hegq.net/mos/planner"
-	"hegq.net/mos/tool"
+	"github.com/puras/mos/agent/driver"
+	"github.com/puras/mos/agent/event"
+	"github.com/puras/mos/agent/session"
+	"github.com/puras/mos/llm"
+	"github.com/puras/mos/planner"
+	"github.com/puras/mos/tool"
 )
 
 // ---- mock 模型：离线演示用 ----

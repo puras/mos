@@ -3,8 +3,8 @@ package agent
 import (
 	"context"
 
-	"hegq.net/mos/agent/event"
-	"hegq.net/mos/agent/session"
+	"github.com/puras/mos/agent/event"
+	"github.com/puras/mos/agent/session"
 )
 
 // 激活态持久化：本次 Run 已激活的 Skill 列表 + 工具子集并集改存在 *session.Session

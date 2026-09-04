@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"hegq.net/mos/tool/extension/search"
+	"github.com/puras/mos/tool/extension/search"
 )
 
 func TestWebSearchExecute(t *testing.T) {

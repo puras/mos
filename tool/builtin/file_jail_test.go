@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	fs "hegq.net/mos/filesystem"
+	fs "github.com/puras/mos/filesystem"
 )
 
 // jailCtx 返回注入了 workspace jail 的 ctx（读写都 jail）。

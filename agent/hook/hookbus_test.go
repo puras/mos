@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"hegq.net/mos/agent/session"
+	"github.com/puras/mos/agent/session"
 )
 
 func TestHookBusWaterfallOrder(t *testing.T) {

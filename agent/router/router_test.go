@@ -6,15 +6,15 @@ import (
 	"errors"
 	"testing"
 
-	"hegq.net/mos/agent/driver"
-	"hegq.net/mos/agent/driver/planexecute"
-	"hegq.net/mos/agent/driver/react"
-	"hegq.net/mos/agent/driver/reflection"
-	"hegq.net/mos/agent/driver/scripted"
-	"hegq.net/mos/agent/session"
-	"hegq.net/mos/llm"
-	"hegq.net/mos/planner"
-	"hegq.net/mos/tool"
+	"github.com/puras/mos/agent/driver"
+	"github.com/puras/mos/agent/driver/planexecute"
+	"github.com/puras/mos/agent/driver/react"
+	"github.com/puras/mos/agent/driver/reflection"
+	"github.com/puras/mos/agent/driver/scripted"
+	"github.com/puras/mos/agent/session"
+	"github.com/puras/mos/llm"
+	"github.com/puras/mos/planner"
+	"github.com/puras/mos/tool"
 )
 
 // mockClassifier 固定返回驱动名（LLM 分类器替身）。

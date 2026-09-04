@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/llm"
 )
 
 // Action 是规划器在任务循环中作出的一个决策。

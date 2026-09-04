@@ -5,8 +5,8 @@ import (
 	"context"
 	"sync"
 
-	"hegq.net/mos/agent/session"
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/agent/session"
+	"github.com/puras/mos/llm"
 )
 
 // HookKind 是可改写环节的枚举（见架构 v2 §3.4 / §4.3）。

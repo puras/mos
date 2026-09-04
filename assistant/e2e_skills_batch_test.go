@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"hegq.net/mos/agent/event"
-	"hegq.net/mos/llm"
-	"hegq.net/mos/tool"
+	"github.com/puras/mos/agent/event"
+	"github.com/puras/mos/llm"
+	"github.com/puras/mos/tool"
 )
 
 // twoActivateModel 一次返回两个 activate_skill 调用（同一工具批），

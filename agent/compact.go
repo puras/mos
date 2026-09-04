@@ -1,8 +1,8 @@
 package agent
 
 import (
-	"hegq.net/mos/agent/session"
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/agent/session"
+	"github.com/puras/mos/llm"
 )
 
 // Compactor 对消息历史做 fresh-context 压缩（M2.5 上下文工程）。

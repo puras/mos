@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	pkganthropic "hegq.net/mogo/pkg/protocol/anthropic"
-	"hegq.net/mos/llm"
+	pkganthropic "github.com/puras/moproto/protocol/anthropic"
+	"github.com/puras/mos/llm"
 )
 
 func TestAnthropicContent(t *testing.T) {

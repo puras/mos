@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"hegq.net/mos/agent/driver"
-	"hegq.net/mos/agent/event"
-	"hegq.net/mos/agent/session"
+	"github.com/puras/mos/agent/driver"
+	"github.com/puras/mos/agent/event"
+	"github.com/puras/mos/agent/session"
 )
 
 // Missing 描述恢复时缺失的资源（对齐 PI SuspendedOperation 的 missing 校验）：

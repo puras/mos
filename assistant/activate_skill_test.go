@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"hegq.net/mos/agent"
-	"hegq.net/mos/agent/session"
+	"github.com/puras/mos/agent"
+	"github.com/puras/mos/agent/session"
 )
 
 // writeFile 写测试 fixture（本地 helper；agent 包已有同名，跨包不便，直接复用）。

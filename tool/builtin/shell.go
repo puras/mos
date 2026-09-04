@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"os/exec"
 
-	"hegq.net/mos/sandbox"
-	"hegq.net/mos/tool"
+	"github.com/puras/mos/sandbox"
+	"github.com/puras/mos/tool"
 )
 
 // Shell 执行本地 shell 命令（v2.24：经 sandbox.Runner 隔离，ctx 注入可换）。

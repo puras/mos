@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sort"
 
-	"hegq.net/mos/agent/event"
+	"github.com/puras/mos/agent/event"
 )
 
 // ErrNotFound 表示会话不存在（无持久化记录）；Restore 按空会话处理，不报错。

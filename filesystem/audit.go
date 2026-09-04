@@ -3,7 +3,7 @@ package filesystem
 import (
 	"context"
 
-	"hegq.net/mos/agent/event"
+	"github.com/puras/mos/agent/event"
 )
 
 // Bus 是事件发射抽象（*event.EventBus 的结构化子集）。

@@ -3,7 +3,7 @@ package hook
 import (
 	"testing"
 
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/llm"
 )
 
 func TestDoomLoopDetect(t *testing.T) {

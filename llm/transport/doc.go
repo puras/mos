@@ -5,7 +5,7 @@
 //     支持流式/非流式端点切换（Gemini 需要）；
 //   - ParseStatusError：非 200 响应的统一错误转换（provider 前缀 + 协议错误体
 //     解析回调），内部读完并关闭 Body（幂等，调用方 defer 二次关闭安全）；
-//   - UsageFrom：mogo *pkgusage.Usage → llm.Usage 的字段归一
+//   - UsageFrom：moproto *usage.Usage → llm.Usage 的字段归一
 //     （ReadInputTokens/CachedTokens、ThinkingTokens/ReasoningTokens 互斥非零，
 //     取 max 无损）。
 //

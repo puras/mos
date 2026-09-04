@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/llm"
 )
 
 type classifyModel struct {

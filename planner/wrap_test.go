@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/llm"
 )
 
 // fakePlanner 是测试用的可编程规划器。

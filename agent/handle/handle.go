@@ -10,13 +10,13 @@ import (
 	"sync"
 	"time"
 
-	"hegq.net/mos/agent"
-	"hegq.net/mos/agent/approval"
-	"hegq.net/mos/agent/checkpoint"
-	"hegq.net/mos/agent/driver"
-	"hegq.net/mos/agent/event"
-	"hegq.net/mos/agent/scope"
-	"hegq.net/mos/agent/session"
+	"github.com/puras/mos/agent"
+	"github.com/puras/mos/agent/approval"
+	"github.com/puras/mos/agent/checkpoint"
+	"github.com/puras/mos/agent/driver"
+	"github.com/puras/mos/agent/event"
+	"github.com/puras/mos/agent/scope"
+	"github.com/puras/mos/agent/session"
 )
 
 // NewAgent 是装配回调：为指定会话构建绑定的智能体实例与其 RunContext。

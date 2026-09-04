@@ -1,7 +1,7 @@
 // Package transport 提供 LLM 适配器共享的 HTTP envelope 与用量归一化。
 //
 // 三个协议适配器（llm/anthropic / llm/openai / llm/gemini）的请求发送骨架
-// （POST + JSON body + 协议鉴权头 + 非 200 错误体解析）与 mogo 用量映射在此收编，
+// （POST + JSON body + 协议鉴权头 + 非 200 错误体解析）与 moproto 用量映射在此收编，
 // 适配器只保留真正的协议差异：请求/响应结构转换与 SSE 事件语义。
 //
 // 客户端解析复用顶层 httpx capability seam：未显式配置 http_timeout 时，
@@ -21,8 +21,8 @@ import (
 	"strings"
 	"time"
 
-	"hegq.net/mos/httpx"
-	"hegq.net/mos/llm"
+	"github.com/puras/mos/httpx"
+	"github.com/puras/mos/llm"
 )
 
 // Config 是构造 Client 的协议侧参数，由各适配器提供。

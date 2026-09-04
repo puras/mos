@@ -10,13 +10,13 @@ import (
 	"fmt"
 	"strings"
 
-	"hegq.net/mos/agent"
-	"hegq.net/mos/agent/driver"
-	"hegq.net/mos/agent/driver/react"
-	"hegq.net/mos/agent/event"
-	"hegq.net/mos/agent/session"
-	"hegq.net/mos/planner"
-	"hegq.net/mos/sandbox"
+	"github.com/puras/mos/agent"
+	"github.com/puras/mos/agent/driver"
+	"github.com/puras/mos/agent/driver/react"
+	"github.com/puras/mos/agent/event"
+	"github.com/puras/mos/agent/session"
+	"github.com/puras/mos/planner"
+	"github.com/puras/mos/sandbox"
 )
 
 // VerifyFunc 校验计划交付物（可选，架构 v2 §3.3"校验交付物"）：

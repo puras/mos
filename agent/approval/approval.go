@@ -10,7 +10,7 @@ import (
 	"errors"
 	"time"
 
-	"hegq.net/mos/agent/hook"
+	"github.com/puras/mos/agent/hook"
 )
 
 // ApprovalID 是异步审批通道的全局唯一标识（UUID 字符串）。
