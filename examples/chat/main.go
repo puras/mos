@@ -73,7 +73,9 @@ func main() {
 			fmt.Fprintf(os.Stderr, "运行失败: %v\n", err)
 			continue
 		}
-		if strings.TrimSpace(reply) != "" {
+		// 回复已由 OnChunk 流式渲染（决策器回退非流式时也会一次性 emit 全文）；
+		// 仅在关闭流式时才在此补打印，避免同一段回复显示两遍。
+		if !rt.Stream {
 			fmt.Println(reply)
 		}
 		u := sess.TotalUsage()
