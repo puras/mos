@@ -13,3 +13,4 @@ examples/cli/temp/
 examples/protocli/mosprotocli
 examples/agentcli/temp/
 examples/agentcli/data/
+examples/agentcli/mosagentcli
