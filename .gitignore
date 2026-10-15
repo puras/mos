@@ -14,3 +14,5 @@ examples/protocli/mosprotocli
 examples/agentcli/temp/
 examples/agentcli/data/
 examples/agentcli/mosagentcli
+examples/chat/moschat
+examples/chat/data/
