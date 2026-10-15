@@ -44,8 +44,8 @@ type ToolResult struct {
 }
 
 // Event 是日志中的一条记录。Seq 由 Session.Append 统一分配，全局递增从 1 开始。
-// 载荷字段按 Kind 取用：Text（user/assistant）、ToolCalls（assistant）、
-// Usage（assistant，模型调用遥测）、ToolCall（tool/call）、
+// 载荷字段按 Kind 取用：Text（user/assistant）、Reasoning（assistant，思维链）、
+// ToolCalls（assistant）、Usage（assistant，模型调用遥测）、ToolCall（tool/call）、
 // ToolResult（tool/result）、Reason（turn/end）。
 type Event struct {
 	Seq        int64          `json:"seq"`
@@ -53,6 +53,7 @@ type Event struct {
 	Turn       int            `json:"turn,omitempty"`
 	Time       time.Time      `json:"time"`
 	Text       string         `json:"text,omitempty"`
+	Reasoning  string         `json:"reasoning,omitempty"`
 	ToolCalls  []llm.ToolCall `json:"toolCalls,omitempty"`
 	ToolCall   *llm.ToolCall  `json:"toolCall,omitempty"`
 	ToolResult *ToolResult    `json:"toolResult,omitempty"`
@@ -115,6 +116,20 @@ func (s *Session) Messages() []llm.Message {
 	return project(s.events)
 }
 
+// NextTurn 返回下一轮的轮次序号（派生：日志中已出现的最大 Turn + 1）。
+// 驱动用它开新一轮，无需自维护计数器（Restore 后自然接续）。
+func (s *Session) NextTurn() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, ev := range s.events {
+		if ev.Turn > n {
+			n = ev.Turn
+		}
+	}
+	return n + 1
+}
+
 // TotalUsage 折叠日志中所有 assistant 事件的模型调用用量（派生值，不存储：
 // Restore 重放后自动重建，Persistence 无需感知聚合逻辑）。
 // 仅累计三个主计数；Usage.Details 明细不折叠。
@@ -139,7 +154,12 @@ func project(events []Event) []llm.Message {
 		case EventUser:
 			out = append(out, llm.Message{Role: llm.RoleUser, Content: ev.Text})
 		case EventAssistant:
-			out = append(out, llm.Message{Role: llm.RoleAssistant, Content: ev.Text, ToolCalls: ev.ToolCalls})
+			out = append(out, llm.Message{
+				Role:             llm.RoleAssistant,
+				Content:          ev.Text,
+				ReasoningContent: ev.Reasoning, // 思维链回传：thinking 模式多轮必需
+				ToolCalls:        ev.ToolCalls,
+			})
 		case EventToolResult:
 			if r := ev.ToolResult; r != nil {
 				out = append(out, llm.Message{Role: llm.RoleTool, Content: r.Content, ToolCallID: r.CallID})

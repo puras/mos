@@ -1,0 +1,82 @@
+// Package driver 定义智能体循环驱动接口与运行上下文。
+//
+// 一种智能体循环 = 一个 LoopDriver 实现（S4a 仅 ReAct；Plan&Execute /
+// Reflection / Scripted 按 PRD 逐个回填）。驱动负责「一轮怎么转」：写会话
+// 事件、调决策器、执行工具、回填结果、判定终止。
+package driver
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/puras/mos/llm"
+	"github.com/puras/mos/planner"
+	"github.com/puras/mos/session"
+)
+
+// LoopDriver 是循环驱动接口：一种循环类型 = 一个实现。
+type LoopDriver interface {
+	// Run 在给定会话上执行一次任务：写事件、决策、执行、收尾，返回最终回复。
+	// sess 由调用方持有（可挂持久化后端），驱动不缓存会话。
+	Run(ctx context.Context, rt *RunContext, sess *session.Session, input string) (string, error)
+}
+
+// RunContext 是驱动共享的运行上下文（S4a 最小形态）。
+// 只装「装配期决定、运行期只读」的东西；运行期变化的状态一律进会话日志。
+type RunContext struct {
+	// Planner 是决策器（必填）。为 nil 时驱动 fail-closed 拒绝运行——
+	// 缺能力就拒绝，不降级放行。
+	Planner planner.Planner
+	// SystemPrompt 是静态系统引导词（可选，作为历史首条消息注入）。
+	SystemPrompt string
+	// Stream 为 true 时优先走决策器的流式接口（若实现），
+	// 文本增量经 OnChunk 实时回调。
+	Stream bool
+	// OnChunk 是流式文本增量回调（可选，nil 时丢弃增量）。
+	// 推理增量以 dark=true 表示（应用层可据此区别渲染）。
+	OnChunk func(delta string, reasoning bool)
+}
+
+// validate 校验运行上下文的必要能力（fail-closed）。
+func (rt *RunContext) validate() error {
+	if rt == nil || rt.Planner == nil {
+		return errors.New("driver: RunContext.Planner 未设置（fail-closed）")
+	}
+	return nil
+}
+
+// History 组装送给决策器的消息：静态系统引导（若有）+ 会话事件投影。
+// 投影由 session 派生，驱动不自行维护历史——「日志即事实」。
+func (rt *RunContext) History(sess *session.Session) []llm.Message {
+	var msgs []llm.Message
+	if rt.SystemPrompt != "" {
+		msgs = append(msgs, llm.Message{Role: llm.RoleSystem, Content: rt.SystemPrompt})
+	}
+	return append(msgs, sess.Messages()...)
+}
+
+// Agent 是智能体实例：RunContext + LoopDriver 的组合。
+type Agent struct {
+	Driver LoopDriver
+	RT     *RunContext
+}
+
+// New 创建智能体实例：显式指定驱动。
+func New(rt *RunContext, d LoopDriver) *Agent {
+	return &Agent{Driver: d, RT: rt}
+}
+
+// Run 执行一次任务（驱动自行决定流式或非流式路径）。
+func (a *Agent) Run(ctx context.Context, sess *session.Session, input string) (string, error) {
+	if a == nil || a.Driver == nil {
+		return "", fmt.Errorf("driver: 驱动未设置")
+	}
+	if sess == nil {
+		return "", fmt.Errorf("driver: 会话未设置")
+	}
+	if err := a.RT.validate(); err != nil {
+		return "", err
+	}
+	return a.Driver.Run(ctx, a.RT, sess, input)
+}

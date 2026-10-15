@@ -6,7 +6,7 @@
 
 ```text
 装配层    assistant        模型对象 + 工具集 + 运行配置注入，nil 用框架默认（S7）
-驱动层    LoopDriver       ReAct 起步；PlanExecute/Reflection/Scripted 按 PRD 逐个回填（S4）
+驱动层    LoopDriver       ReAct 起步；PlanExecute/Reflection/Scripted 按 PRD 逐个回填（S4a ✅）
 执行通道  execpath         Policy 守卫 → 批量并发执行 → 审计回填，各驱动共用（S5）
 基础设施  session/event/hook  事件日志会话 + 总线 + 钩子守卫（S1/S5）
 能力层    llm / tool / filesystem / sandbox   协议适配、工具、文件 jail、进程隔离（S2/S3/S5）
@@ -32,10 +32,19 @@
 | `session` | 会话事件日志、消息投影、TaskState、JSONL 持久化 | 重写瘦身 | S1 |
 | `llm`（+`llm/transport`） | ChatModel 抽象、协议适配、共享 HTTP envelope | 移植归档 | S2 |
 | `tool` | schema 生成、Registry、builtin 最小集 | 移植裁剪 | S3 |
-| `planner` + `driver` | Planner 接口 + ReAct 决策；LoopDriver + ReActDriver | 重写瘦身 | S4 |
+| `planner` + `driver` | Planner 接口 + ReAct 决策；LoopDriver + ReActDriver | planner 移植 / 驱动重写 | S4a ✅ |
 | `agent`（安全件）/ `hook` / `filesystem` / `sandbox` | Policy、GuardBus、文件 jail、进程隔离 | 移植裁剪 | S5 |
 | `agent`（上下文件） | 截断、压缩、Auditor | 重写瘦身 | S6 |
 | `assistant` | 一行装配 + 示例 CLI | 重写 | S7 |
+
+### 3.1 循环契约（S4a 定型，S4b 扩展）
+
+一轮循环的事件序列固定为 `turn/start → user → [assistant → tool/call → tool/result]* → turn/end`：
+
+- **历史来源唯一**：`RunContext.History(sess)` = 静态系统引导 + 会话事件投影，驱动不自行维护 `[]Message`；
+- **轮次序号派生**：`sess.NextTurn()` 取日志最大值 + 1，Restore 后自然接续；
+- **错误必收尾**：任何出错路径都以 `turn/end{reason:error}` 收尾，不留孤儿 turn；
+- **能力缺口 fail-closed**：S4a 驱动未接工具执行通道时，模型请求工具调用直接报错（`react.ErrToolsUnsupported`），S4b 接入后放开。
 
 ## 4. 治理规则（防再膨胀）
 

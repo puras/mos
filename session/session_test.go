@@ -254,3 +254,49 @@ func TestTotalUsageDerivedNotStored(t *testing.T) {
 		t.Fatalf("恢复后 TotalUsage = %+v", rs.TotalUsage())
 	}
 }
+
+// thinking 模式多轮对话必须原样回传思维链：投影不能丢 ReasoningContent。
+func TestReasoningRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	jl, err := NewJSONL(dir)
+	if err != nil {
+		t.Fatalf("NewJSONL: %v", err)
+	}
+	id := "think"
+	jl.SaveHeader(id, Header{ID: id})
+	s := New(id, jl)
+	mustAppend(t, s, Event{Kind: EventUser, Text: "复杂问题"})
+	mustAppend(t, s, Event{Kind: EventAssistant, Text: "答案", Reasoning: "先分解再求解"})
+
+	msgs := s.Messages()
+	if len(msgs) != 2 || msgs[1].ReasoningContent != "先分解再求解" {
+		t.Fatalf("思维链应在投影中回传: %+v", msgs)
+	}
+
+	// 经持久化往返后仍在（thinking 服务端不接受丢字段的历史）
+	rs, err := Restore(id, jl)
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if got := rs.Messages(); len(got) != 2 || got[1].ReasoningContent != "先分解再求解" {
+		t.Fatalf("恢复后思维链丢失: %+v", got)
+	}
+}
+
+func TestNextTurn(t *testing.T) {
+	s := New("turns", nil)
+	if got := s.NextTurn(); got != 1 {
+		t.Fatalf("空会话 NextTurn = %d, want 1", got)
+	}
+	mustAppend(t, s, Event{Kind: EventTurnStart, Turn: 1})
+	mustAppend(t, s, Event{Kind: EventUser, Turn: 1, Text: "一"})
+	mustAppend(t, s, Event{Kind: EventTurnEnd, Turn: 1, Reason: "completed"})
+	if got := s.NextTurn(); got != 2 {
+		t.Fatalf("NextTurn = %d, want 2", got)
+	}
+	// 序号由日志派生，乱序写入也取最大值
+	mustAppend(t, s, Event{Kind: EventUser, Turn: 5, Text: "跳号"})
+	if got := s.NextTurn(); got != 6 {
+		t.Fatalf("NextTurn = %d, want 6（取日志最大值+1）", got)
+	}
+}
