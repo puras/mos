@@ -42,9 +42,18 @@ type ToolResult struct {
 	IsError bool   `json:"isError,omitempty"`
 }
 
+// Usage 是一次模型调用的 token 用量（服务商报告的遥测，走观测通道，
+// 不属于审计意义上的"环境验证事实"——将来不进 TaskState.Facts）。
+type Usage struct {
+	PromptTokens     int `json:"promptTokens"`
+	CompletionTokens int `json:"completionTokens"`
+	TotalTokens      int `json:"totalTokens"`
+}
+
 // Event 是日志中的一条记录。Seq 由 Session.Append 统一分配，全局递增从 1 开始。
 // 载荷字段按 Kind 取用：Text（user/assistant）、ToolCalls（assistant）、
-// ToolCall（tool/call）、ToolResult（tool/result）、Reason（turn/end）。
+// Usage（assistant，模型调用遥测）、ToolCall（tool/call）、
+// ToolResult（tool/result）、Reason（turn/end）。
 type Event struct {
 	Seq        int64       `json:"seq"`
 	Kind       EventKind   `json:"kind"`
@@ -54,6 +63,7 @@ type Event struct {
 	ToolCalls  []ToolCall  `json:"toolCalls,omitempty"`
 	ToolCall   *ToolCall   `json:"toolCall,omitempty"`
 	ToolResult *ToolResult `json:"toolResult,omitempty"`
+	Usage      *Usage      `json:"usage,omitempty"`
 	Reason     string      `json:"reason,omitempty"`
 }
 
@@ -118,6 +128,22 @@ func (s *Session) Messages() []Message {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return project(s.events)
+}
+
+// TotalUsage 折叠日志中所有 assistant 事件的模型调用用量（派生值，不存储：
+// Restore 重放后自动重建，Persistence 无需感知聚合逻辑）。
+func (s *Session) TotalUsage() Usage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var total Usage
+	for _, ev := range s.events {
+		if ev.Usage != nil {
+			total.PromptTokens += ev.Usage.PromptTokens
+			total.CompletionTokens += ev.Usage.CompletionTokens
+			total.TotalTokens += ev.Usage.TotalTokens
+		}
+	}
+	return total
 }
 
 func project(events []Event) []Message {

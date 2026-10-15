@@ -83,11 +83,19 @@ func chatTurn(sess *session.Session, model llm.ChatModel, turn int, input string
 		return
 	}
 
-	appendEvent(sess, session.Event{Kind: session.EventAssistant, Text: text, Turn: turn})
+	assistant := session.Event{Kind: session.EventAssistant, Text: text, Turn: turn}
+	if usage.TotalTokens > 0 {
+		assistant.Usage = &session.Usage{
+			PromptTokens:     usage.PromptTokens,
+			CompletionTokens: usage.CompletionTokens,
+			TotalTokens:      usage.TotalTokens,
+		}
+	}
+	appendEvent(sess, assistant)
 	appendEvent(sess, session.Event{Kind: session.EventTurnEnd, Turn: turn, Reason: "completed"})
 	if usage.TotalTokens > 0 {
-		fmt.Printf("\n  [tokens] 输入 %d / 输出 %d / 共 %d\n",
-			usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
+		fmt.Printf("\n  [tokens] 本轮 输入 %d / 输出 %d / 共 %d ｜ 会话累计 %d\n",
+			usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, sess.TotalUsage().TotalTokens)
 	}
 }
 

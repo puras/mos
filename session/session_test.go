@@ -89,7 +89,7 @@ func TestJSONLRoundTrip(t *testing.T) {
 	s := New(id, jl)
 	mustAppend(t, s, Event{Kind: EventTurnStart, Turn: 1})
 	mustAppend(t, s, Event{Kind: EventUser, Text: "你好"})
-	mustAppend(t, s, Event{Kind: EventAssistant, Text: "嗨"})
+	mustAppend(t, s, Event{Kind: EventAssistant, Text: "嗨", Usage: &Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}})
 	mustAppend(t, s, Event{Kind: EventTurnEnd, Turn: 1, Reason: "completed"})
 
 	events, err := jl.Load(id)
@@ -110,6 +110,9 @@ func TestJSONLRoundTrip(t *testing.T) {
 	}
 	if len(rs.Messages()) != 2 {
 		t.Fatalf("恢复后投影 = %d 条, want 2", len(rs.Messages()))
+	}
+	if got := rs.TotalUsage(); got.TotalTokens != 15 {
+		t.Fatalf("恢复后 TotalUsage = %+v, want TotalTokens 15（用量随事件重放重建）", got)
 	}
 	mustAppend(t, rs, Event{Kind: EventUser, Text: "继续"})
 	events, _ = jl.Load(id)
@@ -216,5 +219,36 @@ func TestRestoreMissingSession(t *testing.T) {
 	}
 	if len(s.Events()) != 0 || len(s.Messages()) != 0 {
 		t.Fatal("空会话不应有事件或消息")
+	}
+}
+
+func TestTotalUsageDerivedNotStored(t *testing.T) {
+	dir := t.TempDir()
+	jl, err := NewJSONL(dir)
+	if err != nil {
+		t.Fatalf("NewJSONL: %v", err)
+	}
+	id := "usage"
+	jl.SaveHeader(id, Header{ID: id})
+	s := New(id, jl)
+	mustAppend(t, s, Event{Kind: EventUser, Text: "q1"})
+	mustAppend(t, s, Event{Kind: EventAssistant, Text: "a1", Usage: &Usage{PromptTokens: 10, CompletionTokens: 4, TotalTokens: 14}})
+	mustAppend(t, s, Event{Kind: EventUser, Text: "q2"})
+	mustAppend(t, s, Event{Kind: EventAssistant, Text: "a2", Usage: &Usage{PromptTokens: 30, CompletionTokens: 6, TotalTokens: 36}})
+	// 无用量的事件不参与折叠
+	mustAppend(t, s, Event{Kind: EventAssistant, Text: "a3"})
+
+	got := s.TotalUsage()
+	if got.PromptTokens != 40 || got.CompletionTokens != 10 || got.TotalTokens != 50 {
+		t.Fatalf("TotalUsage = %+v, want 40/10/50", got)
+	}
+
+	// 派生而非存储：Restore 重放后自动重建，后端不感知聚合
+	rs, err := Restore(id, jl)
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if rs.TotalUsage() != (Usage{PromptTokens: 40, CompletionTokens: 10, TotalTokens: 50}) {
+		t.Fatalf("恢复后 TotalUsage = %+v", rs.TotalUsage())
 	}
 }
