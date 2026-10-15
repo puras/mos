@@ -9,7 +9,7 @@ MoS（取自 Sapient）是基于 Go 的智能体基础框架（Agent Base SDK）
 | 切片 | 内容 | 状态 |
 | --- | --- | --- |
 | S0 | 骨架（本提交） | ✅ |
-| S1 | 会话与事件日志（append-only + 消息投影 + JSONL 持久化） | ⬜ |
+| S1 | 会话与事件日志（append-only + 消息投影 + JSONL 持久化） | ✅ |
 | S2 | LLM 接入（ChatModel + OpenAI/Anthropic 适配 + transport envelope） | ⬜ |
 | S3 | 工具系统（schema 生成 + Registry + builtin 最小集） | ⬜ |
 | S4 | 最小 ReAct 驱动（planner.ReAct + LoopDriver） | ⬜ |
