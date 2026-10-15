@@ -15,11 +15,11 @@ import (
 	"github.com/puras/mos/agent/approval"
 	"github.com/puras/mos/agent/event"
 	"github.com/puras/mos/agent/session"
+	fs "github.com/puras/mos/filesystem"
 	"github.com/puras/mos/llm"
 	"github.com/puras/mos/memory"
 	"github.com/puras/mos/tool"
 	"github.com/puras/mos/tool/builtin"
-	fs "github.com/puras/mos/filesystem"
 )
 
 func toolCall(name, args string) *llm.ToolCall {
@@ -841,7 +841,7 @@ func TestFsResolveEventEmittedEndToEnd(t *testing.T) {
 	a, err := New(readFileModel{path: target}, []tool.Tool{builtin.ReadFile{}}, Config{
 		FileAccess: FileAccessConfig{WorkspaceRoot: dir, JailReads: true, JailWrites: true},
 		Policy:     NewDefaultPolicy(nil, dir),
-		Bus:        bus,
+		EventBus:   bus,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

@@ -28,6 +28,7 @@ import (
 
 // 兼容别名：ErrToolDenied / ToolDeniedError 已迁至 execpath，沿旧的语义名称继续可读。
 type ToolDeniedError = execpath.ToolDeniedError
+
 var ErrToolDenied = execpath.ErrToolDenied
 
 // ReActDriver 是默认循环驱动：推理 → 工具调用 直至产出最终回复
@@ -43,11 +44,11 @@ type ReActDriver struct{}
 // 不注册 DoomLoopGuard（仅 react.NewReAct 才有，脚本中重复同工具调用是合法语义）。
 // 预留 HookRequest / HookToolPreExecute / HookTurnStopping 环节供平台扩展。
 func InstallDefaults(rt *driver.RunContext) {
-	if rt.Hooks == nil {
-		rt.Hooks = hook.NewHookBus()
+	if rt.HookBus == nil {
+		rt.HookBus = hook.NewHookBus()
 	}
-	if rt.Guards == nil {
-		rt.Guards = hook.NewGuardBus()
+	if rt.GuardBus == nil {
+		rt.GuardBus = hook.NewGuardBus()
 	}
 	if rt.Auditor == nil {
 		rt.Auditor = agent.NewDefaultAuditor()
@@ -59,19 +60,19 @@ func InstallDefaults(rt *driver.RunContext) {
 		rt.Compactor = agent.NewDefaultCompactor(agent.CompactorConfig{})
 	}
 
-	rt.Hooks.On(hook.HookPreStep, compressHook(rt))
-	rt.Hooks.On(hook.HookPreStep, ragInjectHook(rt))
-	rt.Hooks.On(hook.HookToolExecute, execpath.ExecuteHook(rt))
-	rt.Hooks.On(hook.HookToolPostExecute, execpath.TruncateHook(rt))
-	rt.Hooks.On(hook.HookToolPostExecute, execpath.AuditHook(rt))
+	rt.HookBus.On(hook.HookPreStep, compressHook(rt))
+	rt.HookBus.On(hook.HookPreStep, ragInjectHook(rt))
+	rt.HookBus.On(hook.HookToolExecute, execpath.ExecuteHook(rt))
+	rt.HookBus.On(hook.HookToolPostExecute, execpath.TruncateHook(rt))
+	rt.HookBus.On(hook.HookToolPostExecute, execpath.AuditHook(rt))
 	if rt.Policy != nil {
-		rt.Guards.Add(policyGuard(rt))
+		rt.GuardBus.Add(policyGuard(rt))
 	}
 	// 技能允许工具白名单：激活 Skill 时通过 agent.AddTurnSkill 把 allowed-tools
 	// 写入 sess.TurnToolSubset（与 policyGuard 同样在 preflight 串行裁决，
 	// 不可改写绕过）；未在白名单中的工具被拦截并显式失败回填到模型面，
 	// 驱动后续轮换技能。
-	rt.Guards.Add(skillAllowListGuard(rt))
+	rt.GuardBus.Add(skillAllowListGuard(rt))
 }
 
 // NewReAct 返回默认装配的 ReAct 驱动，注册默认钩子/守卫 + Doom Loop 守卫。
@@ -81,7 +82,7 @@ func NewReAct(rt *driver.RunContext) driver.LoopDriver {
 	// Doom Loop 检测以单调守卫注册（tool/pre-execute 阶段、Policy 之后）：
 	// 相同工具连续相同参数调用达到阈值即中断任务（状态 blocked），见 agent/doomloop.go。
 	if rt.DoomLoopMaxRepeat > 0 {
-		rt.Guards.Add(hook.NewDoomLoopGuard(rt.DoomLoopMaxRepeat).Guard)
+		rt.GuardBus.Add(hook.NewDoomLoopGuard(rt.DoomLoopMaxRepeat).Guard)
 	}
 	return &ReActDriver{}
 }
@@ -105,7 +106,7 @@ func (d *ReActDriver) Run(ctx context.Context, rt *driver.RunContext, input stri
 	}
 	// 裸实例惰性默认装配：Router 等场景直接构造 ReActDriver 时，Run 前补全
 	// 默认钩子/守卫（react.New 等显式装配入口调用后二者皆非 nil，此处跳过）。
-	if rt.Hooks == nil || rt.Guards == nil {
+	if rt.HookBus == nil || rt.GuardBus == nil {
 		NewReAct(rt)
 	}
 	sess := rt.Session
@@ -201,7 +202,7 @@ func (d *ReActDriver) runTurnInner(ctx context.Context, rt *driver.RunContext, s
 
 	// pre-step 钩子：压缩 + RAG 注入（可改写模型输入）
 	hev := &hook.HookEvent{Kind: hook.HookPreStep, Messages: msgs, Turn: turn, Step: step}
-	hev, err = rt.Hooks.Waterfall(ctx, hev)
+	hev, err = rt.HookBus.Waterfall(ctx, hev)
 	if err != nil {
 		return "", false, fmt.Errorf("agent: pre-step hooks: %w", err)
 	}

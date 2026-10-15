@@ -316,10 +316,10 @@ func TestBatchSuspendSkipsResultApply(t *testing.T) {
 	}
 	sess := session.NewSession("suspend-batch")
 	rt := &driver.RunContext{
-		Session: sess,
-		Tools:   tool.NewRegistry(),
-		Hooks:   hook.NewHookBus(),
-		Guards:  hook.NewGuardBus(),
+		Session:  sess,
+		Tools:    tool.NewRegistry(),
+		HookBus:  hook.NewHookBus(),
+		GuardBus: hook.NewGuardBus(),
 	}
 	d := &ReActDriver{}
 	_, _, err := d.finalizeToolBatch(context.Background(), rt, sess, 1, 1, calls, &planner.Action{}, outs)

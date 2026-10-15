@@ -127,9 +127,9 @@ type Config struct {
 	// Persistence 会话事件日志后端（架构 v2 §10.3，backend 可换）。nil 时会话仅内存。
 	// 配置后 NewSession 自动挂载，事件同步落盘（日志即事实）。
 	Persistence session.Persistence
-	// Bus 事件总线（Agent 域事件广播：agent/created 等）。nil 时装配层创建默认 EventBus
-	// （修复 RunContext.Bus 始终为 nil 的旧缺陷，Notify 经此广播）。
-	Bus *event.EventBus
+	// EventBus 事件总线（Agent 域事件广播：agent/created 等）。nil 时装配层创建默认 EventBus
+	// （修复 RunContext.EventBus 始终为 nil 的旧缺陷，Notify 经此广播）。
+	EventBus *event.EventBus
 }
 
 // FileAccessConfig 描述文件工具的访问策略。

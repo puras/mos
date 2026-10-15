@@ -18,10 +18,10 @@ import (
 	"github.com/puras/mos/agent/hook"
 	"github.com/puras/mos/agent/session"
 	"github.com/puras/mos/agent/telemetry"
+	fs "github.com/puras/mos/filesystem"
 	"github.com/puras/mos/httpx"
 	"github.com/puras/mos/llm"
 	"github.com/puras/mos/tool"
-	fs "github.com/puras/mos/filesystem"
 )
 
 // ErrToolDenied 表示工具调用被单调守卫拒绝（非致命：结果反馈给模型继续）。
@@ -69,7 +69,7 @@ func ExecuteBatch(ctx context.Context, rt *driver.RunContext, sess *session.Sess
 
 	preflight := func(ctx context.Context, call *llm.ToolCall) (bool, error) {
 		ev := &hook.HookEvent{Kind: hook.HookToolPreExecute, ToolCall: call, Turn: turn, Step: step}
-		if err := rt.Guards.Allow(ctx, ev); err != nil {
+		if err := rt.GuardBus.Allow(ctx, ev); err != nil {
 			var s *approval.SuspendError
 			if errors.As(err, &s) {
 				batchSuspend = s
@@ -117,17 +117,17 @@ func ExecuteBatch(ctx context.Context, rt *driver.RunContext, sess *session.Sess
 // tool/execute（链尾调 Tools.Call）→ tool/post-execute（截断/审计）。
 func executeTool(ctx context.Context, rt *driver.RunContext, call *llm.ToolCall, turn, step int) (ToolOutcome, error) {
 	ev := &hook.HookEvent{Kind: hook.HookToolPreExecute, ToolCall: call, Turn: turn, Step: step}
-	ev, err := rt.Hooks.Waterfall(ctx, ev) // pre-execute（可改写/拒绝）
+	ev, err := rt.HookBus.Waterfall(ctx, ev) // pre-execute（可改写/拒绝）
 	if err != nil {
 		return ToolOutcome{Err: err}, nil
 	}
 	execEv := &hook.HookEvent{Kind: hook.HookToolExecute, ToolCall: ev.ToolCall, Turn: turn, Step: step}
-	execEv, err = rt.Hooks.Waterfall(ctx, execEv)
+	execEv, err = rt.HookBus.Waterfall(ctx, execEv)
 	if err != nil {
 		return ToolOutcome{Err: err}, nil
 	}
 	postEv := &hook.HookEvent{Kind: hook.HookToolPostExecute, ToolCall: ev.ToolCall, Result: execEv.Result, Err: execEv.Err, Turn: turn, Step: step}
-	postEv, err = rt.Hooks.Waterfall(ctx, postEv)
+	postEv, err = rt.HookBus.Waterfall(ctx, postEv)
 	if err != nil {
 		return ToolOutcome{Err: err}, nil
 	}
@@ -164,7 +164,7 @@ func ApplyOutcomes(ctx context.Context, rt *driver.RunContext, sess *session.Ses
 //   - rt.FS（fs.WithFileSystem）：内置文件工具（read_file / write_file / glob /
 //     grep）经 fs.FromContext(ctx) 取用；未注入即 *fs.NotConfiguredError（fail-closed）。
 //     注入点集中在此（三个驱动共用 execpath 通道），一处覆盖全部路径；
-//   - rt.Bus（fs.WithBus）：Sandboxed.Resolve 的 fs/resolve 审计事件出口；
+//   - rt.EventBus（fs.WithBus）：Sandboxed.Resolve 的 fs/resolve 审计事件出口；
 //   - rt.HTTPClient（httpx.WithClient）：联网工具（web_fetch / web_search）经
 //     httpx.FromContext(ctx) 取用；nil 不注入，兜底 httpx.Default（带超时）。
 func ExecuteHook(rt *driver.RunContext) hook.Hook {
@@ -178,8 +178,8 @@ func ExecuteHook(rt *driver.RunContext) hook.Hook {
 		if rt != nil && rt.FS != nil {
 			ctx = fs.WithFileSystem(ctx, rt.FS)
 		}
-		if rt != nil && rt.Bus != nil {
-			ctx = fs.WithBus(ctx, rt.Bus)
+		if rt != nil && rt.EventBus != nil {
+			ctx = fs.WithBus(ctx, rt.EventBus)
 		}
 		if rt != nil && rt.HTTPClient != nil {
 			ctx = httpx.WithClient(ctx, rt.HTTPClient)

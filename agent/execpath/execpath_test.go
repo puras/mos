@@ -28,11 +28,11 @@ func TestExecuteBatchBasic(t *testing.T) {
 	_ = reg.Register(stubTool{name: "t1"})
 	sess := session.NewSession("s")
 	rt := &driver.RunContext{Session: sess, Tools: reg}
-	rt.Hooks = hook.NewHookBus()
-	rt.Guards = hook.NewGuardBus()
+	rt.HookBus = hook.NewHookBus()
+	rt.GuardBus = hook.NewGuardBus()
 	rt.Truncator = agent.NewDefaultTruncator(agent.TruncatorConfig{})
-	rt.Hooks.On(hook.HookToolExecute, ExecuteHook(rt))
-	rt.Hooks.On(hook.HookToolPostExecute, TruncateHook(rt))
+	rt.HookBus.On(hook.HookToolExecute, ExecuteHook(rt))
+	rt.HookBus.On(hook.HookToolPostExecute, TruncateHook(rt))
 	calls := []llm.ToolCall{{ID: "c1", Name: "t1", Args: "{}"}}
 	outs, suspend := ExecuteBatch(context.Background(), rt, sess, 1, 1, calls)
 	if suspend != nil {
@@ -54,9 +54,9 @@ func TestExecuteBatchGuardDenies(t *testing.T) {
 	_ = reg.Register(stubTool{name: "t1"})
 	sess := session.NewSession("s")
 	rt := &driver.RunContext{Session: sess, Tools: reg}
-	rt.Hooks = hook.NewHookBus()
-	rt.Guards = hook.NewGuardBus()
-	rt.Guards.Add(func(_ context.Context, _ *hook.HookEvent) error {
+	rt.HookBus = hook.NewHookBus()
+	rt.GuardBus = hook.NewGuardBus()
+	rt.GuardBus.Add(func(_ context.Context, _ *hook.HookEvent) error {
 		return errors.New("denied by guard")
 	})
 	calls := []llm.ToolCall{{ID: "c1", Name: "t1", Args: "{}"}}

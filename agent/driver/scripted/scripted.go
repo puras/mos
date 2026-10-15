@@ -76,7 +76,7 @@ func (d *ScriptedDriver) Run(ctx context.Context, rt *driver.RunContext, input s
 		return "", errors.New("agent: scripted driver requires a ScriptPlanner")
 	}
 	// 裸实例惰性默认装配（Router 等场景直接构造 ScriptedDriver 时补齐）。
-	if rt.Hooks == nil || rt.Guards == nil {
+	if rt.HookBus == nil || rt.GuardBus == nil {
 		react.InstallDefaults(rt)
 	}
 	sess := rt.Session
@@ -200,7 +200,7 @@ func (d *ScriptedDriver) synthesize(ctx context.Context, rt *driver.RunContext, 
 	msgs = append(msgs, sess.Messages()...)
 
 	hev := &hook.HookEvent{Kind: hook.HookPreStep, Messages: msgs, Turn: synTurn, Step: 1}
-	hev, err := rt.Hooks.Waterfall(ctx, hev)
+	hev, err := rt.HookBus.Waterfall(ctx, hev)
 	if err != nil {
 		return "", fmt.Errorf("agent: pre-step hooks: %w", err)
 	}

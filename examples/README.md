@@ -7,6 +7,7 @@
 |---|---|---|
 | 智能体 CLI | `examples/cli` | `assistant.New` + `assistant.Assistant.Run` 一行装配（模型 + 工具 + 安全策略） |
 | 协议 CLI | `examples/protocli` | `llm.ChatModel` 统一协议抽象，不经 assistant / 工具层，OpenAI / Anthropic 双协议切换 |
+| 学习 CLI | `examples/agentcli` | 七站式教程：在 driver 层逐站装配 `agent/` 运行时（会话事件 → 循环 → 钩子守卫 → 上下文工程 → 审批恢复 → 装配治理），`-stage N` 站站并存，见 [agentcli/README.md](agentcli/README.md) |
 
 ## examples/cli：智能体 CLI
 

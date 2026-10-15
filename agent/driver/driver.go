@@ -17,12 +17,12 @@ import (
 	"github.com/puras/mos/agent/hook"
 	"github.com/puras/mos/agent/session"
 	"github.com/puras/mos/agent/telemetry"
+	fs "github.com/puras/mos/filesystem"
 	"github.com/puras/mos/llm"
 	"github.com/puras/mos/memory"
 	"github.com/puras/mos/planner"
 	"github.com/puras/mos/sandbox"
 	"github.com/puras/mos/tool"
-	fs "github.com/puras/mos/filesystem"
 )
 
 // Policy 是工具调用的安全策略检查点（Harness Engineering）。
@@ -47,8 +47,8 @@ type RunContext struct {
 	Tools        *tool.Registry
 	Planner      planner.Planner       // 决策器（默认 planner.NewReAct(model)，ReActDriver 内部使用）
 	Memory       memory.Memory         // 可选记忆后端（MVP 保留接口，接入见后续 Seam 迭代）
-	Runner       sandbox.Runner         // shell 命令执行隔离器（v2.24 从 tool.Sandbox 拆出，capability seam）
-	HTTPClient   *http.Client           // HTTP 客户端（capability seam，v2.24）：联网工具经 httpx.FromContext 取用；nil 时兜底 httpx.Default
+	Runner       sandbox.Runner        // shell 命令执行隔离器（v2.24 从 tool.Sandbox 拆出，capability seam）
+	HTTPClient   *http.Client          // HTTP 客户端（capability seam，v2.24）：联网工具经 httpx.FromContext 取用；nil 时兜底 httpx.Default
 	Policy       Policy                // 工具调用安全策略（注入 Guards，单调守卫）
 	Auditor      agent.Auditor         // 工具结果审计门（默认 NewDefaultAuditor）
 	Observer     agent.Observer        // 观测回调（emit 投影入口，API 不变）
@@ -79,9 +79,9 @@ type RunContext struct {
 	// （如人工叫停、成本控制）。
 	ShouldStopAfterTurn func(ctx context.Context, sess *session.Session, turn int, action *planner.Action) (bool, error)
 	Stream              bool            // 流式路径：模型文本增量经 EventStream 广播
-	Hooks               *hook.HookBus   // 瀑布钩子（可改写环节）
-	Guards              *hook.GuardBus  // 单调守卫（不可被改写绕过）
-	Bus                 *event.EventBus // 事件总线（emit 观测，可选）
+	HookBus             *hook.HookBus   // 瀑布钩子（可改写环节）
+	GuardBus            *hook.GuardBus  // 单调守卫（不可被改写绕过）
+	EventBus            *event.EventBus // 事件总线（emit 观测，可选）
 	// MaxToolParallel 是单轮批量工具调用的并发上限（架构 v2 §3.9；<=0 用默认 4）。
 	// 批量路径：preflight 串行决策 → 有界并发执行 → 结果按模型顺序回填。
 	MaxToolParallel int
@@ -172,8 +172,8 @@ func (rt *RunContext) Notify(ev agent.Event) {
 	if rt.Observer != nil {
 		rt.Observer(ev)
 	}
-	if rt.Bus != nil {
-		_ = rt.Bus.Emit(context.Background(), "observer/event", ev)
+	if rt.EventBus != nil {
+		_ = rt.EventBus.Emit(context.Background(), "observer/event", ev)
 	}
 }
 

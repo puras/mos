@@ -17,10 +17,10 @@ import (
 	"github.com/puras/mos/agent/event"
 	"github.com/puras/mos/agent/handle"
 	"github.com/puras/mos/agent/session"
+	fs "github.com/puras/mos/filesystem"
 	"github.com/puras/mos/llm"
 	"github.com/puras/mos/planner"
 	"github.com/puras/mos/tool"
-	fs "github.com/puras/mos/filesystem"
 )
 
 // Assistant 是组装好的智能体实例：模型对象 + 工具集 + 框架概念（策略/规划/审计/记忆）。
@@ -125,8 +125,8 @@ func New(model llm.ChatModel, tools []tool.Tool, cfg Config) (*Assistant, error)
 		p.Approval = cfg.Approval
 	}
 	// 修复 RunContext.Bus 始终为 nil 的旧缺陷：未显式注入时创建默认 EventBus。
-	if cfg.Bus == nil {
-		cfg.Bus = event.NewEventBus()
+	if cfg.EventBus == nil {
+		cfg.EventBus = event.NewEventBus()
 	}
 	// Auditor / Truncator / Compactor 由 react.New 默认装配（nil 时使用默认实现）。
 
@@ -143,10 +143,10 @@ func New(model llm.ChatModel, tools []tool.Tool, cfg Config) (*Assistant, error)
 		model:       model,
 		persistence: cfg.Persistence,
 		checkpoints: cfg.CheckpointStore,
-		bus:         cfg.Bus,
+		bus:         cfg.EventBus,
 		runContext:  rt,
 	}
-	a.registry = handle.NewRegistry(a.newAgentForSession, cfg.CheckpointStore, cfg.Bus)
+	a.registry = handle.NewRegistry(a.newAgentForSession, cfg.CheckpointStore, cfg.EventBus)
 	return a, nil
 }
 
@@ -174,7 +174,7 @@ func buildRunContext(model llm.ChatModel, reg *tool.Registry, cfg Config) *drive
 		ScriptPlanner:       cfg.ScriptPlanner,
 		Approval:            cfg.Approval,
 		Checkpoints:         cfg.CheckpointStore,
-		Bus:                 cfg.Bus,
+		EventBus:            cfg.EventBus,
 	}
 	// M2.6 系统提示词：显式组装器优先；配置了项目指令/技能目录时自动构建默认组装器；
 	// 否则回退到 SystemPrompt 静态引导（既有行为不变）。

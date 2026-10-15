@@ -3,6 +3,8 @@
 // （对齐 Cordis "registrations are reversible effects"）。
 package scope
 
+import "slices"
+
 import "sync"
 
 // Scope 是按注册逆序回滚的回收容器。典型用法：Agent 生命周期（AgentRegistry）
@@ -61,9 +63,9 @@ func (s *Scope) Close() {
 	s.disposers = nil
 	s.mu.Unlock()
 
-	for i := len(disposers) - 1; i >= 0; i-- {
-		if disposers[i] != nil {
-			disposers[i]()
+	for _, disposer := range slices.Backward(disposers) {
+		if disposer != nil {
+			disposer()
 		}
 	}
 }
