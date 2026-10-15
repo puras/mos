@@ -31,11 +31,15 @@
 | --- | --- | --- | --- |
 | `session` | 会话事件日志、消息投影、TaskState、JSONL 持久化 | 重写瘦身 | S1 |
 | `llm`（+`llm/transport`） | ChatModel 抽象、协议适配、共享 HTTP envelope | 移植归档 | S2 |
-| `tool` | schema 生成、Registry、builtin 最小集 | 移植裁剪 | S3 |
+| `tool`（+`tool/builtin`） | 工具接口、注册表、Schema 生成；`current_time` 起步 | 移植裁剪 | S3 ✅ |
 | `planner` + `driver` | Planner 接口 + ReAct 决策；LoopDriver + ReActDriver | planner 移植 / 驱动重写 | S4a ✅ |
 | `agent`（安全件）/ `hook` / `filesystem` / `sandbox` | Policy、GuardBus、文件 jail、进程隔离 | 移植裁剪 | S5 |
 | `agent`（上下文件） | 截断、压缩、Auditor | 重写瘦身 | S6 |
 | `assistant` | 一行装配 + 示例 CLI | 重写 | S7 |
+
+> S3 边界：`tool/builtin` 只带 `current_time`（无安全副作用）。涉及文件与命令执行的
+> 内置工具（read_file / write_file / find_files / grep / shell）等 S5 的 filesystem jail
+> 与 sandbox 就位后再加入——不先发一版无防护的实现、再返工加锁。
 
 ### 3.1 循环契约（S4a 定型，S4b 扩展）
 
