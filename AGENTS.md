@@ -3,6 +3,7 @@
 ## 硬性规则：MoGo 只读边界（禁止直接修改）
 
 - MoS 经 `go.mod` 的 `replace` 引用本地仓库 `hegq.net/mogo`（路径 `/Users/puras/workspace/proj/106hz/mogo`）。MoGo 是独立的 AI 能力中转站项目，**禁止直接修改 MoGo 仓库中的任何文件**（代码、配置、文档、`go.mod` 等一律不得改动）。
+  - 更新（2026-10-15）：协议层依赖现已迁移为 `github.com/puras/moproto`（本地 `/Users/puras/workspace/proj/hegq/moproto`）与 `github.com/puras/mog`（本地 `/Users/puras/workspace/proj/hegq/mog`）；本规则对两者同等生效，下文"MoGo"均按此理解。
 - 当 MoS 依赖的 MoGo API 发生变更（签名变化 / 行为调整 / 删除导出符号等）导致编译失败或行为不符时：
   - 在 **MoS 侧**做最小适配（如补齐调用参数、调整调用方式），不改变 MoGo 的实现；
   - 需要 MoGo 侧配合的改动，只能以 **PR 建议 / 问题描述**的形式提出，由 MoGo 维护者（puras）决策实施，绝不越界直接修改。
