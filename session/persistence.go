@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -138,8 +139,8 @@ func Restore(id string, p Persistence) (*Session, error) {
 // repairOrphanTurn 检查日志尾部是否有未配对的 turn/start：从尾部向前，
 // 先遇到 turn/end 说明最后一轮完整；先遇到 turn/start 说明孤儿。
 func (s *Session) repairOrphanTurn() bool {
-	for i := len(s.events) - 1; i >= 0; i-- {
-		switch s.events[i].Kind {
+	for _, v := range slices.Backward(s.events) {
+		switch v.Kind {
 		case EventTurnEnd:
 			return false
 		case EventTurnStart:
