@@ -1,6 +1,11 @@
 // Package session 提供会话事件日志：append-only 事件是唯一事实来源，
 // 消息历史由投影派生（不变式「日志即事实」）。
 //
+// 对话值类型（Message / ToolCall / Usage）直接采用 llm 包的定义——它们是
+// 全框架共享的对话词汇表（纯定义、零依赖），日志与协议同形可避免翻译边界
+// 丢字段（如 thinking 模式须回传的 ReasoningContent）。ToolResult 保留在本包：
+// 它是 tool/result 事件的审计载荷，IsError 为事件日志特有语义。
+//
 // 最小事件目录（预算制：新增一种事件前先删一种）：
 //
 //	turn/start  一轮开始
@@ -14,6 +19,8 @@ package session
 import (
 	"sync"
 	"time"
+
+	"github.com/puras/mos/llm"
 )
 
 // EventKind 是事件类型（见包注释目录）。
@@ -28,26 +35,12 @@ const (
 	EventToolResult EventKind = "tool/result"
 )
 
-// ToolCall 是一次工具调用（事件与消息共享同一形态，避免翻译边界丢失字段）。
-type ToolCall struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Args string `json:"args"` // JSON 对象文本
-}
-
-// ToolResult 是一次工具执行的回填。
+// ToolResult 是一次工具执行的回填（事件日志审计载荷；
+// IsError 记录显式失败——守卫拦截或工具报错，协议消息无此语义）。
 type ToolResult struct {
 	CallID  string `json:"callId"`
 	Content string `json:"content"`
 	IsError bool   `json:"isError,omitempty"`
-}
-
-// Usage 是一次模型调用的 token 用量（服务商报告的遥测，走观测通道，
-// 不属于审计意义上的"环境验证事实"——将来不进 TaskState.Facts）。
-type Usage struct {
-	PromptTokens     int `json:"promptTokens"`
-	CompletionTokens int `json:"completionTokens"`
-	TotalTokens      int `json:"totalTokens"`
 }
 
 // Event 是日志中的一条记录。Seq 由 Session.Append 统一分配，全局递增从 1 开始。
@@ -55,24 +48,16 @@ type Usage struct {
 // Usage（assistant，模型调用遥测）、ToolCall（tool/call）、
 // ToolResult（tool/result）、Reason（turn/end）。
 type Event struct {
-	Seq        int64       `json:"seq"`
-	Kind       EventKind   `json:"kind"`
-	Turn       int         `json:"turn,omitempty"`
-	Time       time.Time   `json:"time"`
-	Text       string      `json:"text,omitempty"`
-	ToolCalls  []ToolCall  `json:"toolCalls,omitempty"`
-	ToolCall   *ToolCall   `json:"toolCall,omitempty"`
-	ToolResult *ToolResult `json:"toolResult,omitempty"`
-	Usage      *Usage      `json:"usage,omitempty"`
-	Reason     string      `json:"reason,omitempty"`
-}
-
-// Message 是投影后的对话消息（协议形，S2 的 llm 层按此转换）。
-type Message struct {
-	Role       string     `json:"role"` // user / assistant / tool
-	Content    string     `json:"content,omitempty"`
-	ToolCalls  []ToolCall `json:"toolCalls,omitempty"`  // 仅 assistant
-	ToolCallID string     `json:"toolCallId,omitempty"` // 仅 tool
+	Seq        int64          `json:"seq"`
+	Kind       EventKind      `json:"kind"`
+	Turn       int            `json:"turn,omitempty"`
+	Time       time.Time      `json:"time"`
+	Text       string         `json:"text,omitempty"`
+	ToolCalls  []llm.ToolCall `json:"toolCalls,omitempty"`
+	ToolCall   *llm.ToolCall  `json:"toolCall,omitempty"`
+	ToolResult *ToolResult    `json:"toolResult,omitempty"`
+	Usage      *llm.Usage     `json:"usage,omitempty"`
+	Reason     string         `json:"reason,omitempty"`
 }
 
 // Session 是一个会话：append-only 事件日志 + 投影。
@@ -124,7 +109,7 @@ func (s *Session) Events() []Event {
 // Messages 将事件日志投影为对话消息（派生而非存储，可随时重算）：
 // user/assistant 事件原样成为消息；tool/result 成为 tool 消息；
 // tool/call 仅审计留痕，不投影（assistant 消息已携带 ToolCalls）。
-func (s *Session) Messages() []Message {
+func (s *Session) Messages() []llm.Message {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return project(s.events)
@@ -132,10 +117,11 @@ func (s *Session) Messages() []Message {
 
 // TotalUsage 折叠日志中所有 assistant 事件的模型调用用量（派生值，不存储：
 // Restore 重放后自动重建，Persistence 无需感知聚合逻辑）。
-func (s *Session) TotalUsage() Usage {
+// 仅累计三个主计数；Usage.Details 明细不折叠。
+func (s *Session) TotalUsage() llm.Usage {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var total Usage
+	var total llm.Usage
 	for _, ev := range s.events {
 		if ev.Usage != nil {
 			total.PromptTokens += ev.Usage.PromptTokens
@@ -146,18 +132,17 @@ func (s *Session) TotalUsage() Usage {
 	return total
 }
 
-func project(events []Event) []Message {
-	out := make([]Message, 0, len(events))
+func project(events []Event) []llm.Message {
+	out := make([]llm.Message, 0, len(events))
 	for _, ev := range events {
 		switch ev.Kind {
 		case EventUser:
-			out = append(out, Message{Role: "user", Content: ev.Text})
+			out = append(out, llm.Message{Role: llm.RoleUser, Content: ev.Text})
 		case EventAssistant:
-			m := Message{Role: "assistant", Content: ev.Text, ToolCalls: ev.ToolCalls}
-			out = append(out, m)
+			out = append(out, llm.Message{Role: llm.RoleAssistant, Content: ev.Text, ToolCalls: ev.ToolCalls})
 		case EventToolResult:
 			if r := ev.ToolResult; r != nil {
-				out = append(out, Message{Role: "tool", Content: r.Content, ToolCallID: r.CallID})
+				out = append(out, llm.Message{Role: llm.RoleTool, Content: r.Content, ToolCallID: r.CallID})
 			}
 		}
 	}

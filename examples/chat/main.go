@@ -85,11 +85,7 @@ func chatTurn(sess *session.Session, model llm.ChatModel, turn int, input string
 
 	assistant := session.Event{Kind: session.EventAssistant, Text: text, Turn: turn}
 	if usage.TotalTokens > 0 {
-		assistant.Usage = &session.Usage{
-			PromptTokens:     usage.PromptTokens,
-			CompletionTokens: usage.CompletionTokens,
-			TotalTokens:      usage.TotalTokens,
-		}
+		assistant.Usage = &usage // llm.Usage 同形直存
 	}
 	appendEvent(sess, assistant)
 	appendEvent(sess, session.Event{Kind: session.EventTurnEnd, Turn: turn, Reason: "completed"})
@@ -134,21 +130,15 @@ func stream(ctx context.Context, model llm.ChatModel, req *llm.Request) (string,
 	return text, resp.Usage, nil
 }
 
-// messagesFor 组装请求消息：可选系统引导 + 会话投影（user/assistant/tool）。
-// 多轮上下文随会话事件自然累积——这就是 S1 投影的用武之地。
+// messagesFor 组装请求消息：可选系统引导 + 会话投影。
+// 会话投影直接就是 []llm.Message——日志与协议同形，零转换；
+// 多轮上下文随会话事件自然累积，这就是 S1 投影的用武之地。
 func messagesFor(sess *session.Session) []llm.Message {
 	var msgs []llm.Message
 	if sys := os.Getenv("MOS_SYSTEM_PROMPT"); sys != "" {
 		msgs = append(msgs, llm.Message{Role: llm.RoleSystem, Content: sys})
 	}
-	for _, m := range sess.Messages() {
-		lm := llm.Message{Role: llm.Role(m.Role), Content: m.Content, ToolCallID: m.ToolCallID}
-		for _, c := range m.ToolCalls {
-			lm.ToolCalls = append(lm.ToolCalls, llm.ToolCall{ID: c.ID, Name: c.Name, Args: c.Args})
-		}
-		msgs = append(msgs, lm)
-	}
-	return msgs
+	return append(msgs, sess.Messages()...)
 }
 
 // mustModel 经协议注册表构建模型对象，并套一层重试装饰器（展示 llm/wrap 用法）。

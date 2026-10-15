@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/puras/mos/llm"
 )
 
 func mustAppend(t *testing.T, s *Session, ev Event) Event {
@@ -42,9 +44,9 @@ func TestProjection(t *testing.T) {
 	s := New("t2", nil)
 	mustAppend(t, s, Event{Kind: EventTurnStart, Turn: 1})
 	mustAppend(t, s, Event{Kind: EventUser, Text: "看下文件"})
-	mustAppend(t, s, Event{Kind: EventAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "read_file", Args: `{"path":"a.txt"}`}}})
+	mustAppend(t, s, Event{Kind: EventAssistant, ToolCalls: []llm.ToolCall{{ID: "c1", Name: "read_file", Args: `{"path":"a.txt"}`}}})
 	// tool/call 仅审计留痕，不投影
-	mustAppend(t, s, Event{Kind: EventToolCall, ToolCall: &ToolCall{ID: "c1", Name: "read_file"}})
+	mustAppend(t, s, Event{Kind: EventToolCall, ToolCall: &llm.ToolCall{ID: "c1", Name: "read_file"}})
 	mustAppend(t, s, Event{Kind: EventToolResult, ToolResult: &ToolResult{CallID: "c1", Content: "文件内容"}})
 	mustAppend(t, s, Event{Kind: EventAssistant, Text: "内容是……"})
 	mustAppend(t, s, Event{Kind: EventTurnEnd, Turn: 1, Reason: "completed"})
@@ -63,7 +65,7 @@ func TestProjection(t *testing.T) {
 		t.Fatalf("投影 %d 条消息, want %d（turn/* 与 tool/call 不投影）", len(msgs), len(want))
 	}
 	for i, w := range want {
-		if msgs[i].Role != w.role || msgs[i].Content != w.content {
+		if string(msgs[i].Role) != w.role || msgs[i].Content != w.content {
 			t.Fatalf("msgs[%d] = %s/%q, want %s/%q", i, msgs[i].Role, msgs[i].Content, w.role, w.content)
 		}
 	}
@@ -89,7 +91,7 @@ func TestJSONLRoundTrip(t *testing.T) {
 	s := New(id, jl)
 	mustAppend(t, s, Event{Kind: EventTurnStart, Turn: 1})
 	mustAppend(t, s, Event{Kind: EventUser, Text: "你好"})
-	mustAppend(t, s, Event{Kind: EventAssistant, Text: "嗨", Usage: &Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}})
+	mustAppend(t, s, Event{Kind: EventAssistant, Text: "嗨", Usage: &llm.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}})
 	mustAppend(t, s, Event{Kind: EventTurnEnd, Turn: 1, Reason: "completed"})
 
 	events, err := jl.Load(id)
@@ -232,9 +234,9 @@ func TestTotalUsageDerivedNotStored(t *testing.T) {
 	jl.SaveHeader(id, Header{ID: id})
 	s := New(id, jl)
 	mustAppend(t, s, Event{Kind: EventUser, Text: "q1"})
-	mustAppend(t, s, Event{Kind: EventAssistant, Text: "a1", Usage: &Usage{PromptTokens: 10, CompletionTokens: 4, TotalTokens: 14}})
+	mustAppend(t, s, Event{Kind: EventAssistant, Text: "a1", Usage: &llm.Usage{PromptTokens: 10, CompletionTokens: 4, TotalTokens: 14}})
 	mustAppend(t, s, Event{Kind: EventUser, Text: "q2"})
-	mustAppend(t, s, Event{Kind: EventAssistant, Text: "a2", Usage: &Usage{PromptTokens: 30, CompletionTokens: 6, TotalTokens: 36}})
+	mustAppend(t, s, Event{Kind: EventAssistant, Text: "a2", Usage: &llm.Usage{PromptTokens: 30, CompletionTokens: 6, TotalTokens: 36}})
 	// 无用量的事件不参与折叠
 	mustAppend(t, s, Event{Kind: EventAssistant, Text: "a3"})
 
@@ -248,7 +250,7 @@ func TestTotalUsageDerivedNotStored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
-	if rs.TotalUsage() != (Usage{PromptTokens: 40, CompletionTokens: 10, TotalTokens: 50}) {
+	if rs.TotalUsage() != (llm.Usage{PromptTokens: 40, CompletionTokens: 10, TotalTokens: 50}) {
 		t.Fatalf("恢复后 TotalUsage = %+v", rs.TotalUsage())
 	}
 }
