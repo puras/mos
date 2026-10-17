@@ -13,6 +13,7 @@ import (
 	"github.com/puras/mos/llm"
 	"github.com/puras/mos/planner"
 	"github.com/puras/mos/session"
+	"github.com/puras/mos/tool"
 )
 
 // LoopDriver 是循环驱动接口：一种循环类型 = 一个实现。
@@ -22,12 +23,16 @@ type LoopDriver interface {
 	Run(ctx context.Context, rt *RunContext, sess *session.Session, input string) (string, error)
 }
 
-// RunContext 是驱动共享的运行上下文（S4a 最小形态）。
+// RunContext 是驱动共享的运行上下文。
 // 只装「装配期决定、运行期只读」的东西；运行期变化的状态一律进会话日志。
 type RunContext struct {
 	// Planner 是决策器（必填）。为 nil 时驱动 fail-closed 拒绝运行——
 	// 缺能力就拒绝，不降级放行。
 	Planner planner.Planner
+	// Tools 是工具注册表（可选）。为 nil 时决策器收不到工具定义，
+	// 模型不会知道有工具可调；若仍返回了工具调用（幻觉），驱动
+	// fail-closed 报 ErrToolsUnsupported。
+	Tools *tool.Registry
 	// SystemPrompt 是静态系统引导词（可选，作为历史首条消息注入）。
 	SystemPrompt string
 	// Stream 为 true 时优先走决策器的流式接口（若实现），
@@ -46,8 +51,9 @@ func (rt *RunContext) validate() error {
 	return nil
 }
 
-// History 组装送给决策器的消息：静态系统引导（若有）+ 会话事件投影。
+// History 组装送给决策器的对话消息：静态系统引导（若有）+ 会话事件投影。
 // 投影由 session 派生，驱动不自行维护历史——「日志即事实」。
+// 工具定义不进 History，由驱动单独传入决策器（对话与能力本是两件事）。
 func (rt *RunContext) History(sess *session.Session) []llm.Message {
 	var msgs []llm.Message
 	if rt.SystemPrompt != "" {

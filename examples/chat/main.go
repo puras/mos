@@ -30,6 +30,8 @@ import (
 	"github.com/puras/mos/llm/openai"
 	"github.com/puras/mos/planner"
 	"github.com/puras/mos/session"
+	"github.com/puras/mos/tool"
+	"github.com/puras/mos/tool/builtin"
 )
 
 func main() {
@@ -42,16 +44,26 @@ func main() {
 	jl, sess := mustSession(*fresh)
 	defer jl.Close()
 
+	// 内置工具集：模型可调用的工具在此登记（未登记的工具不进 function calling 清单）
+	reg := tool.NewRegistry()
+	for _, tl := range builtin.Default() {
+		if err := reg.Register(tl); err != nil {
+			check(fmt.Errorf("注册工具 %q: %w", tl.Name(), err))
+		}
+	}
+
 	rt := &driver.RunContext{
 		Planner:      planner.NewReAct(model),
+		Tools:        reg,
 		SystemPrompt: os.Getenv("MOS_SYSTEM_PROMPT"),
 		Stream:       true,
 		OnChunk:      render,
 	}
-	a := driver.New(rt, react.New())
+	agent := driver.New(rt, react.New())
 
 	fmt.Printf("MoS chat 已就绪（provider=%s model=%s session=%s 已有 %d 条事件 / 累计 %d tokens）\n",
 		provider(), os.Getenv("MOS_MODEL"), sess.ID, len(sess.Events()), sess.TotalUsage().TotalTokens)
+	fmt.Printf("  可用工具: %s\n", strings.Join(reg.Names(), ", "))
 	fmt.Println("输入 q 退出。")
 
 	in := bufio.NewScanner(os.Stdin)
@@ -67,7 +79,7 @@ func main() {
 		if line == "q" || line == "quit" || line == "exit" {
 			break
 		}
-		reply, err := a.Run(context.Background(), sess, line)
+		reply, err := agent.Run(context.Background(), sess, line)
 		if err != nil {
 			fmt.Println()
 			fmt.Fprintf(os.Stderr, "运行失败: %v\n", err)

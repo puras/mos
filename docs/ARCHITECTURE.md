@@ -41,14 +41,17 @@
 > 内置工具（read_file / write_file / find_files / grep / shell）等 S5 的 filesystem jail
 > 与 sandbox 就位后再加入——不先发一版无防护的实现、再返工加锁。
 
-### 3.1 循环契约（S4a 定型，S4b 扩展）
+### 3.1 循环契约（S4a 定型，S4b 落地工具循环）
 
-一轮循环的事件序列固定为 `turn/start → user → [assistant → tool/call → tool/result]* → turn/end`：
+一个 turn 的事件序列固定为 `turn/start → user → (assistant → tool/call* → tool/result*)* → assistant → turn/end`：
 
-- **历史来源唯一**：`RunContext.History(sess)` = 静态系统引导 + 会话事件投影，驱动不自行维护 `[]Message`；
+- **历史来源唯一**：`RunContext.History(sess)` = 静态系统引导 + 会话事件投影，驱动不自行维护 `[]Message`；工具定义单独传决策器（对话与能力是两件事）；
 - **轮次序号派生**：`sess.NextTurn()` 取日志最大值 + 1，Restore 后自然接续；
-- **错误必收尾**：任何出错路径都以 `turn/end{reason:error}` 收尾，不留孤儿 turn；
-- **能力缺口 fail-closed**：S4a 驱动未接工具执行通道时，模型请求工具调用直接报错（`react.ErrToolsUnsupported`），S4b 接入后放开。
+- **投影合法性不变式**：assistant 的 `ToolCalls` 与随后的 `tool/result` 按 CallID 成对——否则投出的历史对服务商非法（缺 tool 消息会报错）；
+- **日志顺序**：`tool/call` 按模型顺序全部先落，执行后 `tool/result` 按序回填，Seq 连续可重放（为并发执行留形，S4b 目前串行）；
+- **错误分级**：工具报错（含模型幻觉出的未注册工具）是**结果**，以 `IsError` 回填给模型让它自我纠正，不中断 turn；只有落盘失败与决策失败才中断，且都以 `turn/end{reason:error}` 收尾，不留孤儿 turn；
+- **能力缺口 fail-closed**：未装 `RunContext.Tools` 却要求工具时直接报 `react.ErrToolsUnsupported`，且**不写 assistant 事件**（避免留下非法历史）；
+- **内层上限**：单 turn 决策上限 `maxDecisionRounds = 16`，防模型空转；S6 的 DoomLoopGuard 与 MaxTurns 落地后由其接管停止裁决，届时重议。
 
 ## 4. 治理规则（防再膨胀）
 

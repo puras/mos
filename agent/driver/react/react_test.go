@@ -12,20 +12,23 @@ import (
 	"github.com/puras/mos/session"
 )
 
-// scriptedPlanner 按预设序列返回 Action，可标记为流式。
+// scriptedPlanner 按预设序列返回 Action，可标记为流式；
+// 记录每次决策收到的历史与工具定义（供断言）。
 type scriptedPlanner struct {
-	acts   []planner.Action
-	i      int
-	seen   [][]llm.Message // 每次决策收到的历史
-	stream bool
+	acts      []planner.Action
+	i         int
+	seen      [][]llm.Message // 每次决策收到的历史
+	seenTools [][]llm.Tool    // 每次决策收到的工具定义
+	stream    bool
 }
 
-func (p *scriptedPlanner) NextAction(_ context.Context, history []llm.Message, _ []llm.Tool) (planner.Action, error) {
-	return p.act(history)
+func (p *scriptedPlanner) NextAction(_ context.Context, history []llm.Message, tools []llm.Tool) (planner.Action, error) {
+	return p.act(history, tools)
 }
 
-func (p *scriptedPlanner) act(history []llm.Message) (planner.Action, error) {
+func (p *scriptedPlanner) act(history []llm.Message, tools []llm.Tool) (planner.Action, error) {
 	p.seen = append(p.seen, history)
+	p.seenTools = append(p.seenTools, tools)
 	if p.i >= len(p.acts) {
 		return planner.Action{}, errors.New("剧本已耗尽")
 	}
@@ -34,8 +37,8 @@ func (p *scriptedPlanner) act(history []llm.Message) (planner.Action, error) {
 	return a, nil
 }
 
-func (p *scriptedPlanner) NextActionStream(_ context.Context, history []llm.Message, _ []llm.Tool, emit func(llm.StreamChunk) error) (planner.Action, error) {
-	a, err := p.act(history)
+func (p *scriptedPlanner) NextActionStream(_ context.Context, history []llm.Message, tools []llm.Tool, emit func(llm.StreamChunk) error) (planner.Action, error) {
+	a, err := p.act(history, tools)
 	if err != nil {
 		return a, err
 	}
