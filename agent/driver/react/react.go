@@ -12,11 +12,11 @@ package react
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 
 	"github.com/puras/mos/agent/driver"
+	"github.com/puras/mos/agent/execpath"
 	"github.com/puras/mos/llm"
 	"github.com/puras/mos/planner"
 	"github.com/puras/mos/session"
@@ -93,11 +93,12 @@ func (d *Driver) Run(ctx context.Context, rt *driver.RunContext, sess *session.S
 				return "", err
 			}
 		}
-		for _, call := range action.ToolCalls {
-			content, isErr := executeCall(ctx, rt, call)
+		// 执行统一走 execpath 通道（守卫 / 调度 / 回填顺序的全库唯一语义）；
+		// 驱动只负责把结果落成 tool/result 事件。
+		for _, oc := range execpath.ExecuteBatch(ctx, rt.Tools, action.ToolCalls) {
 			if _, err := sess.Append(session.Event{
 				Kind: session.EventToolResult, Turn: turn,
-				ToolResult: &session.ToolResult{CallID: call.ID, Content: content, IsError: isErr},
+				ToolResult: &session.ToolResult{CallID: oc.Call.ID, Content: oc.Content, IsError: oc.IsError},
 			}); err != nil {
 				return "", err
 			}
@@ -128,22 +129,6 @@ func appendAssistant(sess *session.Session, turn int, action planner.Action) err
 	}
 	_, err := sess.Append(ev)
 	return err
-}
-
-// executeCall 执行单个工具调用，把错误转为回填给模型的显式失败而不是中断循环：
-// 工具报错（含模型幻觉出的未注册工具名）属于「结果」而非「系统故障」，
-// 回填给模型让它自我纠正；真正中断 turn 的只有落盘失败与决策失败。
-func executeCall(ctx context.Context, rt *driver.RunContext, call llm.ToolCall) (content string, isErr bool) {
-	out, err := rt.Tools.Call(ctx, call.Name, json.RawMessage(call.Args))
-	if err != nil {
-		return err.Error(), true
-	}
-	b, err := json.Marshal(out)
-	if err != nil {
-		// 返回值不可序列化：退化为 Go 文本，仍属正常结果
-		return fmt.Sprintf("%v", out), false
-	}
-	return string(b), false
 }
 
 // decide 按 rt.Stream 选择流式或非流式决策路径，把工具定义一并交给决策器

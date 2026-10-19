@@ -14,7 +14,13 @@ MoS（取自 Sapient）是基于 Go 的智能体基础框架（Agent Base SDK）
 | S4a | 最小 ReAct 循环（planner.ReAct + LoopDriver，无工具）——首个聊天 Demo | ✅ |
 | S3 | 工具系统（schema 生成 + Registry + builtin 最小集） | ✅ |
 | S4b | ReAct 接入工具执行通道（工具调用执行 + 回填 + 投影合法性） | ✅ |
-| S5 | 安全层（Policy + GuardBus + filesystem jail） | ⬜ |
+| S5a | 执行通道骨架 `agent/execpath`（preflight 空 + 串行执行 + 按调用序回填） | ✅ |
+| S5b | 双轨制 `agent/hook`（HookBus waterfall + GuardBus 单调裁决） | ⬜ |
+| S5c | Policy 规则层（执行前拦截，注册为 Guard 一环） | ⬜ |
+| S5d | `filesystem` 文件 jail（Lexical + Realpath 双校验 + symlink TOCTOU 防护） | ⬜ |
+| S5e | 通道三阶段（守卫 preflight + 有界并发 + 审计回填） | ⬜ |
+| S5f | `sandbox` 进程隔离（jail + 超时 + 资源限制 + 环境裁剪 + 网络控制） | ⬜ |
+| S5g | 审批挂起（`agent/approval` + Checkpoint，守卫判定可挂起）——归属待定 | ⬜ |
 | S6 | 上下文工程（截断 + 压缩 + TaskState/Auditor） | ⬜ |
 | S7 | 装配层（`assistant.New` 一行装配 + 示例 CLI） | ⬜ |
 

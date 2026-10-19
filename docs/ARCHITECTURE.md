@@ -7,7 +7,7 @@
 ```text
 装配层    assistant        模型对象 + 工具集 + 运行配置注入，nil 用框架默认（S7）
 驱动层    LoopDriver       ReAct 起步；PlanExecute/Reflection/Scripted 按 PRD 逐个回填（S4a ✅）
-执行通道  execpath         Policy 守卫 → 批量并发执行 → 审计回填，各驱动共用（S5）
+执行通道  execpath         守卫裁决 → 调度执行 → 结果回填，各驱动共用（S5a 骨架 ✅ / S5e 补齐）
 基础设施  session/event/hook  事件日志会话 + 总线 + 钩子守卫（S1/S5）
 能力层    llm / tool / filesystem / sandbox   协议适配、工具、文件 jail、进程隔离（S2/S3/S5）
 协议层    moproto          外部本地库（只读，见 AGENTS.md）
@@ -33,7 +33,8 @@
 | `llm`（+`llm/transport`） | ChatModel 抽象、协议适配、共享 HTTP envelope | 移植归档 | S2 |
 | `tool`（+`tool/builtin`） | 工具接口、注册表、Schema 生成；`current_time` 起步 | 移植裁剪 | S3 ✅ |
 | `planner` + `driver` | Planner 接口 + ReAct 决策；LoopDriver + ReActDriver | planner 移植 / 驱动重写 | S4a ✅ |
-| `agent`（安全件）/ `hook` / `filesystem` / `sandbox` | Policy、GuardBus、文件 jail、进程隔离 | 移植裁剪 | S5 |
+| `agent/execpath` | 工具调用统一执行通道：preflight 裁决 + 调度 + 按调用序回填 | 重写 | S5a ✅ |
+| `agent/hook` + `agent`（安全件）/ `filesystem` / `sandbox` | HookBus/GuardBus 双轨制、Policy、文件 jail、进程隔离 | 移植裁剪 | S5b/S5c/S5d/S5f |
 | `agent`（上下文件） | 截断、压缩、Auditor | 重写瘦身 | S6 |
 | `assistant` | 一行装配 + 示例 CLI | 重写 | S7 |
 
@@ -52,6 +53,25 @@
 - **错误分级**：工具报错（含模型幻觉出的未注册工具）是**结果**，以 `IsError` 回填给模型让它自我纠正，不中断 turn；只有落盘失败与决策失败才中断，且都以 `turn/end{reason:error}` 收尾，不留孤儿 turn；
 - **能力缺口 fail-closed**：未装 `RunContext.Tools` 却要求工具时直接报 `react.ErrToolsUnsupported`，且**不写 assistant 事件**（避免留下非法历史）；
 - **内层上限**：单 turn 决策上限 `maxDecisionRounds = 16`，防模型空转；S6 的 DoomLoopGuard 与 MaxTurns 落地后由其接管停止裁决，届时重议。
+
+### 3.2 执行通道契约（S5a 骨架，S5e 补齐）
+
+工具执行的语义全库只在 `agent/execpath` 一处，驱动只负责投影与收尾：
+
+```text
+ExecuteBatch(ctx, reg, calls) []Outcome   // 结果与 calls 严格同序
+
+preflight（裁决）  S5a：空实现恒通过          S5b/S5e：GuardBus 串行裁决
+execute  （执行）  S5a：按调用序串行          S5e：有界并发，SequentialTool 批内串行
+finalize （回填）  调用方（驱动）落 tool/result 事件
+```
+
+- **语义中立于驱动**：不感知 ReAct / 未来的 PlanExecute、Scripted，也不感知 turn 编号与会话；它只回答「这批调用各得什么结果」。
+- **回填顺序 = 调用顺序**：结果按模型给定顺序排列而非完成顺序，并携带原 `CallID`，调用方靠它对回每个调用——并发化后此不变式尤其重要。
+- **错误即结果**：工具报错、参数非法、模型幻觉出的未注册工具名，全部转成 `Outcome{IsError: true}` 而非返回 error——那是「本次调用失败」不是「系统故障」，回填给模型让它自我纠正。中断 turn 的只有落盘失败与决策失败。
+- **fail-closed 兜底**：注册表为 nil 时整批判失败，不 panic（正常路径由驱动提前拦下，这里是防御性底线）。
+- **不落日志、不裁断、不重试**：日志语义属 `session` 与驱动，避免执行语义与日志语义纠缠。
+- **待定项（S5e）**：归档实现的 preflight 裁决**先于** `tool/call` 日志（挂起时不留痕），而 §3.1 现约定是「全部先落再执行」。两者不能同时成立，S5e 开工时二选一并同步改写 §3.1。
 
 ## 4. 治理规则（防再膨胀）
 
