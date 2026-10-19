@@ -1,7 +1,8 @@
-// MoS chat Demo（S4a）：驱动层 ReAct 循环 + 直连 LLM 多轮对话。
+// MoS chat Demo（S4b）：驱动层 ReAct 循环 + 直连 LLM 多轮对话。
 //
-// 装配：llm 协议注册表建模型 → planner.ReAct 决策器 → driver.RunContext
-// → react 驱动。每一轮对话的 turn/user/assistant/turn-end 事件落会话 JSONL，
+// 装配：llm 协议注册表建模型（套 WithRetry / WithLogging 装饰器）
+// → planner.ReAct 决策器 → driver.RunContext（含 tool.Registry）
+// → react 驱动。每一轮对话的 turn/user/assistant/tool/turn-end 事件落会话 JSONL，
 // 多轮上下文由事件投影累积，重启自动恢复续聊。
 //
 // 跑法：
@@ -20,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/puras/mos/agent/driver"
@@ -90,6 +92,7 @@ func main() {
 		if !rt.Stream {
 			fmt.Println(reply)
 		}
+		flushLine() // 模型回复未必以换行结尾，先收尾再打统计，避免两行黏在一起
 		u := sess.TotalUsage()
 		fmt.Printf("  [tokens] 会话累计 输入 %d / 输出 %d / 共 %d（第 %d 轮）\n",
 			u.PromptTokens, u.CompletionTokens, u.TotalTokens, sess.NextTurn()-1)
@@ -100,12 +103,29 @@ func main() {
 func render(delta string, reasoning bool) {
 	if reasoning {
 		fmt.Printf("\x1b[2m%s\x1b[0m", delta)
-		return
+	} else {
+		fmt.Print(delta)
 	}
-	fmt.Print(delta)
+	if delta != "" {
+		pendingLine.Store(true)
+	}
 }
 
-// mustModel 经协议注册表构建模型对象，套一层重试装饰器。
+// pendingLine 记录终端上是否还有没换行的半截输出（模型回复不以换行结尾）。
+// 随后的 token 统计与模型调用日志都靠 flushLine 另起一行，避免插进回复中间。
+var pendingLine atomic.Bool
+
+func flushLine() {
+	if pendingLine.Swap(false) {
+		fmt.Println()
+	}
+}
+
+// mustModel 经协议注册表构建模型对象，套「重试 + 调用日志」两层装饰器。
+//
+// 装饰器嵌套顺序即执行顺序（外层先进）：日志刻意套在重试之外——重试失败再试
+// 会各打一行，重试了几次、共耗时多久一目了然；若把日志放里面，只会看到最后
+// 一次成功，失败被静默吞掉。
 func mustModel() llm.ChatModel {
 	reg := llm.NewRegistry()
 	reg.Register("openai", openai.New)
@@ -125,7 +145,71 @@ func mustModel() llm.ChatModel {
 		"model":    os.Getenv("MOS_MODEL"),
 	})
 	check(err)
-	return llm.WithRetry(model, 2, time.Second)
+
+	var m llm.ChatModel = llm.WithRetry(model, 2, time.Second)
+	if logLLM() {
+		// 模型名等日志内容由闭包持有，装饰器只管「调用结束时回调一次」
+		name := os.Getenv("MOS_MODEL")
+		m = llm.WithLogging(m, func(r llm.CallResult) { logCall(name, r) })
+	}
+	return m
+}
+
+// logLLM 是模型调用观测日志的开关：默认开启，MOS_LOG_LLM=0 关闭。
+func logLLM() bool { return os.Getenv("MOS_LOG_LLM") != "0" }
+
+// llmCalls 是模型调用计数，仅用于给日志行编号，便于与会话事件对号入座。
+var llmCalls atomic.Int64
+
+// logCall 打印一次模型调用的观测行：模式 / 耗时 / 请求规模 / 停止原因 / token。
+//
+// 只观测不改写——要改写模型输入或拦下某次调用，属 S5 的 HookBus（可短路可改写），
+// 那是另一套机制。本 Demo 把日志写 stderr：stdout 是流式渲染的地盘。
+func logCall(model string, r llm.CallResult) {
+	flushLine()
+	mode := "chat  "
+	if r.Stream {
+		mode = "stream"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "[llm #%d] %s %6.2fs model=%s", llmCalls.Add(1), mode, r.Elapsed.Seconds(), model)
+	if r.Req != nil {
+		fmt.Fprintf(&b, " msgs=%d", len(r.Req.Messages))
+		if n := len(r.Req.Tools); n > 0 {
+			fmt.Fprintf(&b, " tools=%d", n)
+		}
+	}
+	switch {
+	case r.Err != nil:
+		fmt.Fprintf(&b, " 错误=%v", r.Err)
+	case r.Resp == nil:
+		b.WriteString(" 空响应")
+	default:
+		finish := r.Resp.FinishReason
+		if finish == "" {
+			finish = "-"
+		}
+		u := r.Resp.Usage
+		fmt.Fprintf(&b, " finish=%s tokens=%d/%d/%d",
+			finish, u.PromptTokens, u.CompletionTokens, u.TotalTokens)
+		// 缓存命中与推理 token：非零才打印，避免噪声
+		if d := u.Details; d.Input.CacheRead > 0 || d.Input.CacheWrite > 0 || d.Output.Reasoning > 0 {
+			if d.Input.CacheRead > 0 || d.Input.CacheWrite > 0 {
+				fmt.Fprintf(&b, " cache=%d/%d", d.Input.CacheRead, d.Input.CacheWrite)
+			}
+			if d.Output.Reasoning > 0 {
+				fmt.Fprintf(&b, " reasoning=%d", d.Output.Reasoning)
+			}
+		}
+		if calls := r.Resp.Message.ToolCalls; len(calls) > 0 {
+			names := make([]string, 0, len(calls))
+			for _, c := range calls {
+				names = append(names, c.Name)
+			}
+			fmt.Fprintf(&b, " → 请求调用 %s", strings.Join(names, ", "))
+		}
+	}
+	fmt.Fprintln(os.Stderr, b.String())
 }
 
 // mustSession 打开或恢复会话（JSONL 落 data/；中断的 turn 由 Restore 合成收尾）。
