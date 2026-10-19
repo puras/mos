@@ -1,0 +1,15 @@
+# MoS chat 示例的策略配置（S5c 示范）。
+#
+# 语义是 fail-closed 的：只列出 allow 的工具可用，其余一律拒绝。
+# deny 优先于 allow，且不提供任何放行后门。
+#
+# 跑法：go run . -new -policy policy.yaml
+#
+# 注意：示例把 current_time 也列进了 deny，只是为了演示拦截效果——
+# 真实平台不会禁用自己的核心工具。删掉那两行即可恢复。
+
+allow:
+  - current_time
+
+deny:
+  - current_time

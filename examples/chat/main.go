@@ -27,6 +27,7 @@ import (
 	"github.com/puras/mos/agent/driver"
 	"github.com/puras/mos/agent/driver/react"
 	"github.com/puras/mos/agent/hook"
+	"github.com/puras/mos/agent/policy"
 	"github.com/puras/mos/llm"
 	"github.com/puras/mos/llm/anthropic"
 	"github.com/puras/mos/llm/gemini"
@@ -39,7 +40,8 @@ import (
 
 func main() {
 	fresh := flag.Bool("new", false, "从全新会话开始（默认恢复上次会话）")
-	denyFlag := flag.String("deny", "", "禁用指定工具（逗号分隔），演示守卫拦截")
+	denyFlag := flag.String("deny", "", "禁用指定工具（逗号分隔），演示策略拦截")
+	policyFlag := flag.String("policy", "", "策略配置文件（YAML），给出后忽略 -deny")
 	flag.Parse()
 
 	loadDotEnv(".env")
@@ -56,8 +58,15 @@ func main() {
 		}
 	}
 
-	// 单调守卫：可改写环节走钩子，安全约束走守卫，两者不可互相绕过
-	guards := mustGuards(denyList(*denyFlag, os.Getenv("MOS_DENY_TOOLS")))
+	// 单调守卫：可改写环节走钩子，安全约束走守卫，两者不可互相绕过。
+	// 策略默认放行本示例已注册的内置工具，再叠加 -deny 拒绝名单。
+	policyPath := *policyFlag
+	if policyPath == "" {
+		policyPath = os.Getenv("MOS_POLICY")
+	}
+	deny := list(*denyFlag + "," + os.Getenv("MOS_DENY_TOOLS"))
+	cfg := policyConfig(policyPath, reg.Names(), deny)
+	guards := mustGuards(cfg)
 
 	rt := &driver.RunContext{
 		Planner:      planner.NewReAct(model),
@@ -72,11 +81,15 @@ func main() {
 	fmt.Printf("MoS chat 已就绪（provider=%s model=%s session=%s 已有 %d 条事件 / 累计 %d tokens）\n",
 		provider(), os.Getenv("MOS_MODEL"), sess.ID, len(sess.Events()), sess.TotalUsage().TotalTokens)
 	fmt.Printf("  可用工具: %s\n", strings.Join(reg.Names(), ", "))
-	if len(denyList(*denyFlag, os.Getenv("MOS_DENY_TOOLS"))) == 0 {
-		fmt.Println("  守卫: 未装配（nil 总线 = 零开销降级，全部放行）")
+	if guards == nil {
+		fmt.Println("  策略: 未装配（nil 总线 = 零开销降级，全部放行）")
 	} else {
-		fmt.Printf("  守卫: 已禁用 %s（请求这些工具将被拒绝且不执行）\n",
-			strings.Join(denyList(*denyFlag, os.Getenv("MOS_DENY_TOOLS")), ", "))
+		src := "默认（放行已注册工具）+ -deny"
+		if policyPath != "" {
+			src = "文件 " + policyPath
+		}
+		fmt.Printf("  策略[%s]: 放行 [%s] 拒绝 [%s]（未列名的工具一律拒绝）\n",
+			src, strings.Join(cfg.Allow, ", "), strings.Join(cfg.Deny, "（空）"))
 	}
 	fmt.Println("输入 q 退出。")
 
@@ -167,44 +180,53 @@ func mustModel() llm.ChatModel {
 	return m
 }
 
-// mustGuards 构建单调守卫总线：命中名单的工具一律拒绝（S5b 的验收路径）。
+// mustGuards 构建单调守卫链：安全策略（Policy）作为第一道关卡。
 //
-// 为空时返回 nil——nil 总线的 Allow 直接放行，零开销降级，不装守卫的用户
-// 不付任何代价。拒绝是「结果」不是「故障」：工具不执行，拒绝理由经
+// cfg 为空时返回 nil——nil 总线的 Allow 直接放行，零开销降级，不装守卫的
+// 用户不付任何代价。拒绝是「结果」不是「故障」：工具不执行，拒绝理由经
 // tool/result 回填给模型，让它自行纠正。
 //
-// 守卫函数里直接打终端只为演示可见性（GuardBus 尚无观测通道）；S5c 的
-// Policy 会把日志正规化。
-func mustGuards(deny []string) *hook.GuardBus {
-	if len(deny) == 0 {
+// 这里在 Policy 外包一层只为演示可见性（打印被拒的工具名与轮次）——裁决
+// 本身全部委托 Policy.Check，示例不自己重写规则。GuardBus 尚无观测通道，
+// 正经日志是 S5c 之后的事。
+func mustGuards(cfg policy.Config) *hook.GuardBus {
+	if len(cfg.Allow) == 0 && len(cfg.Deny) == 0 {
 		return nil
 	}
+	p := policy.New(cfg)
 	gb := hook.NewGuardBus()
-	gb.Add(func(_ context.Context, ev *hook.HookEvent) error {
-		for _, name := range deny {
-			if ev.ToolCall.Name != name {
-				continue
-			}
-			fmt.Fprintf(os.Stderr, "[guard] 第 %d 轮：拒绝调用 %s——工具不会执行\n", ev.Turn, name)
-			return fmt.Errorf("工具 %q 已被策略禁用（demo 守卫）", name)
+	gb.Add(func(ctx context.Context, ev *hook.HookEvent) error {
+		err := p.Check(ctx, ev)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[guard] 第 %d 轮：拒绝 %s——工具不会执行（%v）\n",
+				ev.Turn, ev.ToolCall.Name, err)
 		}
-		return nil
+		return err
 	})
 	return gb
 }
 
-// denyList 合并命令行与 .env 的禁用名单（逗号分隔），去重且保序。
-func denyList(flagVal, envVal string) []string {
+// policyConfig 决定生效的策略：
+//   - 指定 -policy 文件：完全以该 YAML 为准（平台纯配置装配，G3）；
+//   - 否则：默认放行本示例已注册的内置工具，再叠加 -deny / MOS_DENY_TOOLS 的拒绝名单。
+//
+// 注意策略本身是 fail-closed 的（未列入 allow 即拒绝）——示例默认放行全部
+// 内置工具只是因为它是 Demo，真平台必须显式声明。
+func policyConfig(policyPath string, allow, deny []string) policy.Config {
+	if policyPath != "" {
+		cfg, err := policy.LoadFile(policyPath)
+		check(err)
+		return cfg
+	}
+	return policy.Config{Allow: allow, Deny: deny}
+}
+
+// list 按逗号切分并去空白（命令行与 .env 共用）。
+func list(csv string) []string {
 	var out []string
-	seen := map[string]bool{}
-	for _, src := range []string{flagVal, envVal} {
-		for _, name := range strings.Split(src, ",") {
-			name = strings.TrimSpace(name)
-			if name == "" || seen[name] {
-				continue
-			}
-			seen[name] = true
-			out = append(out, name)
+	for _, s := range strings.Split(csv, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
 		}
 	}
 	return out
