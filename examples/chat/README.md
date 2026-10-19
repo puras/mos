@@ -20,6 +20,40 @@ go run .
 
 `go run . -new` 开新会话；输入 `q` 退出。
 
+## 验证守卫拦截（S5b）
+
+守卫的判定是**真在跑**的，不是装饰：命中名单的工具不执行，拒绝理由回填给模型。
+
+```bash
+go run . -new -deny current_time     # 把内置工具禁掉
+```
+
+启动横幅会打印 `守卫: 已禁用 current_time`。问一句「现在几点？」，观察到：
+
+```text
+你 > 现在几点？
+[guard] 第 1 轮：拒绝调用 current_time——工具不会执行      ← 守卫命中（stderr）
+[llm #2] stream  0.84s ... finish=tool_calls → 请求调用 current_time
+[llm #3] stream  1.20s ... finish=stop ...                 ← 模型读到拒绝理由，改用自己的知识作答
+```
+
+对照实验：不带 `-deny` 再问一次，工具会真的执行，`tool/result` 内容是
+`{"iso8601":"2026-10-19T17:14:47+08:00",...}`。
+
+会话日志 `data/chat-*.jsonl` 是唯一事实来源，可直接翻证据：
+
+```bash
+grep tool/result data/chat-*.jsonl | tail -1
+# 正常：{"kind":"tool/result","toolResult":{"callId":"c1","content":"{\"iso8601\":...}"}}
+# 被拒：{"kind":"tool/result","toolResult":{"callId":"c1","content":"工具调用被安全策略拒绝: ...","isError":true}}
+```
+
+要点：
+
+- 被拒的调用**仍有 `tool/call` 审计留痕**，只是 `tool/result` 带 `isError`——审计优先；
+- 拒绝不中断 turn，模型下一轮看得见理由并自我纠正；
+- `-deny` 也可写进 `.env` 的 `MOS_DENY_TOOLS=current_time,shell`；不配时 `Guards` 为 nil，走零开销降级（全部放行）。
+
 > 工具执行错误（含模型幻觉出的未注册工具名）不中断任务，以显式失败回填给模型
 > 让它自行纠正；`RunContext.Tools` 未装配却要求工具时驱动 fail-closed 报错。
 > 内置工具目前只有 `current_time`——文件与 shell 类工具等 S5 的 jail 就位后再加入。
@@ -31,5 +65,6 @@ go run .
 | 统一模型抽象 + 协议注册表 + 装饰器（Retry / Logging） | `llm`、`llm/openai`、`llm/anthropic`、`llm/gemini` |
 | 循环驱动接口与运行上下文 | `agent/driver`、`agent/driver/react` |
 | 决策器（ReAct） | `planner` |
-| 工具接口 / 注册表 / Schema 生成 | `tool`、`tool/builtin` |
+- 工具接口 / 注册表 / Schema 生成 | `tool`、`tool/builtin` |
+| 单调守卫（安全约束） | `agent/hook`、`agent/execpath` |
 | 会话事件日志 / 消息投影 / 持久化 / Restore | `session` |

@@ -26,6 +26,7 @@ import (
 
 	"github.com/puras/mos/agent/driver"
 	"github.com/puras/mos/agent/driver/react"
+	"github.com/puras/mos/agent/hook"
 	"github.com/puras/mos/llm"
 	"github.com/puras/mos/llm/anthropic"
 	"github.com/puras/mos/llm/gemini"
@@ -38,6 +39,7 @@ import (
 
 func main() {
 	fresh := flag.Bool("new", false, "从全新会话开始（默认恢复上次会话）")
+	denyFlag := flag.String("deny", "", "禁用指定工具（逗号分隔），演示守卫拦截")
 	flag.Parse()
 
 	loadDotEnv(".env")
@@ -54,9 +56,13 @@ func main() {
 		}
 	}
 
+	// 单调守卫：可改写环节走钩子，安全约束走守卫，两者不可互相绕过
+	guards := mustGuards(denyList(*denyFlag, os.Getenv("MOS_DENY_TOOLS")))
+
 	rt := &driver.RunContext{
 		Planner:      planner.NewReAct(model),
 		Tools:        reg,
+		Guards:       guards,
 		SystemPrompt: os.Getenv("MOS_SYSTEM_PROMPT"),
 		Stream:       true,
 		OnChunk:      render,
@@ -66,6 +72,12 @@ func main() {
 	fmt.Printf("MoS chat 已就绪（provider=%s model=%s session=%s 已有 %d 条事件 / 累计 %d tokens）\n",
 		provider(), os.Getenv("MOS_MODEL"), sess.ID, len(sess.Events()), sess.TotalUsage().TotalTokens)
 	fmt.Printf("  可用工具: %s\n", strings.Join(reg.Names(), ", "))
+	if len(denyList(*denyFlag, os.Getenv("MOS_DENY_TOOLS"))) == 0 {
+		fmt.Println("  守卫: 未装配（nil 总线 = 零开销降级，全部放行）")
+	} else {
+		fmt.Printf("  守卫: 已禁用 %s（请求这些工具将被拒绝且不执行）\n",
+			strings.Join(denyList(*denyFlag, os.Getenv("MOS_DENY_TOOLS")), ", "))
+	}
 	fmt.Println("输入 q 退出。")
 
 	in := bufio.NewScanner(os.Stdin)
@@ -153,6 +165,49 @@ func mustModel() llm.ChatModel {
 		m = llm.WithLogging(m, func(r llm.CallResult) { logCall(name, r) })
 	}
 	return m
+}
+
+// mustGuards 构建单调守卫总线：命中名单的工具一律拒绝（S5b 的验收路径）。
+//
+// 为空时返回 nil——nil 总线的 Allow 直接放行，零开销降级，不装守卫的用户
+// 不付任何代价。拒绝是「结果」不是「故障」：工具不执行，拒绝理由经
+// tool/result 回填给模型，让它自行纠正。
+//
+// 守卫函数里直接打终端只为演示可见性（GuardBus 尚无观测通道）；S5c 的
+// Policy 会把日志正规化。
+func mustGuards(deny []string) *hook.GuardBus {
+	if len(deny) == 0 {
+		return nil
+	}
+	gb := hook.NewGuardBus()
+	gb.Add(func(_ context.Context, ev *hook.HookEvent) error {
+		for _, name := range deny {
+			if ev.ToolCall.Name != name {
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "[guard] 第 %d 轮：拒绝调用 %s——工具不会执行\n", ev.Turn, name)
+			return fmt.Errorf("工具 %q 已被策略禁用（demo 守卫）", name)
+		}
+		return nil
+	})
+	return gb
+}
+
+// denyList 合并命令行与 .env 的禁用名单（逗号分隔），去重且保序。
+func denyList(flagVal, envVal string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, src := range []string{flagVal, envVal} {
+		for _, name := range strings.Split(src, ",") {
+			name = strings.TrimSpace(name)
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // logLLM 是模型调用观测日志的开关：默认开启，MOS_LOG_LLM=0 关闭。
