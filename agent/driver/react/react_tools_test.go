@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/puras/mos/agent/driver"
+	"github.com/puras/mos/agent/hook"
 	"github.com/puras/mos/llm"
 	"github.com/puras/mos/planner"
 	"github.com/puras/mos/session"
@@ -305,5 +306,67 @@ func TestTwoTurnsWithTools(t *testing.T) {
 	}
 	if ends != starts {
 		t.Fatal("每个 turn/start 必须有配对的 turn/end")
+	}
+}
+
+// 端到端：装配 GuardBus 后，被拒的工具不执行，但事件序列与历史合法性不受影响——
+// tool/call 照常留痕（审计：被拦截也要留痕），tool/result 回填拒绝理由，
+// 模型下一轮看得见被拒原因并可自我纠正。
+func TestGuardDeniesThroughDriver(t *testing.T) {
+	denied := &fakeTool{name: "danger"}
+	sess := session.New("t", nil)
+	p := &scriptedPlanner{acts: []planner.Action{
+		toolCallAction("danger"),
+		answer("知道了，不调它"),
+	}}
+	guards := hook.NewGuardBus()
+	guards.Add(func(_ context.Context, ev *hook.HookEvent) error {
+		if ev.ToolCall.Name == "danger" {
+			return errors.New("危险工具已禁用")
+		}
+		return nil
+	})
+	d := driver.New(&driver.RunContext{
+		Planner: p,
+		Tools:   registryOf(t, denied),
+		Guards:  guards,
+	}, New())
+
+	reply, err := d.Run(context.Background(), sess, "去调用它")
+	if err != nil {
+		t.Fatalf("拒绝不应中断 turn: %v", err)
+	}
+	if reply != "知道了，不调它" {
+		t.Fatalf("reply = %q", reply)
+	}
+	if denied.calls != 0 {
+		t.Fatalf("被拒工具不应被执行, got %d", denied.calls)
+	}
+
+	// 事件序列与无守卫时完全一致——拒绝只改结果内容，不改日志形状
+	evs := sess.Events()
+	if got := kinds(evs); got != "turn/start,user,assistant,tool/call,tool/result,assistant,turn/end" {
+		t.Fatalf("事件序列 = %s", got)
+	}
+	if evs[3].ToolCall == nil || evs[3].ToolCall.Name != "danger" {
+		t.Fatalf("被拒调用仍应有 tool/call 审计留痕: %+v", evs[3])
+	}
+	res := evs[4].ToolResult
+	if res == nil || !res.IsError || !strings.Contains(res.Content, "危险工具已禁用") {
+		t.Fatalf("应回填拒绝理由: %+v", res)
+	}
+	if res.CallID != "c1" {
+		t.Fatalf("CallID = %q（结果须对回原调用）", res.CallID)
+	}
+	// 历史仍合法：assistant.tool_calls 与 tool 消息按 CallID 成对
+	msgs := sess.Messages()
+	if len(msgs) != 4 {
+		t.Fatalf("投影历史 = %+v", msgs)
+	}
+	if len(msgs[1].ToolCalls) != 1 || msgs[1].Role != llm.RoleAssistant {
+		t.Fatalf("投影缺 assistant.tool_calls: %+v", msgs[1])
+	}
+	if msgs[2].Role != llm.RoleTool || msgs[2].ToolCallID != "c1" {
+		t.Fatalf("投影缺配对的 tool 消息: %+v", msgs[2])
 	}
 }

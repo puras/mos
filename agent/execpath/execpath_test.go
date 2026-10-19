@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/puras/mos/agent/hook"
 	"github.com/puras/mos/llm"
 	"github.com/puras/mos/tool"
 )
@@ -57,7 +58,7 @@ func TestOutcomesFollowCallOrder(t *testing.T) {
 	got := ExecuteBatch(context.Background(), reg, []llm.ToolCall{
 		call("c1", "alpha", `{"a":1}`),
 		call("c2", "beta", `{"b":2}`),
-	})
+	}, Options{})
 
 	if len(got) != 2 {
 		t.Fatalf("结果数 = %d, want 2", len(got))
@@ -85,7 +86,7 @@ func TestExecutionIsSerial(t *testing.T) {
 	reg := registryOf(recordTool{name: "a", order: &order}, recordTool{name: "b", order: &order})
 	ExecuteBatch(context.Background(), reg, []llm.ToolCall{
 		call("c1", "a", `{}`), call("c2", "b", `{}`), call("c3", "a", `{}`),
-	})
+	}, Options{})
 	if strings.Join(order, ",") != "a,b,a" {
 		t.Fatalf("执行顺序 = %v", order)
 	}
@@ -108,7 +109,7 @@ func (r recordTool) Execute(_ context.Context, _ json.RawMessage) (any, error) {
 func TestToolErrorBecomesOutcome(t *testing.T) {
 	boom := errors.New("磁盘写入失败")
 	reg := registryOf(&stubTool{name: "flaky", err: boom})
-	got := ExecuteBatch(context.Background(), reg, []llm.ToolCall{call("c1", "flaky", `{}`)})
+	got := ExecuteBatch(context.Background(), reg, []llm.ToolCall{call("c1", "flaky", `{}`)}, Options{})
 
 	if len(got) != 1 || !got[0].IsError || got[0].Content != boom.Error() {
 		t.Fatalf("工具报错应以 IsError 回填: %+v", got)
@@ -120,7 +121,7 @@ func TestUnknownToolBecomesOutcome(t *testing.T) {
 	real := &stubTool{name: "real"}
 	got := ExecuteBatch(context.Background(), registryOf(real), []llm.ToolCall{
 		call("c1", "ghost", `{}`), call("c2", "real", `{}`),
-	})
+	}, Options{})
 	if !got[0].IsError || !strings.Contains(got[0].Content, "ghost") {
 		t.Fatalf("未注册工具应判失败并点名: %+v", got[0])
 	}
@@ -132,7 +133,7 @@ func TestUnknownToolBecomesOutcome(t *testing.T) {
 // 参数非法同样落在结果里（模型自造参数是常态，不是系统故障）。
 func TestBadArgsBecomeOutcome(t *testing.T) {
 	reg := registryOf(&stubTool{name: "p"})
-	got := ExecuteBatch(context.Background(), reg, []llm.ToolCall{call("c1", "p", `{"broken`)})
+	got := ExecuteBatch(context.Background(), reg, []llm.ToolCall{call("c1", "p", `{"broken`)}, Options{})
 	if len(got) != 1 {
 		t.Fatalf("结果数 = %d", len(got))
 	}
@@ -145,7 +146,7 @@ func TestBadArgsBecomeOutcome(t *testing.T) {
 func TestUnserializableResultDegrades(t *testing.T) {
 	// NaN 是 JSON 不支持的值（json.Marshal 报错），但 %v 渲染稳定
 	reg := registryOf(&stubTool{name: "nan", ret: math.NaN()})
-	got := ExecuteBatch(context.Background(), reg, []llm.ToolCall{call("c1", "nan", `{}`)})
+	got := ExecuteBatch(context.Background(), reg, []llm.ToolCall{call("c1", "nan", `{}`)}, Options{})
 	if got[0].IsError {
 		t.Fatalf("不可序列化不等于失败: %+v", got[0])
 	}
@@ -156,7 +157,7 @@ func TestUnserializableResultDegrades(t *testing.T) {
 
 // 注册表为 nil 时全部判失败：fail-closed 兜底，不 panic。
 func TestNilRegistryFailsClosed(t *testing.T) {
-	got := ExecuteBatch(context.Background(), nil, []llm.ToolCall{call("c1", "x", `{}`)})
+	got := ExecuteBatch(context.Background(), nil, []llm.ToolCall{call("c1", "x", `{}`)}, Options{})
 	if len(got) != 1 || !got[0].IsError {
 		t.Fatalf("nil 注册表应判失败: %+v", got)
 	}
@@ -164,7 +165,79 @@ func TestNilRegistryFailsClosed(t *testing.T) {
 
 // 空批次（模型这一轮没要工具）不应 panic，返回空结果。
 func TestEmptyBatch(t *testing.T) {
-	if got := ExecuteBatch(context.Background(), registryOf(), nil); len(got) != 0 {
+	if got := ExecuteBatch(context.Background(), registryOf(), nil, Options{}); len(got) != 0 {
 		t.Fatalf("空批次 = %+v", got)
+	}
+}
+
+// denyGuard 返回一个只放行白名单内工具的守卫（Policy 的最小形状）。
+func denyGuard(allowed ...string) *hook.GuardBus {
+	gb := hook.NewGuardBus()
+	gb.Add(func(_ context.Context, ev *hook.HookEvent) error {
+		for _, a := range allowed {
+			if ev.ToolCall.Name == a {
+				return nil
+			}
+		}
+		return errors.New("不在白名单: " + ev.ToolCall.Name)
+	})
+	return gb
+}
+
+// 守卫拒绝的工具**不执行**，以拒绝理由回填；同批其他调用照常执行。
+func TestGuardDenialSkipsExecution(t *testing.T) {
+	danger := &stubTool{name: "danger"}
+	safe := &stubTool{name: "safe"}
+	reg := registryOf(danger, safe)
+
+	got := ExecuteBatch(context.Background(), reg, []llm.ToolCall{
+		call("c1", "danger", `{}`), call("c2", "safe", `{}`),
+	}, Options{Guards: denyGuard("safe"), Turn: 3})
+
+	if got[0].Call.ID != "c1" || !got[0].IsError {
+		t.Fatalf("被拒调用应判失败且对回原 CallID: %+v", got[0])
+	}
+	if !strings.Contains(got[0].Content, "安全策略拒绝") || !strings.Contains(got[0].Content, "不在白名单") {
+		t.Fatalf("回填应含拒绝理由: %q", got[0].Content)
+	}
+	if danger.args != nil {
+		t.Fatal("被拒的工具不应被执行（守卫必须先于执行）")
+	}
+	if got[1].IsError || safe.args == nil {
+		t.Fatalf("同批放行的调用应正常执行: %+v", got[1])
+	}
+}
+
+// 守卫拿到的是原始载荷与轮次（turn 用于跨轮判定，如 S6 的重复调用检测）。
+func TestGuardSeesCallAndTurn(t *testing.T) {
+	gb := hook.NewGuardBus()
+	var seen []hook.HookEvent
+	gb.Add(func(_ context.Context, ev *hook.HookEvent) error {
+		seen = append(seen, *ev)
+		return nil
+	})
+	ExecuteBatch(context.Background(), registryOf(&stubTool{name: "t"}), []llm.ToolCall{
+		call("c1", "t", `{"x":1}`),
+	}, Options{Guards: gb, Turn: 7})
+
+	if len(seen) != 1 {
+		t.Fatalf("守卫被调 %d 次", len(seen))
+	}
+	if seen[0].Kind != hook.HookToolPreExecute || seen[0].Turn != 7 {
+		t.Fatalf("载荷 = %+v", seen[0])
+	}
+	if seen[0].ToolCall.ID != "c1" || seen[0].ToolCall.Name != "t" || string(seen[0].ToolCall.Args) != `{"x":1}` {
+		t.Fatalf("守卫应看到原始调用: %+v", seen[0].ToolCall)
+	}
+}
+
+// 零开销降级：不装守卫时行为与未注入完全一致（不变式 6）。
+func TestNilGuardsAllowEverything(t *testing.T) {
+	tool := &stubTool{name: "t"}
+	got := ExecuteBatch(context.Background(), registryOf(tool), []llm.ToolCall{
+		call("c1", "t", `{}`),
+	}, Options{}) // Guards 为 nil
+	if got[0].IsError || tool.args == nil {
+		t.Fatalf("无守卫时不应拦截: %+v", got[0])
 	}
 }

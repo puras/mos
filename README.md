@@ -15,7 +15,7 @@ MoS（取自 Sapient）是基于 Go 的智能体基础框架（Agent Base SDK）
 | S3 | 工具系统（schema 生成 + Registry + builtin 最小集） | ✅ |
 | S4b | ReAct 接入工具执行通道（工具调用执行 + 回填 + 投影合法性） | ✅ |
 | S5a | 执行通道骨架 `agent/execpath`（preflight 空 + 串行执行 + 按调用序回填） | ✅ |
-| S5b | 双轨制 `agent/hook`（HookBus waterfall + GuardBus 单调裁决） | ⬜ |
+| S5b | 双轨制 `agent/hook`（HookBus waterfall + GuardBus 单调裁决）+ 执行通道 preflight 接线 | ✅ |
 | S5c | Policy 规则层（执行前拦截，注册为 Guard 一环） | ⬜ |
 | S5d | `filesystem` 文件 jail（Lexical + Realpath 双校验 + symlink TOCTOU 防护） | ⬜ |
 | S5e | 通道三阶段（守卫 preflight + 有界并发 + 审计回填） | ⬜ |

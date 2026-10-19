@@ -93,9 +93,10 @@ func (d *Driver) Run(ctx context.Context, rt *driver.RunContext, sess *session.S
 				return "", err
 			}
 		}
-		// 执行统一走 execpath 通道（守卫 / 调度 / 回填顺序的全库唯一语义）；
+		// 执行统一走 execpath 通道（守卫裁决 / 调度 / 回填顺序的全库唯一语义）；
 		// 驱动只负责把结果落成 tool/result 事件。
-		for _, oc := range execpath.ExecuteBatch(ctx, rt.Tools, action.ToolCalls) {
+		opts := execpath.Options{Turn: turn, Guards: rt.Guards}
+		for _, oc := range execpath.ExecuteBatch(ctx, rt.Tools, action.ToolCalls, opts) {
 			if _, err := sess.Append(session.Event{
 				Kind: session.EventToolResult, Turn: turn,
 				ToolResult: &session.ToolResult{CallID: oc.Call.ID, Content: oc.Content, IsError: oc.IsError},

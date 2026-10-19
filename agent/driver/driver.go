@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/puras/mos/agent/hook"
 	"github.com/puras/mos/llm"
 	"github.com/puras/mos/planner"
 	"github.com/puras/mos/session"
@@ -33,6 +34,13 @@ type RunContext struct {
 	// 模型不会知道有工具可调；若仍返回了工具调用（幻觉），驱动
 	// fail-closed 报 ErrToolsUnsupported。
 	Tools *tool.Registry
+	// Hooks 是可改写环节的瀑布钩子总线（可选）。nil 时零开销——
+	// 无钩子即无任何改写，行为与未注入完全一致。
+	Hooks *hook.HookBus
+	// Guards 是单调守卫总线（可选）。nil 时零开销——等价于无安全约束。
+	// 守卫由执行通道在工具执行前串行裁决，先于钩子链：钩子改写工具调用
+	// 也改变不了守卫判定（双轨制，见 agent/hook）。
+	Guards *hook.GuardBus
 	// SystemPrompt 是静态系统引导词（可选，作为历史首条消息注入）。
 	SystemPrompt string
 	// Stream 为 true 时优先走决策器的流式接口（若实现），

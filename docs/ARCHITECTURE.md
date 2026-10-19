@@ -34,7 +34,8 @@
 | `tool`（+`tool/builtin`） | 工具接口、注册表、Schema 生成；`current_time` 起步 | 移植裁剪 | S3 ✅ |
 | `planner` + `driver` | Planner 接口 + ReAct 决策；LoopDriver + ReActDriver | planner 移植 / 驱动重写 | S4a ✅ |
 | `agent/execpath` | 工具调用统一执行通道：preflight 裁决 + 调度 + 按调用序回填 | 重写 | S5a ✅ |
-| `agent/hook` + `agent`（安全件）/ `filesystem` / `sandbox` | HookBus/GuardBus 双轨制、Policy、文件 jail、进程隔离 | 移植裁剪 | S5b/S5c/S5d/S5f |
+| `agent/hook` | 双轨制：HookBus（waterfall 可改写）+ GuardBus（serial 单调裁决） | 移植裁剪 | S5b ✅ |
+| `agent`（安全件）/ `filesystem` / `sandbox` | Policy、文件 jail、进程隔离 | 移植裁剪 | S5c/S5d/S5f |
 | `agent`（上下文件） | 截断、压缩、Auditor | 重写瘦身 | S6 |
 | `assistant` | 一行装配 + 示例 CLI | 重写 | S7 |
 
@@ -59,19 +60,34 @@
 工具执行的语义全库只在 `agent/execpath` 一处，驱动只负责投影与收尾：
 
 ```text
-ExecuteBatch(ctx, reg, calls) []Outcome   // 结果与 calls 严格同序
+ExecuteBatch(ctx, reg, calls, opts) []Outcome   // 结果与 calls 严格同序
 
-preflight（裁决）  S5a：空实现恒通过          S5b/S5e：GuardBus 串行裁决
+preflight（裁决）  S5b：GuardBus.Allow 串行裁决，守卫为 nil 即恒通过
 execute  （执行）  S5a：按调用序串行          S5e：有界并发，SequentialTool 批内串行
 finalize （回填）  调用方（驱动）落 tool/result 事件
 ```
 
-- **语义中立于驱动**：不感知 ReAct / 未来的 PlanExecute、Scripted，也不感知 turn 编号与会话；它只回答「这批调用各得什么结果」。
+- **语义中立于驱动**：不感知 ReAct / 未来的 PlanExecute、Scripted，也不感知会话；它只回答「这批调用各得什么结果」。
 - **回填顺序 = 调用顺序**：结果按模型给定顺序排列而非完成顺序，并携带原 `CallID`，调用方靠它对回每个调用——并发化后此不变式尤其重要。
-- **错误即结果**：工具报错、参数非法、模型幻觉出的未注册工具名，全部转成 `Outcome{IsError: true}` 而非返回 error——那是「本次调用失败」不是「系统故障」，回填给模型让它自我纠正。中断 turn 的只有落盘失败与决策失败。
+- **错误即结果**：守卫拒绝、工具报错、参数非法、模型幻觉出的未注册工具名，全部转成 `Outcome{IsError: true}` 而非返回 error——那是「本次调用失败」不是「系统故障」，回填给模型让它自我纠正。中断 turn 的只有驱动侧落盘失败与决策失败。
+- **逐条独立裁决**：守卫拒绝一条不影响同批其他调用，模型能看出是哪一条被拒、为什么。
 - **fail-closed 兜底**：注册表为 nil 时整批判失败，不 panic（正常路径由驱动提前拦下，这里是防御性底线）。
 - **不落日志、不裁断、不重试**：日志语义属 `session` 与驱动，避免执行语义与日志语义纠缠。
-- **待定项（S5e）**：归档实现的 preflight 裁决**先于** `tool/call` 日志（挂起时不留痕），而 §3.1 现约定是「全部先落再执行」。两者不能同时成立，S5e 开工时二选一并同步改写 §3.1。
+- **守卫与日志的先后（已定）**：工具调用的日志顺序固定为「先全部落 `tool/call` → 再守卫裁决与执行」，即**被拒的调用也留痕**。这与 `session` 包注释的目录语义一致（「`tool/call` 含被守卫拦截的调用」），审计优先于「不留痕」；且 `tool/call` 不投影给模型，拒绝理由只经 `tool/result` 回填给模型看。归档实现的「裁决先于落日志」写法不采用。
+
+### 3.3 双轨制契约（S5b）
+
+| | HookBus | GuardBus |
+| --- | --- | --- |
+| 语义 | waterfall：按注册顺序逐层委托，可改写 / 短路 / 替换 | serial：按注册顺序串行裁决，首个拒绝即整体拒绝并短路 |
+| 用途 | 行为性扩展：压缩 / RAG / 注入 / 超时 / 重试 / 指标 / 结果裁剪 | 安全性约束：Policy / 权限 / 身份校验 |
+| 可被改写绕过 | 是（它就是改写机制本身） | **否** |
+
+- **编排顺序（不变式 5）**：工具执行时先 `GuardBus.Allow` 再进 `HookBus.Waterfall`，守卫看到的是钩子改写**前**的载荷；守卫不持有钩子总线，二者互不引用——「钩子绕过守卫」在结构上不成立（`TestGuardVerdictNotBypassableByHooks` 锁定该性质）。
+- **零开销降级（不变式 6）**：两条总线均可为 nil；nil 上的注册返回 no-op 移除函数，调用直接透传（Hook 原样返回载荷，Guard 一律放行）。未装扩展点的用户不付任何代价。
+- **目录预算制（治理规则 2）**：`HookKind` 有预算，新增一种前先删一种。当前目录：`pre-step`、`tool/pre-execute`、`tool/execute`、`tool/post-execute`、`turn-stopping`——每个都注明了消费它的切片。归档实现里的 `request`（预留、无消费者）已删；`doomloop`（重复调用检测）属 S6，届时随 `turn-stopping` 落地。
+- **健壮性**：钩子返回 `(nil, nil)` 显式报 `ErrNilHookEvent` 而不是把 nil 传下去崩在下游——坏插件不许带崩整条链；注册与执行并发安全（执行前快照钩子链）。
+- **接线点**：守卫**已接线**——`execpath.ExecuteBatch` 的 preflight 调 `GuardBus.Allow`，拒绝项不执行并以 `IsError` 回填；驱动把 `RunContext.Guards` 与轮次一并传入。钩子总线 `HookBus` 挂在 `RunContext` 上但**尚无消费者**，其 `tool/*` 环节等 S5e 与并发一并接。
 
 ## 4. 治理规则（防再膨胀）
 
