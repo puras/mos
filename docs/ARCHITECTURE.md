@@ -35,7 +35,8 @@
 | `planner` + `driver` | Planner 接口 + ReAct 决策；LoopDriver + ReActDriver | planner 移植 / 驱动重写 | S4a ✅ |
 | `agent/execpath` | 工具调用统一执行通道：preflight 裁决 + 调度 + 按调用序回填 | 重写 | S5a ✅ |
 | `agent/hook` | 双轨制：HookBus（waterfall 可改写）+ GuardBus（serial 单调裁决） | 移植裁剪 | S5b ✅ |
-| `agent`（安全件）/ `filesystem` / `sandbox` | Policy、文件 jail、进程隔离 | 移植裁剪 | S5c/S5d/S5f |
+| `agent/policy` | 工具名级策略：fail-closed 黑白名单 + YAML 装配 | 移植裁剪 | S5c ✅ |
+| `filesystem` / `sandbox` | 文件 jail、进程隔离 | 移植裁剪 | S5d/S5f |
 | `agent`（上下文件） | 截断、压缩、Auditor | 重写瘦身 | S6 |
 | `assistant` | 一行装配 + 示例 CLI | 重写 | S7 |
 
@@ -88,6 +89,20 @@ finalize （回填）  调用方（驱动）落 tool/result 事件
 - **目录预算制（治理规则 2）**：`HookKind` 有预算，新增一种前先删一种。当前目录：`pre-step`、`tool/pre-execute`、`tool/execute`、`tool/post-execute`、`turn-stopping`——每个都注明了消费它的切片。归档实现里的 `request`（预留、无消费者）已删；`doomloop`（重复调用检测）属 S6，届时随 `turn-stopping` 落地。
 - **健壮性**：钩子返回 `(nil, nil)` 显式报 `ErrNilHookEvent` 而不是把 nil 传下去崩在下游——坏插件不许带崩整条链；注册与执行并发安全（执行前快照钩子链）。
 - **接线点**：守卫**已接线**——`execpath.ExecuteBatch` 的 preflight 调 `GuardBus.Allow`，拒绝项不执行并以 `IsError` 回填；驱动把 `RunContext.Guards` 与轮次一并传入。钩子总线 `HookBus` 挂在 `RunContext` 上但**尚无消费者**，其 `tool/*` 环节等 S5e 与并发一并接。
+
+### 3.4 策略层（S5c）
+
+```yaml
+# 平台策略文件：纯配置即可装配（G3），未声明即拒绝
+allow: [current_time, read_file]
+deny:  [shell]
+```
+
+- **fail-closed（不变式 1）**：未列入 `allow` 的工具一律拒绝。平台新增自定义工具必须显式声明——“忘了声明”的后果是拒绝而非放行。零值 `Config{}` = 拒绝一切；`nil` 接收者也拒绝而非 panic——fail-closed 是行为不只是默认值。
+- **deny 优先于 allow**：同时命中以拒绝为准，`deny` 不提供任何放行后门。
+- **位置**：Policy 是 `hook.Guard`，装进 `GuardBus` 即为单调守卫链的一环（S5b 双轨制），由执行通道的 preflight 调用；钩子改写不了它的结论。
+- **YAML 严格解析**：未知字段报错——拼错的字段名不得被静默忽略，那会让用户以为规则生效了（`policy.LoadYAML` 用 `KnownFields(true)`）。
+- **本切片只做工具名级规则**：参数级校验（shell 命令分级、文件路径越界）依赖 jail 与沙箱（S5d/S5f），届时以 Checker 体系扩展，不在此处造无消费者的正则引擎。
 
 ## 4. 治理规则（防再膨胀）
 
