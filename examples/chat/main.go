@@ -48,6 +48,8 @@ func main() {
 	denyFlag := flag.String("deny", "", "禁用指定工具（逗号分隔），演示策略拦截")
 	policyFlag := flag.String("policy", "", "策略配置文件（YAML），给出后忽略 -deny")
 	workdir := flag.String("workdir", ".", "文件工具的沙箱根目录（jail），越界路径会被拒绝")
+	trimFlag := flag.Int("trim", 0, "结果裁剪上限（字节），0 = 不裁剪（post-execute 钩子演示）")
+	concFlag := flag.Int("concurrency", 4, "同批工具调用的并发上限（1 = 串行；仅对声明可并发的工具生效）")
 	flag.Parse()
 
 	loadDotEnv(".env")
@@ -91,7 +93,9 @@ func main() {
 	rt := &driver.RunContext{
 		Planner:      planner.NewReAct(model),
 		Tools:        reg,
+		Hooks:        mustHooks(*trimFlag),
 		Guards:       guards,
+		Concurrency:  *concFlag,
 		SystemPrompt: os.Getenv("MOS_SYSTEM_PROMPT"),
 		Stream:       true,
 		OnChunk:      render,
@@ -102,6 +106,7 @@ func main() {
 		provider(), os.Getenv("MOS_MODEL"), sess.ID, len(sess.Events()), sess.TotalUsage().TotalTokens)
 	fmt.Printf("  可用工具: %s\n", strings.Join(reg.Names(), ", "))
 	fmt.Printf("  文件沙箱: %s（越界路径会被拒绝，工具不会执行）\n", jailRoot)
+	fmt.Printf("  并发上限: %d（仅对声明可并发的工具生效；read_file 可并发，write_file 独占）\n", *concFlag)
 	if guards == nil {
 		fmt.Println("  策略: 未装配（nil 总线 = 零开销降级，全部放行）")
 	} else {
@@ -225,6 +230,44 @@ func mustGuards(cfg policy.Config) *hook.GuardBus {
 		return err
 	})
 	return gb
+}
+
+// mustHooks 构建可改写环节的钩子链（HookBus）——与守卫是**两条不同的轨道**：
+// 守卫单调裁决（拒绝/放行），钩子可改写（裁剪结果、环绕派发、裁决调用）。
+//
+// 这里演示三件事：
+//  1. pre-execute：只观测即将执行的调用（不改载荷——载荷对钩子冻结）；
+//  2. tool/execute：环绕派发，打印耗时（真实执行发生在钩子之间）；
+//  3. post-execute：把过长的结果裁剪（钩子最典型的用途）。
+//
+// 载荷冻结是刻意的：钩子**改不了**工具名/参数/CallID，所以它无法绕过策略；
+// 要修正入参请在工具内部做（工具自己 normalize）。
+func mustHooks(trim int) *hook.HookBus {
+	hb := hook.NewHookBus()
+
+	hb.On(hook.HookToolPreExecute, func(ctx context.Context, ev *hook.HookEvent, next hook.Next) (*hook.HookEvent, error) {
+		fmt.Fprintf(os.Stderr, "[hook] 第 %d 轮：即将执行 %s\n", ev.Turn, ev.ToolCall.Name)
+		return next(ctx, ev)
+	})
+
+	hb.On(hook.HookToolExecute, func(ctx context.Context, ev *hook.HookEvent, next hook.Next) (*hook.HookEvent, error) {
+		start := time.Now()
+		out, err := next(ctx, ev) // ← 真正的工具调用在这里发生
+		fmt.Fprintf(os.Stderr, "[hook] %s 执行完毕（%v）\n", ev.ToolCall.Name, time.Since(start).Round(time.Millisecond))
+		return out, err
+	})
+
+	if trim > 0 {
+		hb.On(hook.HookToolPostExecute, func(ctx context.Context, ev *hook.HookEvent, next hook.Next) (*hook.HookEvent, error) {
+			out, err := next(ctx, ev)
+			if len(out.ResultText) > trim {
+				orig := len(out.ResultText)
+				out.ResultText = out.ResultText[:trim] + fmt.Sprintf("…（已裁剪，原 %d 字节）", orig)
+			}
+			return out, err
+		})
+	}
+	return hb
 }
 
 // policyConfig 决定生效的策略：

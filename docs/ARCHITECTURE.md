@@ -31,7 +31,7 @@
 | --- | --- | --- | --- |
 | `session` | 会话事件日志、消息投影、TaskState、JSONL 持久化 | 重写瘦身 | S1 |
 | `llm`（+`llm/transport`） | ChatModel 抽象、协议适配、共享 HTTP envelope | 移植归档 | S2 |
-| `tool`（+`tool/builtin`） | 工具接口、注册表、Schema 生成；`current_time` 起步 | 移植裁剪 | S3 ✅ |
+| `tool`（+`tool/builtin`） | 工具接口、注册表、Schema 生成、`ConcurrencySafe` 并发分类器；`current_time` 起步 | 移植裁剪 | S3 ✅ / S5e |
 | `planner` + `driver` | Planner 接口 + ReAct 决策；LoopDriver + ReActDriver | planner 移植 / 驱动重写 | S4a ✅ |
 | `agent/execpath` | 工具调用统一执行通道：preflight 裁决 + 调度 + 按调用序回填 | 重写 | S5a ✅ |
 | `agent/hook` | 双轨制：HookBus（waterfall 可改写）+ GuardBus（serial 单调裁决） | 移植裁剪 | S5b ✅ |
@@ -64,9 +64,15 @@
 ```text
 ExecuteBatch(ctx, reg, calls, opts) []Outcome   // 结果与 calls 严格同序
 
-preflight（裁决）  S5b：GuardBus.Allow 串行裁决，守卫为 nil 即恒通过
-execute  （执行）  S5a：按调用序串行          S5e：有界并发，SequentialTool 批内串行
-finalize （回填）  调用方（驱动）落 tool/result 事件
+① preflight（串行，按模型调用序）
+     守卫裁决（GuardBus.Allow，守卫为 nil 即恒通过）
+     → pre-execute 钩子链（只决策：允许/拒绝/请求确认/终止本轮）
+② execute（屏障分组 + 有界滚动池）
+     独占调用自成屏障；连续可并发调用成组，组内按上限并发
+     → execute 钩子链环绕真实派发（并发区内，必须可重入）
+③ finalize（串行，按模型调用序）
+     post-execute 钩子链（裁剪/脱敏；可加重错误，不可洗白错误）
+     → 归一化为 Outcome；调用方（驱动）落 tool/result 事件
 ```
 
 - **语义中立于驱动**：不感知 ReAct / 未来的 PlanExecute、Scripted，也不感知会话；它只回答「这批调用各得什么结果」。
@@ -75,6 +81,11 @@ finalize （回填）  调用方（驱动）落 tool/result 事件
 - **逐条独立裁决**：守卫拒绝一条不影响同批其他调用，模型能看出是哪一条被拒、为什么。
 - **fail-closed 兜底**：注册表为 nil 时整批判失败，不 panic（正常路径由驱动提前拦下，这里是防御性底线）。
 - **不落日志、不裁断、不重试**：日志语义属 `session` 与驱动，避免执行语义与日志语义纠缠。
+- **载荷冻结（S5e）**：钩子**不得改写**工具名 / 参数 / CallID——改写即违约，该调用被拒绝并说明原因。因此守卫判定的是这次调用的**最终**载荷（载荷不可变 ⇒ 判定恒有效），守卫只跑一次，不会重复触发有副作用的守卫（配额扣减、审批请求）。要修正入参请在工具内部做（工具自己 normalize），对齐 PI（`beforeToolCall` 不可改参数）与 DSH（参数进 policy 前深冻结）的共识。
+- **并发是显式 opt-in 且 fail-closed**（S5e）：工具须实现 `tool.ConcurrencySafe(args) bool` 并返回 true 才可与同批其他调用并发；未实现、参数非法、返回 false、甚至 panic 一律**独占**。所以默认行为仍是串行。分类器是「一元」的——无法表达「这两个写路径不同才安全」这类关系型规则，那种情况一律独占。
+- **屏障模型**（对齐 DSH）：连续可并发调用成组，**独占调用自成屏障**，组间顺序执行。`[read(A), read(B), write(A), read(C)]` → `[read(A) ∥ read(B)]` → `[write(A)]` → `[read(C)]`。
+- **只有执行体并发**：preflight 与 finalize 都按模型序串行（守卫与钩子可能携带顺序敏感状态），并发的只是工具体。`execute` 钩子链因此运行在并发区，**必须可重入**。
+- **取消不留空洞**：上下文取消时未派发的调用补记合成失败结果，保证 `tool/call` 与 `tool/result` 仍然配对（对齐 DSH 的 aborted call/result 对）。
 - **守卫与日志的先后（已定）**：工具调用的日志顺序固定为「先全部落 `tool/call` → 再守卫裁决与执行」，即**被拒的调用也留痕**。这与 `session` 包注释的目录语义一致（「`tool/call` 含被守卫拦截的调用」），审计优先于「不留痕」；且 `tool/call` 不投影给模型，拒绝理由只经 `tool/result` 回填给模型看。归档实现的「裁决先于落日志」写法不采用。
 
 ### 3.3 双轨制契约（S5b）
@@ -85,11 +96,14 @@ finalize （回填）  调用方（驱动）落 tool/result 事件
 | 用途 | 行为性扩展：压缩 / RAG / 注入 / 超时 / 重试 / 指标 / 结果裁剪 | 安全性约束：Policy / 权限 / 身份校验 |
 | 可被改写绕过 | 是（它就是改写机制本身） | **否** |
 
-- **编排顺序（不变式 5）**：工具执行时先 `GuardBus.Allow` 再进 `HookBus.Waterfall`，守卫看到的是钩子改写**前**的载荷；守卫不持有钩子总线，二者互不引用——「钩子绕过守卫」在结构上不成立（`TestGuardVerdictNotBypassableByHooks` 锁定该性质）。
+- **编排顺序（不变式 5）**：工具执行时先 `GuardBus.Allow` 再进 `HookBus.Waterfall`；守卫不持有钩子总线，二者互不引用——「钩子绕过守卫」在结构上不成立（`TestGuardVerdictNotBypassableByHooks` 锁定该性质）。
+- **载荷冻结（S5e 补强）**：钩子**不能**改写工具名 / 参数 / CallID（改写即违约，调用被拒）。于是「守卫看到的是改写前的载荷」与「守卫判定的就是最终载荷」**同时成立**——不需要复检，守卫只跑一次。这是 PI 与 DSH 独立收敛的共识：载荷不可由钩子改写，守卫判定才恒有效。
 - **零开销降级（不变式 6）**：两条总线均可为 nil；nil 上的注册返回 no-op 移除函数，调用直接透传（Hook 原样返回载荷，Guard 一律放行）。未装扩展点的用户不付任何代价。
 - **目录预算制（治理规则 2）**：`HookKind` 有预算，新增一种前先删一种。当前目录：`pre-step`、`tool/pre-execute`、`tool/execute`、`tool/post-execute`、`turn-stopping`——每个都注明了消费它的切片。归档实现里的 `request`（预留、无消费者）已删；`doomloop`（重复调用检测）属 S6，届时随 `turn-stopping` 落地。
 - **健壮性**：钩子返回 `(nil, nil)` 显式报 `ErrNilHookEvent` 而不是把 nil 传下去崩在下游——坏插件不许带崩整条链；注册与执行并发安全（执行前快照钩子链）。
-- **接线点**：守卫**已接线**——`execpath.ExecuteBatch` 的 preflight 调 `GuardBus.Allow`，拒绝项不执行并以 `IsError` 回填；驱动把 `RunContext.Guards` 与轮次一并传入。钩子总线 `HookBus` 挂在 `RunContext` 上但**尚无消费者**，其 `tool/*` 环节等 S5e 与并发一并接。
+- **接线点（S5e 全部接上）**：守卫由 `execpath.ExecuteBatch` 的 preflight 调 `GuardBus.Allow`，拒绝项不执行并以 `IsError` 回填；钩子总线 `HookBus` 的三个 `tool/*` 环节全部接线——`tool/pre-execute` 裁决调用、`tool/execute` 环绕派发、`tool/post-execute` 改写结果文本。驱动把 `RunContext.Guards` / `RunContext.Hooks` / `RunContext.Concurrency` 与轮次一并传入。
+- **决策词汇（S5e）**：pre-execute 钩子返回 `Decision`：允许（默认）/ 拒绝 / 请求确认（无审批通道时 fail-closed 拒绝，S5g 落地审批后改为挂起）/ 终止本轮（该调用拒绝 + 同批后续跳过 + 本轮以 `terminated` 收尾）。链上第一个非 allow 决策生效，下游钩子不再执行。
+- **错误只可加重不可减轻**（对齐 DSH）：post-execute 钩子可以把成功改成失败（发现问题就报错），但**不能**把失败洗成成功——错误是事实，审计日志不能被改写成成功。
 
 ### 3.4 策略层（S5c）
 

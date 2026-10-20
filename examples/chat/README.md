@@ -86,6 +86,36 @@ go run . -new -workdir /tmp/demo   # 或指定别的根
 - **不装就是不开**：不装配 `filesystem` 就不该注册文件工具——不给模型这个能力，比给它一个必然失败的工具干净；
 - 沙箱根由宿主（示例的 `-workdir`）决定，框架不替宿主选路径，也不预设 Local/SaaS 形态：示例声明的是 `{ReadRoots: [根], WriteRoots: [根]}`，宿主想放开读或写就自己加根（写 `"/"` 即完全放开，且这是一条看得见的规则）。
 
+## 验证钩子与并发（S5e）
+
+钩子（HookBus）与守卫（GuardBus）是**两条轨道**：守卫单调裁决（拒绝/放行），钩子可改写（裁剪结果、环绕派发、裁决调用）。
+
+```bash
+go run . -new                       # 装好钩子（观测 + 计时）
+go run . -new -trim 200             # 追加结果裁剪（post-execute 钩子）
+go run . -new -concurrency 1        # 强制串行（对照）
+```
+
+启动横幅会打印并发上限。运行时 stderr 可见钩子的三个环节：
+
+```text
+[hook] 第 1 轮：即将执行 read_file        ← pre-execute（裁决环节）
+[hook] read_file 执行完毕（1ms）          ← tool/execute（环绕派发）
+```
+
+`-trim 200` 时，`tool/result` 里能看到被裁剪的文本（`…（已裁剪，原 N 字节）`）——这是 post-execute 钩子真正改了回填给模型的内容。
+
+### 并发的规则
+
+- **只有声明可并发的工具才并发**：工具实现 `tool.ConcurrencySafe(args) bool` 并返回 true 才入并行组；未声明 / 参数非法 / 分类器出错 → **独占**（串行）。本示例里 `read_file` 可并发，`write_file` 独占。
+- **独占调用形成屏障**：`[read(A), read(B), write(A), read(C)]` → `[read(A) ∥ read(B)]` → `[write(A)]` → `[read(C)]`。
+- **回填顺序永远是模型的调用序**，与完成顺序无关（`tool/result` 按 `CallID` 一一对回）。
+- 只有工具体并发；preflight（守卫裁决 + pre-execute）与回填（post-execute）都按模型序串行。
+
+### 载荷冻结
+
+钩子**改不了**工具名 / 参数 / CallID——改写即违约，该调用被拒绝并说明原因。所以钩子无法绕过策略守卫：守卫判定的就是这次调用的最终载荷，且守卫只跑一次。
+
 ## 对应框架能力
 
 | 能力 | 包 |
@@ -97,4 +127,5 @@ go run . -new -workdir /tmp/demo   # 或指定别的根
 | 单调守卫（安全约束） | `agent/hook`、`agent/execpath` |
 | 策略层（fail-closed 黑白名单 + YAML） | `agent/policy` |
 | 文件沙箱（Lexical + Realpath 双层校验） | `filesystem`、`tool/builtin` |
+| 钩子三环节（裁决 / 环绕 / 结果改写）+ 屏障式并发 | `agent/hook`、`agent/execpath` |
 | 会话事件日志 / 消息投影 / 持久化 / Restore | `session` |
