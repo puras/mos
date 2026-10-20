@@ -5,7 +5,7 @@ S4b 里程碑示例——智能体经**驱动层循环**与模型对话，模型
 - 装配链：llm 协议注册表建模型（套 `llm.WithRetry` + `llm.WithLogging`）→ `tool.Registry` 登记内置工具 → `agent/policy` 策略装进 `hook.GuardBus` → `planner.NewReAct` 决策器 → `driver.RunContext`（含 `Tools` + `Guards`）→ `react.New()` 驱动
 - `MOS_PROVIDER` 切换 openai 兼容 / anthropic / gemini；`llm.WithRetry` 装饰器演示
 - `llm.WithLogging` 演示调用观测：每次模型调用在 stderr 打一行（模式 / 耗时 / msgs & tools / finish_reason / token），`MOS_LOG_LLM=0` 关闭；日志套在重试之外，重试几次就见几行
-- 内置工具（`builtin.Default()`）登记后模型即可调用；当前可用 `current_time`
+- 内置工具（`builtin.Default()`）登记后模型即可调用；当前可用 `current_time`；文件工具（`read_file`/`write_file`）经 `-workdir` 指定的 jail 根约束后一并登记
 - 流式打字机输出（协议不支持时自动回退非流式）；思维链以暗色文本透出
 - 会话事件日志落 JSONL（`data/`）：多轮上下文由事件投影累积，**重启自动恢复续聊**；中断的 turn 被合成为 `interrupted` 收尾
 - 每轮打印会话累计 token 用量（派生自 assistant 事件）
@@ -57,6 +57,35 @@ grep tool/result data/chat-*.jsonl | tail -1
 - `-deny` / `MOS_DENY_TOOLS` 是快捷方式，`-policy` / `MOS_POLICY` 才是平台形态（YAML）；后者启用时前者被忽略。两者都不配时 `Guards` 为 nil，走零开销降级；
 - 读策略文件与解析 YAML 都是**应用层**的活（`os.ReadFile` → `yaml.Decoder` 严格解析 → `policy.Config`）：框架只认结构，不碰文件系统、不绑定配置格式——否则等于绕过 S5d 的文件 jail。键名由应用自己的 `appPolicy` DTO 定，与框架解耦。
 
+## 验证文件沙箱（S5d）
+
+文件工具的路径先经 **Lexical + Realpath 双层校验**，越界路径的工具**不执行**，拒绝理由回填给模型。
+
+```bash
+go run . -new -workdir .          # jail 根 = 当前目录（默认）
+go run . -new -workdir /tmp/demo   # 或指定别的根
+```
+
+启动横幅会打印 `文件沙箱: /path/to/cwd（越界路径会被拒绝，工具不会执行）`。
+
+问一句「读一下 ../../etc/passwd」，可观察到：
+
+```text
+你 > 读一下 ../../etc/passwd
+[llm #2] stream  ... finish=tool_calls → 请求调用 read_file
+[llm #3] stream  ... finish=stop ...    ← 模型读到拒绝理由后改口
+```
+
+`tool/result` 里是拒绝理由（`路径 "../../etc/passwd" 不在允许的根内（read 操作允许的根=[...]）`），带 `isError:true`；同一次调用的 `tool/call` 仍留痕（审计优先）。
+
+对照实验：`go run . -new -workdir /tmp/demo` 后让模型写一个文件，它会写到 `/tmp/demo` 下；换成 `-workdir .` 再写 `../escape.txt` 就会被拒。
+
+要点：
+
+- **读也走 Realpath**：jail 里一个指向 `/etc/passwd` 的 symlink 同样读不出来（只做词法校验的话就能读出 jail）；
+- **不装就是不开**：不装配 `filesystem` 就不该注册文件工具——不给模型这个能力，比给它一个必然失败的工具干净；
+- 沙箱根由宿主（示例的 `-workdir`）决定，框架不替宿主选路径，也不预设 Local/SaaS 形态：示例声明的是 `{ReadRoots: [根], WriteRoots: [根]}`，宿主想放开读或写就自己加根（写 `"/"` 即完全放开，且这是一条看得见的规则）。
+
 ## 对应框架能力
 
 | 能力 | 包 |
@@ -67,4 +96,5 @@ grep tool/result data/chat-*.jsonl | tail -1
 - 工具接口 / 注册表 / Schema 生成 | `tool`、`tool/builtin` |
 | 单调守卫（安全约束） | `agent/hook`、`agent/execpath` |
 | 策略层（fail-closed 黑白名单 + YAML） | `agent/policy` |
+| 文件沙箱（Lexical + Realpath 双层校验） | `filesystem`、`tool/builtin` |
 | 会话事件日志 / 消息投影 / 持久化 / Restore | `session` |

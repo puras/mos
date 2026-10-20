@@ -17,7 +17,7 @@ MoS（取自 Sapient）是基于 Go 的智能体基础框架（Agent Base SDK）
 | S5a | 执行通道骨架 `agent/execpath`（preflight 空 + 串行执行 + 按调用序回填） | ✅ |
 | S5b | 双轨制 `agent/hook`（HookBus waterfall + GuardBus 单调裁决）+ 执行通道 preflight 接线 | ✅ |
 | S5c | Policy 规则层 `agent/policy`（fail-closed 黑白名单；框架只认结构，文件与格式归宿主） | ✅ |
-| S5d | `filesystem` 文件 jail（Lexical + Realpath 双校验 + symlink TOCTOU 防护） | ⬜ |
+| S5d | `filesystem` 文件 jail（Lexical + Realpath 双校验 + symlink 逃逸防护）+ `read_file`/`write_file` 接入 | ✅ |
 | S5e | 通道三阶段（守卫 preflight + 有界并发 + 审计回填） | ⬜ |
 | S5f | `sandbox` 进程隔离（jail + 超时 + 资源限制 + 环境裁剪 + 网络控制） | ⬜ |
 | S5g | 审批挂起（`agent/approval` + Checkpoint，守卫判定可挂起）——归属待定 | ⬜ |

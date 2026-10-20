@@ -21,6 +21,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -31,6 +32,7 @@ import (
 	"github.com/puras/mos/agent/driver/react"
 	"github.com/puras/mos/agent/hook"
 	"github.com/puras/mos/agent/policy"
+	"github.com/puras/mos/filesystem"
 	"github.com/puras/mos/llm"
 	"github.com/puras/mos/llm/anthropic"
 	"github.com/puras/mos/llm/gemini"
@@ -45,6 +47,7 @@ func main() {
 	fresh := flag.Bool("new", false, "从全新会话开始（默认恢复上次会话）")
 	denyFlag := flag.String("deny", "", "禁用指定工具（逗号分隔），演示策略拦截")
 	policyFlag := flag.String("policy", "", "策略配置文件（YAML），给出后忽略 -deny")
+	workdir := flag.String("workdir", ".", "文件工具的沙箱根目录（jail），越界路径会被拒绝")
 	flag.Parse()
 
 	loadDotEnv(".env")
@@ -56,6 +59,20 @@ func main() {
 	// 内置工具集：模型可调用的工具在此登记（未登记的工具不进 function calling 清单）
 	reg := tool.NewRegistry()
 	for _, tl := range builtin.Default() {
+		if err := reg.Register(tl); err != nil {
+			check(fmt.Errorf("注册工具 %q: %w", tl.Name(), err))
+		}
+	}
+
+	// 文件沙箱：文件工具的路径先经 Lexical + Realpath 双层校验，越界拒绝。
+	// 宿主装配层决定 jail 根（这里是 -workdir，默认当前目录）。
+	jailRoot, err := filepath.Abs(*workdir)
+	check(err)
+	fsys := filesystem.NewSandboxed(&filesystem.FileAccessPolicy{
+		ReadRoots:  []string{jailRoot},
+		WriteRoots: []string{jailRoot},
+	})
+	for _, tl := range builtin.FileTools(fsys) {
 		if err := reg.Register(tl); err != nil {
 			check(fmt.Errorf("注册工具 %q: %w", tl.Name(), err))
 		}
@@ -84,6 +101,7 @@ func main() {
 	fmt.Printf("MoS chat 已就绪（provider=%s model=%s session=%s 已有 %d 条事件 / 累计 %d tokens）\n",
 		provider(), os.Getenv("MOS_MODEL"), sess.ID, len(sess.Events()), sess.TotalUsage().TotalTokens)
 	fmt.Printf("  可用工具: %s\n", strings.Join(reg.Names(), ", "))
+	fmt.Printf("  文件沙箱: %s（越界路径会被拒绝，工具不会执行）\n", jailRoot)
 	if guards == nil {
 		fmt.Println("  策略: 未装配（nil 总线 = 零开销降级，全部放行）")
 	} else {

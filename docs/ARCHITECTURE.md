@@ -36,7 +36,8 @@
 | `agent/execpath` | 工具调用统一执行通道：preflight 裁决 + 调度 + 按调用序回填 | 重写 | S5a ✅ |
 | `agent/hook` | 双轨制：HookBus（waterfall 可改写）+ GuardBus（serial 单调裁决） | 移植裁剪 | S5b ✅ |
 | `agent/policy` | 工具名级策略：fail-closed 黑白名单 + YAML 装配 | 移植裁剪 | S5c ✅ |
-| `filesystem` / `sandbox` | 文件 jail、进程隔离 | 移植裁剪 | S5d/S5f |
+| `filesystem` | 文件 jail：宿主声明可读/可写根 + Lexical/Realpath 双层校验 | 移植裁剪 | S5d ✅ |
+| `sandbox` | 进程隔离（jail + 超时 + 资源限制 + 环境裁剪 + 网络控制） | 移植裁剪 | S5f |
 | `agent`（上下文件） | 截断、压缩、Auditor | 重写瘦身 | S6 |
 | `assistant` | 一行装配 + 示例 CLI | 重写 | S7 |
 
@@ -112,6 +113,27 @@ deny:  [shell]
   - 宿主要严格解析（字段名拼错必须报错，否则用户以为规则生效了）就用 `yaml.Decoder.KnownFields(true)` / `json.Decoder.DisallowUnknownFields()`，参考 `examples/chat/main.go` 的 `appPolicy` + `loadPolicy`；
   - 该边界由 `agent/policy/layer_test.go` 钉住（框架包不得 import `os`/`net/http`/`yaml.v3`/…；`encoding/json` 不在其列——那是框架自己的载荷格式，`ToolCall.Args` 解析要用）。
 - **本切片只做工具名级规则**：参数级校验（shell 命令分级、文件路径越界）依赖 jail 与沙箱（S5d/S5f），届时以 Checker 体系扩展，不在此处造无消费者的正则引擎。
+
+### 3.5 文件 jail（S5d）
+
+```go
+// 宿主按自己的形态声明可读/可写根——框架不定义 Local / SaaS 这类部署形态
+fsys := filesystem.NewSandboxed(&filesystem.FileAccessPolicy{
+	ReadRoots:  []string{workdir},
+	WriteRoots: []string{workdir},
+})
+reg.Register(builtin.NewReadFile(fsys))
+reg.Register(builtin.NewWriteFile(fsys))
+```
+
+- **机制而非形态**：框架只提供「路径必须落在宿主声明的根内」，不内置 Local/SaaS/容器 模式，也不预设「工作区」这个业务概念。宿主自己声明：平台通常是读写同一工作区；本地开发可能读放开、写受限；诊断场景显式写 `"/"`（逃逸口是**看得见的数据**，不是一个容易忘配的模式名）。
+- **两层校验**：Lexical（规范化后的路径必须落在允许根子树内）→ Realpath（跟随 symlink 后的**实体路径**仍须落在允许根实体内）。只做 Lexical 时，根内一个指向 `/etc/passwd` 的 symlink 就能把内容读出边界——**读同样要走 Realpath**（归档实现只对写做，这是它的一个真实弱点）。
+- **防 symlink 逃逸的三种形态**都拦：目标本身是链接、目标不存在但中间组件是越界链接（`root/escape → /etc`，写 `root/escape/new.txt`）、链接环（深度上限 32，提前拒绝而不是死循环）。
+- **fail-closed**：某类操作的根为空 = 该类操作一律拒绝（不是"等于放开"）；工具没装配文件能力时返回 `*NotConfiguredError` 而非放行。
+- **无隐式共享目录**：可写根只有宿主显式声明的那些——刻意**不含** `/tmp` 与 `os.TempDir()`（共享临时目录是符号链接攻击的经典目标，且多智能体并发时互相干扰）。
+- **审计复用 `tool/call` + `tool/result`**：不新增事件类型（事件目录预算制）。被拒访问以 `tool/result{IsError}` 留痕，拒绝理由（路径 + 该操作允许的根）回填给模型——**说"哪些根允许"比说"什么模式"有用**。
+- **诚实的边界**：本实现是「解析期校验 + 使用实体路径打开」，把校验与使用之间的窗口压到最小；它**不是**真正的 TOCTOU 消除——那需要 `openat2`/`O_NOFOLLOW` 之类的系统调用，Go 标准库给不了。它是纵深防御的一层，不是强隔离的替代品。
+- **jail 限制路径，不限制后果**：根内的密钥（`.env`、`~/.git-credentials`）照样读得到；根内的可执行位置（`.git/hooks/*`）照样能写。所以 jail 是纵深的一层，S5f 进程 sandbox 与部署侧容器化不可省。
 
 ## 4. 治理规则（防再膨胀）
 
