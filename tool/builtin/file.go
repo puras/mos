@@ -92,6 +92,12 @@ func (r *ReadFile) Execute(ctx context.Context, args json.RawMessage) (any, erro
 
 var _ tool.Tool = (*ReadFile)(nil)
 
+// ConcurrencySafe 声明读操作可与同批其他调用并发（只读、无共享状态）。
+// 写工具不声明——写操作保持独占（屏障），避免两个写互相穿插。
+func (r *ReadFile) ConcurrencySafe(_ json.RawMessage) bool { return true }
+
+var _ tool.ConcurrencySafe = (*ReadFile)(nil)
+
 // WriteFile 写入或追加文件内容。
 //
 // 路径先经 filesystem 能力以 OpWrite 解析（Lexical + Realpath 双层，防 symlink

@@ -27,6 +27,22 @@ type Tool interface {
 	Execute(ctx context.Context, args json.RawMessage) (any, error)
 }
 
+// ConcurrencySafe 是可选接口：工具声明「本次调用可以与同批其他调用并发」。
+//
+// 契约（对齐 DSH 的 isConcurrencySafe(args)）：
+//   - 只有显式返回 true 才 opt-in；未实现本接口、参数非法、返回 false、
+//     甚至 panic 一律按**独占**（串行）处理——并发是 fail-closed 的；
+//   - 分类器只看**本次调用的参数**，纯同步、无 I/O、无副作用；
+//   - 返回 true 是工具的承诺：这次调用与同批其他并发调用不冲突。
+//
+// 「一元」是有意的取舍：无法表达「这两个写路径不同才安全」这类关系型规则，
+// 那种情况一律保持独占（fail-closed）。
+//
+// 并发只影响**完成顺序**，不影响回填顺序——结果仍按模型的调用序回填。
+type ConcurrencySafe interface {
+	ConcurrencySafe(args json.RawMessage) bool
+}
+
 // Registry 是线程安全的工具注册表。
 type Registry struct {
 	mu    sync.RWMutex
