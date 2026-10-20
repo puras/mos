@@ -3,8 +3,6 @@ package policy
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -80,50 +78,6 @@ func TestNilAndMalformedRejected(t *testing.T) {
 	}
 	if err := real.Check(context.Background(), nil); err == nil {
 		t.Fatal("nil 载荷应拒绝")
-	}
-}
-
-// YAML 装配：allow/deny 一一对应；未知字段报错（拼错的字段名不许被静默忽略）。
-func TestLoadYAML(t *testing.T) {
-	cfg, err := LoadYAML([]byte("allow:\n  - current_time\n  - web_search\ndeny:\n  - shell\n"))
-	if err != nil {
-		t.Fatalf("LoadYAML: %v", err)
-	}
-	p := New(cfg)
-	if err := p.Check(context.Background(), event("web_search")); err != nil {
-		t.Fatalf("配置放行的工具应通过: %v", err)
-	}
-	if err := p.Check(context.Background(), event("shell")); err == nil {
-		t.Fatal("配置拒绝的工具应被拒")
-	}
-	if err := p.Check(context.Background(), event("read_file")); err == nil {
-		t.Fatal("未列名的工具仍应 fail-closed")
-	}
-}
-
-func TestLoadYAMLRejectsUnknownField(t *testing.T) {
-	if _, err := LoadYAML([]byte("allowed:\n  - current_time\n")); err == nil {
-		t.Fatal("字段名拼错应报错，否则用户以为规则生效了")
-	}
-	if _, err := LoadYAML([]byte("allow: not-a-list\n")); err == nil {
-		t.Fatal("类型错误应报错")
-	}
-}
-
-func TestLoadFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "policy.yaml")
-	if err := os.WriteFile(path, []byte("allow: [current_time]\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := LoadFile(path)
-	if err != nil {
-		t.Fatalf("LoadFile: %v", err)
-	}
-	if err := New(cfg).Check(context.Background(), event("current_time")); err != nil {
-		t.Fatalf("文件装配的策略应放行: %v", err)
-	}
-	if _, err := LoadFile(filepath.Join(t.TempDir(), "missing.yaml")); err == nil {
-		t.Fatal("文件缺失应报错")
 	}
 }
 

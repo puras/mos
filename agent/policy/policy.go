@@ -12,25 +12,34 @@
 // 本切片刻意只做**工具名级**规则：参数级校验（shell 命令分级、文件路径越界）
 // 依赖 jail 与沙箱，那两块（S5d/S5f）就位后再加进 Checker 体系，不在此处造
 // 一个没有消费者的正则引擎。
+//
+// 分层：框架只认**结构**，不认文件、不认配置格式。
+//   - 读文件（os.ReadFile）是宿主的活；
+//   - 解析 YAML/JSON 也是宿主的活——格式与键名归平台，框架不绑定任何一种
+//     （Config 不带 yaml/json tag，也不提供 ParseYAML：绑一个格式就要为它背
+//     依赖，而平台可能用 JSON、配置中心或远端下发）。
+//
+// 框架替宿主打开路径或替宿主认格式，等于替宿主做了本该可替换的决定。
 package policy
 
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 
 	"github.com/puras/mos/agent/hook"
 )
 
-// Config 是策略配置，与 YAML 一一对应。
+// Config 是策略配置。
+//
+// 刻意**不带 yaml/json tag**：配置格式与键名归宿主，框架只认这个结构本身。
+// 宿主可用自己的 DTO 解析后再转成 Config（推荐，键名与框架解耦），也可直接
+// unmarshal 到 Config（此时键名默认是字段名小写，allow/deny 正好对上）。
 type Config struct {
 	// Allow 是显式放行的工具名。空表示不放行任何工具（fail-closed）。
-	Allow []string `yaml:"allow"`
+	Allow []string
 	// Deny 是无条件拒绝的工具名，优先于 Allow。
-	Deny []string `yaml:"deny"`
+	Deny []string
 }
 
 // Policy 是按配置裁决的工具名策略，实现 hook.Guard：
@@ -70,27 +79,6 @@ func (p *Policy) Check(_ context.Context, ev *hook.HookEvent) error {
 		return fmt.Errorf("工具 %q 未列入策略放行名单（fail-closed），已拒绝", name)
 	}
 	return nil
-}
-
-// LoadYAML 解析策略配置。未知字段报错（fail-closed：拼错字段名不得被静默忽略，
-// 那会让用户以为规则生效了）；空白与重复条目在 New 时归一。
-func LoadYAML(data []byte) (Config, error) {
-	var cfg Config
-	dec := yaml.NewDecoder(strings.NewReader(string(data)))
-	dec.KnownFields(true)
-	if err := dec.Decode(&cfg); err != nil {
-		return Config{}, fmt.Errorf("policy: 解析策略配置: %w", err)
-	}
-	return cfg, nil
-}
-
-// LoadFile 从文件读取策略配置。
-func LoadFile(path string) (Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return Config{}, fmt.Errorf("policy: 读取策略文件 %q: %w", path, err)
-	}
-	return LoadYAML(data)
 }
 
 // index 把名单归一为集合：去空白、去空项、去重。
