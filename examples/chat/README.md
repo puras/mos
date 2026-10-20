@@ -105,6 +105,35 @@ go run . -new -concurrency 1        # 强制串行（对照）
 
 `-trim 200` 时，`tool/result` 里能看到被裁剪的文本（`…（已裁剪，原 N 字节）`）——这是 post-execute 钩子真正改了回填给模型的内容。
 
+### 怎么看到"并行读"
+
+`read_file` 的工具描述里写明了分段读的正解：文件较大时**调大 `limit` 一次读完**；确需分段时，**在同一条消息里一次发出多个不同 `offset` 的 `read_file` 调用**，由框架并发执行（上限 `-concurrency`）。
+
+默认 `limit` 是 **32KB**（对齐 PI 的 2000 行/256KB 与 DSH 的可配 `maxLimit` 量级）——常见文件一次读完。结果里带两个规划用的字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `size` | 文件总字节数 |
+| `next_offset` | **下一段的起始偏移，0 表示已读完**（模型直接拿来当 `offset`，不必自己拿 size 去减——对齐 PI 的 "Use offset=N to continue" 提示） |
+
+所以让模型读一个大文件（比如 `go run . -new -workdir .` 后问"读一下 agent/execpath/execpath.go"），典型轨迹是：
+
+```text
+[llm #2] finish=tool_calls → 请求调用 read_file（offset=0）
+[hook] 第 1 轮：即将执行 read_file
+[hook] read_file 执行完毕
+[llm #3] finish=tool_calls → 请求调用 read_file（offset=8192, limit=8192）…  ← 一次发多个
+```
+
+第二个 turn 里那批调用会并发跑完，结果仍按调用序回填。
+
+> 注：模型第一轮拿不到文件大小（`size` 是读之后才知道），所以"一次读完"要么靠
+> 调大 `limit`（推荐），要么先读一段拿到 `size` 再并行补齐——框架两种都支持。
+>
+> **并发需要 ≥3 段才有意义**：15KB 的文件按 32KB 上限只有 1 段（一次读完），
+> 而按旧的 8KB 上限是 2 段——第二批只有 1 个调用，并发无处可发。要看到并行，
+> 读一个 >64KB 的文件（3 段以上）或一次读多个文件。
+
 ### 并发的规则
 
 - **只有声明可并发的工具才并发**：工具实现 `tool.ConcurrencySafe(args) bool` 并返回 true 才入并行组；未声明 / 参数非法 / 分类器出错 → **独占**（串行）。本示例里 `read_file` 可并发，`write_file` 独占。
