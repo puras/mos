@@ -13,7 +13,10 @@ import (
 )
 
 // defaultReadLimit 是 read_file 的默认读取上限（字节）。
-const defaultReadLimit = 8192
+//
+// 32KB：对齐 PI（2000 行或 256KB 封顶）与 DSH（部署可配 maxLimit）的量级——
+// 上限太小会让每个中等文件都变成多轮往返。
+const defaultReadLimit = 32 * 1024
 
 // ReadFile 读取文件内容，支持偏移与长度限制。
 //
@@ -29,14 +32,19 @@ func NewReadFile(fsys filesystem.FileSystem) *ReadFile { return &ReadFile{FS: fs
 
 type readFileParams struct {
 	Path   string `json:"path" mos:"desc=文件路径（相对路径以工作目录为锚点）"`
-	Offset int    `json:"offset,omitempty" mos:"desc=起始偏移（字节），默认 0"`
-	Limit  int    `json:"limit,omitempty" mos:"desc=读取长度（字节），默认 8192"`
+	Offset int    `json:"offset,omitempty" mos:"desc=起始偏移（字节），默认 0；续读时直接用上一段结果里的 next_offset"`
+	Limit  int    `json:"limit,omitempty" mos:"desc=读取长度（字节），默认 32768；文件较大时调大它可一次读完"`
 }
 
 func (ReadFile) Name() string { return "read_file" }
 
 func (ReadFile) Description() string {
-	return "读取文件内容，支持指定偏移与长度（受工作目录沙箱限制）"
+	// 描述是模型唯一的使用指南（MoS 暂未提供“工具自带的系统提示贡献”通道），
+	// 所以把分段读的正解写在这里：先试一次读完，不够再**并行**补齐。
+	return "读取文件内容（受工作目录沙箱限制）。" +
+		"文件较大时优先调大 limit 一次读完；" +
+		"确需分段时，可在同一条消息里一次发出多个不同 offset 的 read_file 调用并行读取剩余部分" +
+		"（结果里的 size 是文件总字节数，next_offset 是下一段的起始偏移，0 表示已读完）。"
 }
 
 func (ReadFile) Parameters() any { return &readFileParams{} }
@@ -78,15 +86,24 @@ func (r *ReadFile) Execute(ctx context.Context, args json.RawMessage) (any, erro
 		}
 	}
 	buf := make([]byte, limit)
-	n, err := f.Read(buf)
-	if err != nil && err != io.EOF {
+	// ReadFull：读满 limit 字节或撞到文件末尾（返回已读字节数与 EOF/ErrUnexpectedEOF）。
+	// 单次 Read 可能只拿到一部分，模型无法判断“到底读了多少”，续读偏移会算错。
+	n, err := io.ReadFull(f, buf)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 		return nil, err
 	}
+	// next_offset：下一段的起始偏移；0 表示已读完（对齐 PI 的
+	// "Use offset=N to continue" 提示——模型不必自己拿 size 去减）。
+	next := 0
+	if int64(p.Offset)+int64(n) < info.Size() {
+		next = p.Offset + n
+	}
 	return map[string]any{
-		"path":    res.DisplayPath,
-		"size":    info.Size(),
-		"offset":  p.Offset,
-		"content": string(buf[:n]),
+		"path":        res.DisplayPath,
+		"size":        info.Size(),
+		"offset":      p.Offset,
+		"next_offset": next,
+		"content":     string(buf[:n]),
 	}, nil
 }
 
