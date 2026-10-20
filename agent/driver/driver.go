@@ -36,11 +36,21 @@ type RunContext struct {
 	Tools *tool.Registry
 	// Hooks 是可改写环节的瀑布钩子总线（可选）。nil 时零开销——
 	// 无钩子即无任何改写，行为与未注入完全一致。
+	//
+	// 钩子**不得改写工具调用载荷**（工具名 / 参数 / CallID）：载荷冻结，
+	// 守卫判定的是这次调用的最终载荷。钩子能做的是：pre-execute 裁决
+	// （允许 / 拒绝 / 请求确认 / 终止本轮）、execute 环绕派发（计时 / 重试）、
+	// post-execute 改写结果文本。
 	Hooks *hook.HookBus
 	// Guards 是单调守卫总线（可选）。nil 时零开销——等价于无安全约束。
-	// 守卫由执行通道在工具执行前串行裁决，先于钩子链：钩子改写工具调用
-	// 也改变不了守卫判定（双轨制，见 agent/hook）。
+	// 守卫由执行通道在工具执行前串行裁决，先于钩子链：载荷对钩子不可变，
+	// 所以钩子既改不了守卫的判定，也改不了守卫看到的载荷（双轨制，见 agent/hook）。
 	Guards *hook.GuardBus
+	// Concurrency 是同一批工具调用的并发上限（可选，<=0 取默认 4，1 = 串行）。
+	// 并发是显式 opt-in：工具未声明本次调用可并发（tool.ConcurrencySafe）时
+	// 一律独占，所以默认行为仍是串行。并发只影响完成顺序，回填顺序永远是
+	// 模型的调用序。
+	Concurrency int
 	// SystemPrompt 是静态系统引导词（可选，作为历史首条消息注入）。
 	SystemPrompt string
 	// Stream 为 true 时优先走决策器的流式接口（若实现），

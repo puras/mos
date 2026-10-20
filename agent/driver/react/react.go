@@ -95,14 +95,33 @@ func (d *Driver) Run(ctx context.Context, rt *driver.RunContext, sess *session.S
 		}
 		// 执行统一走 execpath 通道（守卫裁决 / 调度 / 回填顺序的全库唯一语义）；
 		// 驱动只负责把结果落成 tool/result 事件。
-		opts := execpath.Options{Turn: turn, Guards: rt.Guards}
-		for _, oc := range execpath.ExecuteBatch(ctx, rt.Tools, action.ToolCalls, opts) {
+		opts := execpath.Options{
+			Turn:        turn,
+			Guards:      rt.Guards,
+			Hooks:       rt.Hooks,
+			Concurrency: rt.Concurrency,
+		}
+		outcomes := execpath.ExecuteBatch(ctx, rt.Tools, action.ToolCalls, opts)
+		terminated := false
+		for _, oc := range outcomes {
 			if _, err := sess.Append(session.Event{
 				Kind: session.EventToolResult, Turn: turn,
 				ToolResult: &session.ToolResult{CallID: oc.Call.ID, Content: oc.Content, IsError: oc.IsError},
 			}); err != nil {
 				return "", err
 			}
+			if oc.Terminate {
+				terminated = true
+			}
+		}
+		// 扩展点请求终止本轮：收尾并返回本轮内容（不再回到决策器）。
+		if terminated {
+			if _, err := sess.Append(session.Event{
+				Kind: session.EventTurnEnd, Turn: turn, Reason: "terminated",
+			}); err != nil {
+				return "", err
+			}
+			return action.Content, nil
 		}
 		// 回到循环顶部：把工具结果投影进历史，再让决策器决策
 	}
