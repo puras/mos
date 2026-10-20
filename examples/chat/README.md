@@ -54,7 +54,8 @@ grep tool/result data/chat-*.jsonl | tail -1
 - 策略是 **fail-closed** 的：未列入 `allow` 的工具一律拒绝，零值配置 = 拒绝一切。本示例默认放行全部已注册内置工具只是 Demo 取巧（横幅会写明），真平台必须显式声明；
 - 被拒的调用**仍有 `tool/call` 审计留痕**，只是 `tool/result` 带 `isError`——审计优先；
 - 拒绝不中断 turn，模型下一轮看得见理由并自我纠正；
-- `-deny` / `MOS_DENY_TOOLS` 是快捷方式，`-policy` / `MOS_POLICY` 才是平台形态（YAML）；后者启用时前者被忽略。两者都不配时 `Guards` 为 nil，走零开销降级。
+- `-deny` / `MOS_DENY_TOOLS` 是快捷方式，`-policy` / `MOS_POLICY` 才是平台形态（YAML）；后者启用时前者被忽略。两者都不配时 `Guards` 为 nil，走零开销降级；
+- 读策略文件与解析 YAML 都是**应用层**的活（`os.ReadFile` → `yaml.Decoder` 严格解析 → `policy.Config`）：框架只认结构，不碰文件系统、不绑定配置格式——否则等于绕过 S5d 的文件 jail。键名由应用自己的 `appPolicy` DTO 定，与框架解耦。
 
 ## 对应框架能力
 

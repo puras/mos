@@ -16,6 +16,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
@@ -23,6 +24,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/puras/mos/agent/driver"
 	"github.com/puras/mos/agent/driver/react"
@@ -214,11 +217,39 @@ func mustGuards(cfg policy.Config) *hook.GuardBus {
 // 内置工具只是因为它是 Demo，真平台必须显式声明。
 func policyConfig(policyPath string, allow, deny []string) policy.Config {
 	if policyPath != "" {
-		cfg, err := policy.LoadFile(policyPath)
+		cfg, err := loadPolicy(policyPath)
 		check(err)
 		return cfg
 	}
 	return policy.Config{Allow: allow, Deny: deny}
+}
+
+// appPolicy 是**应用层**的策略文件格式：键名由应用定，与框架解耦。
+//
+// 框架的 policy.Config 不带格式 tag，也不提供 YAML 解析——读文件与认格式都是
+// 应用层的活（框架不碰文件系统、不绑定配置格式）。用独立 DTO 的好处：框架字段
+// 改名不破坏既有配置文件。
+type appPolicy struct {
+	Allow []string `yaml:"allow"`
+	Deny  []string `yaml:"deny"`
+}
+
+// loadPolicy 读策略文件并解析成框架的 policy.Config。
+//
+// 严格解析（KnownFields(true)）：字段名拼错直接报错，不静默忽略——被忽略的
+// 拼写错误会让用户以为规则生效了，实际上什么都没拦。
+func loadPolicy(path string) (policy.Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return policy.Config{}, fmt.Errorf("读取策略文件 %q: %w", path, err)
+	}
+	var ap appPolicy
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&ap); err != nil {
+		return policy.Config{}, fmt.Errorf("解析策略文件 %q: %w", path, err)
+	}
+	return policy.Config{Allow: ap.Allow, Deny: ap.Deny}, nil
 }
 
 // list 按逗号切分并去空白（命令行与 .env 共用）。

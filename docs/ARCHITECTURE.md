@@ -92,16 +92,25 @@ finalize （回填）  调用方（驱动）落 tool/result 事件
 
 ### 3.4 策略层（S5c）
 
+```go
+// 框架的输入只有结构（格式与键名归宿主）
+policy.Config{Allow: []string{"current_time", "read_file"}, Deny: []string{"shell"}}
+```
+
 ```yaml
-# 平台策略文件：纯配置即可装配（G3），未声明即拒绝
+# 宿主侧的一个可能形态（键名由应用定，框架不认）
 allow: [current_time, read_file]
 deny:  [shell]
 ```
 
-- **fail-closed（不变式 1）**：未列入 `allow` 的工具一律拒绝。平台新增自定义工具必须显式声明——“忘了声明”的后果是拒绝而非放行。零值 `Config{}` = 拒绝一切；`nil` 接收者也拒绝而非 panic——fail-closed 是行为不只是默认值。
+- **fail-closed（不变式 1）**：未列入 `allow` 的工具一律拒绝。平台新增自定义工具必须显式声明——“忘了声明”的后果是拒绝而不是放行。零值 `Config{}` = 拒绝一切；`nil` 接收者也拒绝而非 panic——fail-closed 是行为不只是默认值。
 - **deny 优先于 allow**：同时命中以拒绝为准，`deny` 不提供任何放行后门。
 - **位置**：Policy 是 `hook.Guard`，装进 `GuardBus` 即为单调守卫链的一环（S5b 双轨制），由执行通道的 preflight 调用；钩子改写不了它的结论。
-- **YAML 严格解析**：未知字段报错——拼错的字段名不得被静默忽略，那会让用户以为规则生效了（`policy.LoadYAML` 用 `KnownFields(true)`）。
+- **分层：框架只认结构，不认文件、不认配置格式**。`agent/policy` 的直接依赖只有 `context`/`fmt`/`strings` + `agent/hook`：
+  - 读文件（`os.ReadFile`）是宿主的活——框架替宿主打开路径等于绕过 S5d 的文件 jail（自己成了越界那一方），且部署未必有文件系统（配置在远端时直接失效）；
+  - 解析 YAML/JSON 也是宿主的活——格式与键名归平台，框架不绑定任何一种：`policy.Config` **不带 yaml/json tag**，也不提供 `ParseYAML`（绑一个格式就要为它背依赖，而平台可能用 JSON、配置中心或远端下发）；
+  - 宿主要严格解析（字段名拼错必须报错，否则用户以为规则生效了）就用 `yaml.Decoder.KnownFields(true)` / `json.Decoder.DisallowUnknownFields()`，参考 `examples/chat/main.go` 的 `appPolicy` + `loadPolicy`；
+  - 该边界由 `agent/policy/layer_test.go` 钉住（框架包不得 import `os`/`net/http`/`yaml.v3`/…；`encoding/json` 不在其列——那是框架自己的载荷格式，`ToolCall.Args` 解析要用）。
 - **本切片只做工具名级规则**：参数级校验（shell 命令分级、文件路径越界）依赖 jail 与沙箱（S5d/S5f），届时以 Checker 体系扩展，不在此处造无消费者的正则引擎。
 
 ## 4. 治理规则（防再膨胀）
@@ -110,3 +119,4 @@ deny:  [shell]
 2. 钩子/守卫/事件目录预算制：新增一个 HookKind 或事件类型前，先删一个旧的。
 3. 每片合入验收门 = `go test ./...` 全绿 + 本文件/README 状态同步 + 该片一页说明，缺一不合。
 4. 破坏性变更直接改、不留兼容层，但必须在提交信息与 PRD 变更记录声明。
+5. **框架层不碰文件系统与网络，也不绑定配置格式**：需要 I/O 的能力以接口注入（如 `session.Persistence`），由宿主选实现；配置以结构进，键名与解析规则归宿主（`policy.Config` 不带格式 tag）。归档惯例（`agent/config.Load(data []byte)`）即此，框架替宿主打开路径等于绕过自己的文件 jail。
