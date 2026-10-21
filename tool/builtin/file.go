@@ -135,7 +135,12 @@ type writeFileParams struct {
 func (WriteFile) Name() string { return "write_file" }
 
 func (WriteFile) Description() string {
-	return "写入或追加文本到文件（自动创建父目录；受工作目录沙箱限制）"
+	// 结果里带 created / replaced_bytes：模型据此知道自己是新建还是覆盖了已有
+	// 内容（DSH 的 write 区分 Created/Updated，PI 的 edit 报告改了几处）——
+	// 没有这个信息，模型只能读回来确认，反复重写就容易空转。
+	return "写入或追加文本到文件（自动创建父目录；受工作目录沙箱限制）。" +
+		"覆盖已有文件前建议先 read_file 确认——结果里的 created 表示本次是否新建，" +
+		"replaced_bytes 表示覆盖模式下被丢弃的原有字节数。"
 }
 
 func (WriteFile) Parameters() any { return &writeFileParams{} }
@@ -160,6 +165,14 @@ func (w *WriteFile) Execute(ctx context.Context, args json.RawMessage) (any, err
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return nil, err
 	}
+	// 写入前的状态：新建还是覆盖？覆盖掉了多少原有内容？
+	// 模型需要这个才知道自己有没有冲掉已有内容（否则只能读回来确认，容易空转）。
+	created := true
+	var oldSize int64
+	if info, err := os.Stat(target); err == nil {
+		created = false
+		oldSize = info.Size()
+	}
 	flag := os.O_CREATE | os.O_WRONLY
 	if p.Append {
 		flag |= os.O_APPEND
@@ -175,10 +188,17 @@ func (w *WriteFile) Execute(ctx context.Context, args json.RawMessage) (any, err
 	if err != nil {
 		return nil, err
 	}
+	// replaced_bytes：覆盖模式（O_TRUNC）下原有内容全部被丢弃；追加模式不丢弃任何内容。
+	replaced := int64(0)
+	if !p.Append {
+		replaced = oldSize
+	}
 	return map[string]any{
-		"path":   res.DisplayPath,
-		"bytes":  n,
-		"append": p.Append,
+		"path":           res.DisplayPath,
+		"bytes":          n,
+		"append":         p.Append,
+		"created":        created,
+		"replaced_bytes": replaced,
 	}, nil
 }
 

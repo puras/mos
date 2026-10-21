@@ -207,3 +207,53 @@ func TestReadFileNextOffset(t *testing.T) {
 		t.Fatalf("末段长度 = %d, want 200", len(m3["content"].(string)))
 	}
 }
+
+// write 的结果要告诉模型「新建还是覆盖、覆盖掉了多少」——没有这个信息，模型
+// 只能读回来确认，反复重写就容易空转（DSH 区分 Created/Updated，PI 报告改了几处）。
+func TestWriteFileReportsCreatedAndReplaced(t *testing.T) {
+	root, fsys := jail(t)
+	w := NewWriteFile(fsys)
+
+	// 新建
+	out, err := w.Execute(context.Background(), []byte(`{"path":"new.txt","content":"hello"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := out.(map[string]any)
+	if m["created"] != true {
+		t.Fatalf("新建时 created 应为 true: %+v", m)
+	}
+	if m["replaced_bytes"].(int64) != 0 {
+		t.Fatalf("新建时 replaced_bytes 应为 0: %+v", m)
+	}
+
+	// 覆盖已有文件（原 5 字节）
+	out, err = w.Execute(context.Background(), []byte(`{"path":"new.txt","content":"hi"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = out.(map[string]any)
+	if m["created"] != false {
+		t.Fatalf("覆盖时 created 应为 false: %+v", m)
+	}
+	if m["replaced_bytes"].(int64) != 5 {
+		t.Fatalf("覆盖时 replaced_bytes 应为原长度 5: %+v", m)
+	}
+
+	// 追加：不丢弃任何原有内容
+	out, err = w.Execute(context.Background(), []byte(`{"path":"new.txt","content":"!","append":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = out.(map[string]any)
+	if m["created"] != false || m["replaced_bytes"].(int64) != 0 {
+		t.Fatalf("追加时 created=false 且 replaced_bytes=0: %+v", m)
+	}
+	got, err := os.ReadFile(filepath.Join(root, "new.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "hi!" {
+		t.Fatalf("文件内容 = %q, want %q", got, "hi!")
+	}
+}
