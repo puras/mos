@@ -31,7 +31,7 @@
 | --- | --- | --- | --- |
 | `session` | 会话事件日志、消息投影、TaskState、JSONL 持久化 | 重写瘦身 | S1 |
 | `llm`（+`llm/transport`） | ChatModel 抽象、协议适配、共享 HTTP envelope | 移植归档 | S2 |
-| `tool`（+`tool/builtin`） | 工具接口、注册表、Schema 生成、`ConcurrencySafe` 并发分类器；`current_time` 起步 | 移植裁剪 | S3 ✅ / S5e |
+| `tool`（+`tool/builtin`） | 工具接口、注册表、Schema 生成、`ConcurrencySafe` 并发分类器；`current_time` / `read_file` / `write_file` / `edit_file` | 移植裁剪 | S3 ✅ / S5e / S5d+ |
 | `planner` + `driver` | Planner 接口 + ReAct 决策；LoopDriver + ReActDriver | planner 移植 / 驱动重写 | S4a ✅ |
 | `agent/execpath` | 工具调用统一执行通道：preflight 裁决 + 调度 + 按调用序回填 | 重写 | S5a ✅ |
 | `agent/hook` | 双轨制：HookBus（waterfall 可改写）+ GuardBus（serial 单调裁决） | 移植裁剪 | S5b ✅ |
@@ -148,6 +148,28 @@ reg.Register(builtin.NewWriteFile(fsys))
 - **审计复用 `tool/call` + `tool/result`**：不新增事件类型（事件目录预算制）。被拒访问以 `tool/result{IsError}` 留痕，拒绝理由（路径 + 该操作允许的根）回填给模型——**说"哪些根允许"比说"什么模式"有用**。
 - **诚实的边界**：本实现是「解析期校验 + 使用实体路径打开」，把校验与使用之间的窗口压到最小；它**不是**真正的 TOCTOU 消除——那需要 `openat2`/`O_NOFOLLOW` 之类的系统调用，Go 标准库给不了。它是纵深防御的一层，不是强隔离的替代品。
 - **jail 限制路径，不限制后果**：根内的密钥（`.env`、`~/.git-credentials`）照样读得到；根内的可执行位置（`.git/hooks/*`）照样能写。所以 jail 是纵深的一层，S5f 进程 sandbox 与部署侧容器化不可省。
+
+### 3.6 文件工具（read / write / edit）
+
+三个工具，各自参照不同的对位实现：**read / write 参照 DSH**（`packages/fs/tool-fs`），
+**edit 参照 PI**（`packages/coding-agent/src/core/tools/edit.ts`）——PI 的多编辑数组
+在真实模型上更耐用，DSH 的单处替换更简单；这里取 PI 的形状、DSH 的落盘保障：
+
+| 工具 | 干什么 | 关键语义 |
+| --- | --- | --- |
+| `read_file` | 读内容 | **行寻址**（`offset` = 起始行号，1 起；`limit` = 行数，参照 PI）；**上限先到先算**：2000 行 **或** 50KB（PI 的 `DEFAULT_MAX_LINES`/`DEFAULT_MAX_BYTES`），显式给了 `limit` 就以它为准；**超长行单独截断并标记** `... (line truncated to 2000 chars)`（DSH 的 `maxLineLength` 对位）——minified 文件一行几百 KB，只靠总量上限会把预算吃光；**续读提示**参照 PI：`[Showing lines 12-31 of 40. Use offset=32 to continue.]` / `[End of file - total 40 lines]` |
+| `write_file` | 整体写 | **只覆盖，不追加**（DSH 也没有 append：追加让「这次改了什么」变含糊）；**原子写**（同目录临时文件 + rename，写一半失败不留半个文件）；回执 `{created, replaced_bytes}`——`created` 对应 DSH 的 `Created`/`Updated` 措辞，`replaced_bytes` 是被覆盖丢弃的原有字节数（PI 的 edit 会报「改了几处」，同一类信息） |
+| `edit_file` | 精确替换 | 参数 `{path, edits: [{old_string, new_string}]}`（**PI 形状**：一次调用改多处）；每处 `old_string` 在**原文件**里必须**唯一**命中，多处命中 → 报错并报出次数（让模型补足上下文）；各处的 `old_string` **互不重叠**（改同一片区域要合并成一条）；**不做 `replace_all`**——唯一性即安全；匹配前**行尾归一**（CRLF→LF）、写回时**还原原行尾**；**BOM 保留**；拒绝二进制；**原子写**（DSH 的 `writeFileAtomic`）；回执 `{replacements, first_changed_line, bytes}` |
+
+- **为什么要有 edit**：整文件重写要求模型重新产出整个文件——它既怕改错别处、又无法确认自己改对了没，于是反复重写（实测：13 次写、8 次读同一批文件，直到单轮决策次数上限）。精确替换只要求给出要改的那几行，意图与结果一一对应。
+- **edit 不创建文件**：文件不存在就报错——创建是 `write_file` 的活。
+- **edit 是写操作**：走写 jail（`OpWrite`），且不声明 `tool.ConcurrencySafe` → 批内独占（屏障）。
+- **不做"静默改多处"**：多处命中一律报错。唯一性即安全（PI 的规则）。
+- **容错模型发来的怪形状**：有些模型把 `edits` 发成单个对象或 JSON 字符串（PI 源码点名过 Opus 4.6 / GLM-5.1），MoS 直接收下归一，而不是报错让模型重试。
+- **尚未实现（DSH 有，MoS 留待后续）**：
+  - **写前必须先读**（DSH 的 `fs-observation-policy`：按会话记录"已观察"状态，写/edit 前必须先读，且写时校验版本防丢失更新）。MoS 现在工具只有 `ctx`，拿不到会话身份，要做需要先给工具注入会话作用域——**排在 S5f 之后的单独一片**（S5h）。它是唯一能**根治**"模型覆盖别人文件"的机制：把"我是不是该先看一眼"从模型的自觉变成框架的保证。
+  - **行号输出**（DSH 的 read 每行带行号 `12: code`；PI 不带）：MoS 只做行**寻址**，不带行号——行号会放大每个 token，将来 S6 做上下文预算时再一起定。
+  - **图片读取**：MoS 的 `llm.ContentPart` 已支持多模态，但**工具结果通道只走 JSON 文本**，要支持得改 `execpath` 的结果通道。
 
 ## 4. 治理规则（防再膨胀）
 

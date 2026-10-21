@@ -20,7 +20,8 @@ MoS（取自 Sapient）是基于 Go 的智能体基础框架（Agent Base SDK）
 | S5d | `filesystem` 文件 jail（Lexical + Realpath 双校验 + symlink 逃逸防护）+ `read_file`/`write_file` 接入 | ✅ |
 | S5e | 通道三阶段（守卫 preflight + 钩子三环节 + 屏障式有界并发 + 按序回填） | ✅ |
 | S5f | `sandbox` 进程隔离（jail + 超时 + 资源限制 + 环境裁剪 + 网络控制） | ⬜ |
-| S5g | 审批挂起（`agent/approval` + Checkpoint，守卫判定可挂起）——归属待定 | ⬜ |
+| S5g | 审批挂起（pre-execute 的 `ask` 决策 → 挂起 → 恢复） | ⬜ |
+| S5h | 写前观察（DSH 的 `fs-observation-policy`：写/edit 前必须先读 + 版本校验防丢失更新） | ⬜ |
 | S6 | 上下文工程（截断 + 压缩 + TaskState/Auditor） | ⬜ |
 | S7 | 装配层（`assistant.New` 一行装配 + 示例 CLI） | ⬜ |
 

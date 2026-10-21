@@ -134,17 +134,30 @@ go run . -new -concurrency 1        # 强制串行（对照）
 > 而按旧的 8KB 上限是 2 段——第二批只有 1 个调用，并发无处可发。要看到并行，
 > 读一个 >64KB 的文件（3 段以上）或一次读多个文件。
 
-### write_file 的回执
+### 三个文件工具
 
-写入结果带三个字段，让模型知道自己干了什么（没有这些，模型只能读回来确认，容易反复重写）：
+| 工具 | 用途 | 关键语义 |
+| --- | --- | --- |
+| `read_file` | 读内容 | **行寻址**：`offset` = 起始行号（1 起），`limit` = 行数（默认 2000，另有 50KB 总量上限，先到先算）；结果带 `size`（字节）、`total_lines`（总行数）、`next_offset`（下一段起始**行号**，0 = 已读完）；**超长行单独截断并标记** `... (line truncated to 2000 chars)`；结尾带 PI 风格的续读提示 `[Showing lines 12-31 of 40. Use offset=32 to continue.]` |
+| `write_file` | 整体写 | **只覆盖，不追加**；**原子写**（临时文件 + rename，写一半失败不留半个文件）；回执带 `created`（新建/覆盖，对应 DSH 的 `Created`/`Updated`）与 `replaced_bytes`（被覆盖丢弃的原有字节数） |
+| `edit_file` | **精确替换**（改代码用这个） | 参数 `{path, edits: [{old_string, new_string}]}`——**一次调用改多处**；每处 `old_string` 在原文件里必须唯一命中（多处 → 报错报出次数）；各处的 `old_string` 互不重叠；匹配前行尾归一、写回时还原；BOM 保留；拒绝二进制；原子写；回执带 `replacements` 与 `first_changed_line` |
 
-| 字段 | 含义 |
-| --- | --- |
-| `bytes` | 本次写入的字节数 |
-| `created` | 本次是**新建**（此前不存在）还是**覆盖** |
-| `replaced_bytes` | 覆盖模式下被丢弃的**原有内容**字节数（追加模式为 0） |
+**为什么改代码要用 `edit_file` 而不是 `write_file`**：整文件重写要求模型重新产出整个文件——它既怕改错别处、又无法确认自己改对了没，于是反复重写（实测：13 次写、8 次读同一批文件，直到单轮决策次数上限）。精确替换只要求给出要改的那几行。
 
-对照：DSH 的 write 区分 `Created` / `Updated`；PI 的 edit 报告"改了几处、起始行在哪"。MoS 不把 diff 回给模型（那属于展示层），但把"新建还是覆盖、覆盖了多少"给足——模型据此知道该不该先读一眼。
+模型侧怎么用（DSH 的 read-before-mutation 建议，MoS 未强制）：
+
+```text
+read_file  →  看清要改的地方
+edit_file  →  一次调用给多处：edits: [{old_string, new_string}, …]
+```
+
+`old_string` 出现多次时会得到：
+
+```text
+第 1 处编辑的 old_string 在 "main.go" 里出现了 3 次：请提供更具体的上下文（保持唯一）
+```
+
+——据此把上下文补足即可。两处改的是同一片区域时会得到「重叠：请合并成一条 edit」。
 
 ### 并发的规则
 
