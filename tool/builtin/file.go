@@ -1,22 +1,30 @@
 package builtin
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/puras/mos/filesystem"
 	"github.com/puras/mos/tool"
 )
 
-// defaultReadLimit 是 read_file 的默认读取上限（字节）。
-//
-// 32KB：对齐 PI（2000 行或 256KB 封顶）与 DSH（部署可配 maxLimit）的量级——
-// 上限太小会让每个中等文件都变成多轮往返。
-const defaultReadLimit = 32 * 1024
+// read_file 的上限（参照 PI 的 read 工具：DEFAULT_MAX_LINES / DEFAULT_MAX_BYTES）。
+const (
+	// defaultReadLines 是默认读取行数（PI：2000 行）。
+	defaultReadLines = 2000
+	// maxReadBytes 是单次返回的字节上限（PI：50KB）。行数与字节**先到先算**。
+	maxReadBytes = 50 * 1024
+	// maxLineChars 是单行字符上限（DSH 的 maxLineLength 对位）。超长的行单独
+	// 截断并标记——minified 文件一行能有几百 KB，只靠总量上限会把预算吃光。
+	// （PI 的做法是报错并指向 bash；MoS 还没有 shell 工具，所以用截断。）
+	maxLineChars = 2000
+)
 
 // ReadFile 读取文件内容，支持偏移与长度限制。
 //
@@ -32,8 +40,8 @@ func NewReadFile(fsys filesystem.FileSystem) *ReadFile { return &ReadFile{FS: fs
 
 type readFileParams struct {
 	Path   string `json:"path" mos:"desc=文件路径（相对路径以工作目录为锚点）"`
-	Offset int    `json:"offset,omitempty" mos:"desc=起始偏移（字节），默认 0；续读时直接用上一段结果里的 next_offset"`
-	Limit  int    `json:"limit,omitempty" mos:"desc=读取长度（字节），默认 32768；文件较大时调大它可一次读完"`
+	Offset int    `json:"offset,omitempty" mos:"desc=起始行号（1 起），默认 1；续读时直接用上一段结果里的 next_offset"`
+	Limit  int    `json:"limit,omitempty" mos:"desc=读取行数，默认 2000（另有 50KB 总量上限，先到先算）"`
 }
 
 func (ReadFile) Name() string { return "read_file" }
@@ -41,10 +49,11 @@ func (ReadFile) Name() string { return "read_file" }
 func (ReadFile) Description() string {
 	// 描述是模型唯一的使用指南（MoS 暂未提供“工具自带的系统提示贡献”通道），
 	// 所以把分段读的正解写在这里：先试一次读完，不够再**并行**补齐。
-	return "读取文件内容（受工作目录沙箱限制）。" +
+	return "读取文件内容（受工作目录沙箱限制）。按行寻址：offset 是起始行号（从 1 起），" +
+		"limit 是读取行数（默认 2000，另有 50KB 总量上限，先到先算）。" +
 		"文件较大时优先调大 limit 一次读完；" +
 		"确需分段时，可在同一条消息里一次发出多个不同 offset 的 read_file 调用并行读取剩余部分" +
-		"（结果里的 size 是文件总字节数，next_offset 是下一段的起始偏移，0 表示已读完）。"
+		"（结果里的 size 是文件总字节数，total_lines 是总行数，next_offset 是下一段的起始行号，0 表示已读完）。"
 }
 
 func (ReadFile) Parameters() any { return &readFileParams{} }
@@ -65,9 +74,14 @@ func (r *ReadFile) Execute(ctx context.Context, args json.RawMessage) (any, erro
 	if err != nil {
 		return nil, err
 	}
+
+	startLine := p.Offset
+	if startLine <= 0 {
+		startLine = 1
+	}
 	limit := p.Limit
 	if limit <= 0 {
-		limit = defaultReadLimit
+		limit = defaultReadLines
 	}
 
 	f, err := os.Open(res.TargetKey)
@@ -75,45 +89,94 @@ func (r *ReadFile) Execute(ctx context.Context, args json.RawMessage) (any, erro
 		return nil, err
 	}
 	defer f.Close()
-
 	info, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
-	if p.Offset > 0 {
-		if _, err := f.Seek(int64(p.Offset), io.SeekStart); err != nil {
-			return nil, err
+
+	// 逐行扫描：只保留需要的窗口（内存有界），但一路数到文件末尾，
+	// 好让回执里的 total_lines 与续读提示里的 "of N" 是真的。
+	br := bufio.NewReader(f)
+	var (
+		window   []string
+		total    int
+		bytesOut int
+		hitBytes bool
+	)
+	for {
+		line, rerr := br.ReadString('\n')
+		if rerr != nil && rerr != io.EOF {
+			return nil, rerr
+		}
+		if rerr == io.EOF && line == "" {
+			break
+		}
+		total++
+		if total >= startLine && len(window) < limit {
+			rendered := truncateLongLine(line)
+			if bytesOut+len(rendered) > maxReadBytes {
+				// 字节上限先到（PI：whichever is hit first）
+				hitBytes = true
+				break
+			}
+			bytesOut += len(rendered)
+			window = append(window, rendered)
+		}
+		if rerr == io.EOF {
+			break
 		}
 	}
-	buf := make([]byte, limit)
-	// ReadFull：读满 limit 字节或撞到文件末尾（返回已读字节数与 EOF/ErrUnexpectedEOF）。
-	// 单次 Read 可能只拿到一部分，模型无法判断“到底读了多少”，续读偏移会算错。
-	n, err := io.ReadFull(f, buf)
-	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-		return nil, err
+	if total == 0 {
+		return nil, fmt.Errorf("文件 %q 是空的", res.DisplayPath)
 	}
-	// next_offset：下一段的起始偏移；0 表示已读完（对齐 PI 的
-	// "Use offset=N to continue" 提示——模型不必自己拿 size 去减）。
-	next := 0
-	if int64(p.Offset)+int64(n) < info.Size() {
-		next = p.Offset + n
+	if startLine > total {
+		return nil, fmt.Errorf("offset %d 超出文件末尾（文件共 %d 行）", startLine, total)
 	}
+
+	firstLine := startLine
+	lastLine := startLine + len(window) - 1
+	nextOffset := 0
+	footer := ""
+	switch {
+	case lastLine >= total:
+		footer = fmt.Sprintf("(End of file - total %d lines)", total)
+	case hitBytes:
+		nextOffset = lastLine + 1
+		footer = fmt.Sprintf("[Showing lines %d-%d of %d (%d KB limit). Use offset=%d to continue.]",
+			firstLine, lastLine, total, maxReadBytes/1024, nextOffset)
+	case p.Limit > 0 && len(window) == p.Limit:
+		// 用户自己限了行数（PI 的第三种提示）
+		remaining := total - lastLine
+		nextOffset = lastLine + 1
+		footer = fmt.Sprintf("[%d more lines in file. Use offset=%d to continue.]", remaining, nextOffset)
+	default:
+		nextOffset = lastLine + 1
+		footer = fmt.Sprintf("[Showing lines %d-%d of %d. Use offset=%d to continue.]",
+			firstLine, lastLine, total, nextOffset)
+	}
+
 	return map[string]any{
 		"path":        res.DisplayPath,
 		"size":        info.Size(),
-		"offset":      p.Offset,
-		"next_offset": next,
-		"content":     string(buf[:n]),
+		"total_lines": total,
+		"offset":      firstLine,
+		"next_offset": nextOffset,
+		"content":     strings.Join(window, "") + "\n" + footer,
 	}, nil
 }
 
-var _ tool.Tool = (*ReadFile)(nil)
-
-// ConcurrencySafe 声明读操作可与同批其他调用并发（只读、无共享状态）。
-// 写工具不声明——写操作保持独占（屏障），避免两个写互相穿插。
-func (r *ReadFile) ConcurrencySafe(_ json.RawMessage) bool { return true }
-
-var _ tool.ConcurrencySafe = (*ReadFile)(nil)
+// truncateLongLine 截断超长的行，行尾补标记（DSH 的行内截断标记风格：
+// "... (line truncated to N chars)"）。
+//
+// 为什么要它：minified JS / 压缩过的 JSON 这类文件**一整行**能有几百 KB，
+// 只靠总量上限的话，一次读取会把整个预算吃光，模型什么也读不到。
+func truncateLongLine(line string) string {
+	if len([]rune(line)) <= maxLineChars {
+		return line
+	}
+	runes := []rune(line)
+	return string(runes[:maxLineChars]) + fmt.Sprintf("... (line truncated to %d chars)", maxLineChars)
+}
 
 // WriteFile 写入或追加文件内容。
 //
@@ -128,8 +191,7 @@ func NewWriteFile(fsys filesystem.FileSystem) *WriteFile { return &WriteFile{FS:
 
 type writeFileParams struct {
 	Path    string `json:"path" mos:"desc=文件路径（相对路径以工作目录为锚点）"`
-	Content string `json:"content" mos:"desc=要写入的内容"`
-	Append  bool   `json:"append,omitempty" mos:"desc=是否追加写入，默认覆盖"`
+	Content string `json:"content" mos:"desc=要写入的完整内容"`
 }
 
 func (WriteFile) Name() string { return "write_file" }
@@ -138,9 +200,11 @@ func (WriteFile) Description() string {
 	// 结果里带 created / replaced_bytes：模型据此知道自己是新建还是覆盖了已有
 	// 内容（DSH 的 write 区分 Created/Updated，PI 的 edit 报告改了几处）——
 	// 没有这个信息，模型只能读回来确认，反复重写就容易空转。
-	return "写入或追加文本到文件（自动创建父目录；受工作目录沙箱限制）。" +
-		"覆盖已有文件前建议先 read_file 确认——结果里的 created 表示本次是否新建，" +
-		"replaced_bytes 表示覆盖模式下被丢弃的原有字节数。"
+	// 刻意**不做追加写**（DSH 也没有）：append 让「这次到底改了什么」变得含糊，
+	// 而追加场景用 edit_file 精确追加更可控。
+	return "写入文本到文件（整体覆盖，自动创建父目录；受工作目录沙箱限制）。" +
+		"只改局部内容请优先用 edit_file。覆盖已有文件前建议先 read_file 确认——" +
+		"结果里的 created 表示本次是否新建，replaced_bytes 表示被覆盖丢弃的原有字节数。"
 }
 
 func (WriteFile) Parameters() any { return &writeFileParams{} }
@@ -167,47 +231,32 @@ func (w *WriteFile) Execute(ctx context.Context, args json.RawMessage) (any, err
 	}
 	// 写入前的状态：新建还是覆盖？覆盖掉了多少原有内容？
 	// 模型需要这个才知道自己有没有冲掉已有内容（否则只能读回来确认，容易空转）。
+	// created 对应 DSH 的 Created/Updated 措辞。
 	created := true
 	var oldSize int64
 	if info, err := os.Stat(target); err == nil {
 		created = false
 		oldSize = info.Size()
 	}
-	flag := os.O_CREATE | os.O_WRONLY
-	if p.Append {
-		flag |= os.O_APPEND
-	} else {
-		flag |= os.O_TRUNC
-	}
-	f, err := os.OpenFile(target, flag, 0o644)
-	if err != nil {
+	// 原子写：临时文件 + rename（DSH 的 writeFileAtomic 同样做法）——
+	// 写一半失败不会把原文件截成半个。
+	if err := atomicWrite(target, []byte(p.Content), 0o644); err != nil {
 		return nil, err
-	}
-	defer f.Close()
-	n, err := f.WriteString(p.Content)
-	if err != nil {
-		return nil, err
-	}
-	// replaced_bytes：覆盖模式（O_TRUNC）下原有内容全部被丢弃；追加模式不丢弃任何内容。
-	replaced := int64(0)
-	if !p.Append {
-		replaced = oldSize
 	}
 	return map[string]any{
 		"path":           res.DisplayPath,
-		"bytes":          n,
-		"append":         p.Append,
+		"bytes":          len(p.Content),
 		"created":        created,
-		"replaced_bytes": replaced,
+		"replaced_bytes": oldSize,
 	}, nil
 }
 
 var _ tool.Tool = (*WriteFile)(nil)
 
-// FileTools 返回受文件能力约束的工具集（读 + 写）。
+// FileTools 返回受文件能力约束的工具集（读 + 写 + 精确编辑）。
 //
 // 宿主没装配文件能力时可以不调用本函数——不给模型这个能力，比给它一个
 // 必然失败的工具更干净。
 func FileTools(fsys filesystem.FileSystem) []tool.Tool {
-	return []tool.Tool{NewReadFile(fsys), NewWriteFile(fsys)}
+	return []tool.Tool{NewReadFile(fsys), NewWriteFile(fsys), NewEdit(fsys)}
 }

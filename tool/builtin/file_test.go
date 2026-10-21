@@ -34,8 +34,11 @@ func TestReadFileInsideJail(t *testing.T) {
 		t.Fatalf("读取 jail 内文件: %v", err)
 	}
 	m := out.(map[string]any)
-	if m["content"] != "hello" {
+	if !strings.Contains(m["content"].(string), "hello") {
 		t.Fatalf("content = %v", m["content"])
+	}
+	if m["total_lines"].(int) != 1 {
+		t.Fatalf("total_lines = %v, want 1", m["total_lines"])
 	}
 }
 
@@ -120,18 +123,18 @@ func TestWriteFileThroughSymlinkDenied(t *testing.T) {
 	}
 }
 
-// FileTools 返回读 + 写两个工具。
+// FileTools 返回读 + 写 + 精确编辑三个工具。
 func TestFileTools(t *testing.T) {
 	_, fsys := jail(t)
 	tools := FileTools(fsys)
-	if len(tools) != 2 {
+	if len(tools) != 3 {
 		t.Fatalf("工具数 = %d", len(tools))
 	}
 	names := map[string]bool{}
 	for _, tl := range tools {
 		names[tl.Name()] = true
 	}
-	if !names["read_file"] || !names["write_file"] {
+	if !names["read_file"] || !names["write_file"] || !names["edit_file"] {
 		t.Fatalf("工具名 = %v", names)
 	}
 }
@@ -141,17 +144,17 @@ func TestFileTools(t *testing.T) {
 // 的调用并行读完。描述被改写时这条会失败——防止指南被无意丢掉。
 func TestReadFileDescriptionKeepsUsageGuide(t *testing.T) {
 	desc := NewReadFile(nil).Description()
-	for _, want := range []string{"limit", "offset", "并行", "size"} {
+	for _, want := range []string{"limit", "offset", "并行", "行"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("read_file 描述应包含 %q（使用指南），实际：%s", want, desc)
 		}
 	}
 }
 
-// 默认上限 32KB：中等文件一次读完（往返少），不再一小段一小段地磨。
+// 默认上限 2000 行：中等文件一次读完（往返少），不再一小段一小段地磨。
 func TestReadFileDefaultLimitReadsMediumFileWhole(t *testing.T) {
 	root, fsys := jail(t)
-	body := strings.Repeat("x", 20000) // 20KB < 32KB
+	body := strings.Repeat("0123456789\n", 500) // 500 行 < 2000 行
 	if err := os.WriteFile(filepath.Join(root, "mid.txt"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -160,51 +163,100 @@ func TestReadFileDefaultLimitReadsMediumFileWhole(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := out.(map[string]any)
-	if len(m["content"].(string)) != 20000 {
-		t.Fatalf("默认应一次读完 20000 字节, got %d", len(m["content"].(string)))
+	if !strings.Contains(m["content"].(string), "0123456789") {
+		t.Fatalf("内容缺失: %q", m["content"])
+	}
+	if m["total_lines"].(int) != 500 {
+		t.Fatalf("total_lines = %v, want 500", m["total_lines"])
 	}
 	if m["next_offset"].(int) != 0 {
 		t.Fatalf("读完时 next_offset 应为 0, got %v", m["next_offset"])
 	}
+	if !strings.Contains(m["content"].(string), "(End of file - total 500 lines)") {
+		t.Fatalf("读完应有结束标记: %q", m["content"])
+	}
 }
 
-// next_offset：读满 limit 时指向下一段起点；读完为 0（模型不用自己拿 size 去减）。
-func TestReadFileNextOffset(t *testing.T) {
+// 行寻址：offset 是行号（1 起），limit 是行数。
+func TestReadFileLineAddressing(t *testing.T) {
 	root, fsys := jail(t)
-	if err := os.WriteFile(filepath.Join(root, "big.txt"), []byte(strings.Repeat("y", 1000)), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "a.txt"),
+		[]byte("l1\nl2\nl3\nl4\nl5\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// 第一段：limit=400 → next_offset=400
-	out, err := NewReadFile(fsys).Execute(context.Background(), []byte(`{"path":"big.txt","limit":400}`))
+	out, err := NewReadFile(fsys).Execute(context.Background(),
+		[]byte(`{"path":"a.txt","offset":2,"limit":2}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	m := out.(map[string]any)
-	if m["next_offset"].(int) != 400 {
-		t.Fatalf("next_offset = %v, want 400", m["next_offset"])
+	content := m["content"].(string)
+	if !strings.Contains(content, "l2") || !strings.Contains(content, "l3") {
+		t.Fatalf("应读到第 2-3 行: %q", content)
 	}
-	if len(m["content"].(string)) != 400 {
-		t.Fatalf("content 长度 = %d, want 400", len(m["content"].(string)))
+	if strings.Contains(content, "l1") || strings.Contains(content, "l4") {
+		t.Fatalf("不该读到窗口外的行: %q", content)
 	}
-	// 续读：用 next_offset 定位，读到最后一段
-	out2, err := NewReadFile(fsys).Execute(context.Background(), []byte(`{"path":"big.txt","offset":400,"limit":400}`))
+	if m["offset"].(int) != 2 {
+		t.Fatalf("offset = %v, want 2", m["offset"])
+	}
+	if m["total_lines"].(int) != 5 {
+		t.Fatalf("total_lines = %v, want 5", m["total_lines"])
+	}
+	if !strings.Contains(content, "Use offset=4 to continue") {
+		t.Fatalf("续读提示缺失: %q", content)
+	}
+	if m["next_offset"].(int) != 4 {
+		t.Fatalf("next_offset = %v, want 4", m["next_offset"])
+	}
+}
+
+// offset 越界 → 报错（PI 同）。
+func TestReadFileOffsetBeyondEnd(t *testing.T) {
+	root, fsys := jail(t)
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("l1\nl2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewReadFile(fsys).Execute(context.Background(),
+		[]byte(`{"path":"a.txt","offset":99}`)); err == nil {
+		t.Fatal("offset 越界应报错")
+	}
+}
+
+// next_offset：下一段的起始**行号**；读完为 0（模型不用自己算）。
+func TestReadFileNextOffset(t *testing.T) {
+	root, fsys := jail(t)
+	if err := os.WriteFile(filepath.Join(root, "big.txt"),
+		[]byte(strings.Repeat("line\n", 100)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := NewReadFile(fsys).Execute(context.Background(),
+		[]byte(`{"path":"big.txt","limit":40}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	m2 := out2.(map[string]any)
-	if m2["next_offset"].(int) != 800 {
-		t.Fatalf("next_offset = %v, want 800", m2["next_offset"])
+	m := out.(map[string]any)
+	if m["next_offset"].(int) != 41 {
+		t.Fatalf("next_offset = %v, want 41", m["next_offset"])
 	}
-	out3, err := NewReadFile(fsys).Execute(context.Background(), []byte(`{"path":"big.txt","offset":800,"limit":400}`))
+	if m["total_lines"].(int) != 100 {
+		t.Fatalf("total_lines = %v, want 100", m["total_lines"])
+	}
+	out2, err := NewReadFile(fsys).Execute(context.Background(),
+		[]byte(`{"path":"big.txt","offset":41,"limit":40}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	m3 := out3.(map[string]any)
-	if m3["next_offset"].(int) != 0 {
-		t.Fatalf("读完时 next_offset 应为 0, got %v", m3["next_offset"])
+	if out2.(map[string]any)["next_offset"].(int) != 81 {
+		t.Fatalf("next_offset = %v, want 81", out2.(map[string]any)["next_offset"])
 	}
-	if len(m3["content"].(string)) != 200 {
-		t.Fatalf("末段长度 = %d, want 200", len(m3["content"].(string)))
+	out3, err := NewReadFile(fsys).Execute(context.Background(),
+		[]byte(`{"path":"big.txt","offset":81,"limit":40}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out3.(map[string]any)["next_offset"].(int) != 0 {
+		t.Fatalf("读完时 next_offset 应为 0, got %v", out3.(map[string]any)["next_offset"])
 	}
 }
 
@@ -240,20 +292,40 @@ func TestWriteFileReportsCreatedAndReplaced(t *testing.T) {
 		t.Fatalf("覆盖时 replaced_bytes 应为原长度 5: %+v", m)
 	}
 
-	// 追加：不丢弃任何原有内容
-	out, err = w.Execute(context.Background(), []byte(`{"path":"new.txt","content":"!","append":true}`))
+	// 覆盖：原有内容全部被丢弃，replaced_bytes = 原长度
+	out, err = w.Execute(context.Background(), []byte(`{"path":"new.txt","content":"hey"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	m = out.(map[string]any)
-	if m["created"] != false || m["replaced_bytes"].(int64) != 0 {
-		t.Fatalf("追加时 created=false 且 replaced_bytes=0: %+v", m)
+	if m["created"] != false || m["replaced_bytes"].(int64) != 2 {
+		t.Fatalf("覆盖时 created=false 且 replaced_bytes=原长度 2: %+v", m)
 	}
 	got, err := os.ReadFile(filepath.Join(root, "new.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != "hi!" {
-		t.Fatalf("文件内容 = %q, want %q", got, "hi!")
+	if string(got) != "hey" {
+		t.Fatalf("文件内容 = %q, want %q", got, "hey")
+	}
+	// 没有 append 参数了：传了也应被忽略而不是静默追加
+	if _, ok := m["append"]; ok {
+		t.Fatalf("回执不应再含 append 字段: %+v", m)
+	}
+}
+
+// 单行超长保护：minified 文件的一行可能有几百 KB，只靠总量上限会把预算吃光。
+func TestReadFileTruncatesLongLine(t *testing.T) {
+	root, fsys := jail(t)
+	if err := os.WriteFile(filepath.Join(root, "min.js"), []byte(strings.Repeat("y", 10000)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := NewReadFile(fsys).Execute(context.Background(), []byte(`{"path":"min.js"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := out.(map[string]any)["content"].(string)
+	if !strings.Contains(content, "line truncated to 2000 chars") {
+		t.Fatalf("超长行应被截断并标记: %q", content[:80])
 	}
 }
