@@ -37,7 +37,7 @@
 | `agent/hook` | 双轨制：HookBus（waterfall 可改写）+ GuardBus（serial 单调裁决） | 移植裁剪 | S5b ✅ |
 | `agent/policy` | 工具名级策略：fail-closed 黑白名单 + YAML 装配 | 移植裁剪 | S5c ✅ |
 | `filesystem` | 文件 jail：宿主声明可读/可写根 + Lexical/Realpath 双层校验 | 移植裁剪 | S5d ✅ |
-| `sandbox` | 进程隔离（jail + 超时 + 资源限制 + 环境裁剪 + 网络控制） | 移植裁剪 | S5f |
+| `sandbox` | 进程隔离：超时 + 进程组击杀 + 输出上限 + 资源限制 + 环境裁剪 | 移植裁剪 | S5f-1 ✅ |
 | `agent`（上下文件） | 截断、压缩、Auditor | 重写瘦身 | S6 |
 | `assistant` | 一行装配 + 示例 CLI | 重写 | S7 |
 
@@ -109,23 +109,29 @@ ExecuteBatch(ctx, reg, calls, opts) []Outcome   // 结果与 calls 严格同序
 
 ```go
 // 框架的输入只有结构（格式与键名归宿主）
-policy.Config{Allow: []string{"current_time", "read_file"}, Deny: []string{"shell"}}
+policy.Config{Allow: []string{"read_file"}, Deny: []string{"shell", "write_*"}}
 ```
 
-```yaml
-# 宿主侧的一个可能形态（键名由应用定，框架不认）
-allow: [current_time, read_file]
-deny:  [shell]
+**语义对齐 PI 与 DSH 的共识**（两家都是两份名单都可选）：
+
+```
+允许(name) = (Allow 未配置 OR name 匹配 Allow) AND NOT name 匹配 Deny
 ```
 
-- **fail-closed（不变式 1）**：未列入 `allow` 的工具一律拒绝。平台新增自定义工具必须显式声明——“忘了声明”的后果是拒绝而不是放行。零值 `Config{}` = 拒绝一切；`nil` 接收者也拒绝而非 panic——fail-closed 是行为不只是默认值。
-- **deny 优先于 allow**：同时命中以拒绝为准，`deny` 不提供任何放行后门。
-- **位置**：Policy 是 `hook.Guard`，装进 `GuardBus` 即为单调守卫链的一环（S5b 双轨制），由执行通道的 preflight 调用；钩子改写不了它的结论。
-- **分层：框架只认结构，不认文件、不认配置格式**。`agent/policy` 的直接依赖只有 `context`/`fmt`/`strings` + `agent/hook`：
-  - 读文件（`os.ReadFile`）是宿主的活——框架替宿主打开路径等于绕过 S5d 的文件 jail（自己成了越界那一方），且部署未必有文件系统（配置在远端时直接失效）；
-  - 解析 YAML/JSON 也是宿主的活——格式与键名归平台，框架不绑定任何一种：`policy.Config` **不带 yaml/json tag**，也不提供 `ParseYAML`（绑一个格式就要为它背依赖，而平台可能用 JSON、配置中心或远端下发）；
-  - 宿主要严格解析（字段名拼错必须报错，否则用户以为规则生效了）就用 `yaml.Decoder.KnownFields(true)` / `json.Decoder.DisallowUnknownFields()`，参考 `examples/chat/main.go` 的 `appPolicy` + `loadPolicy`；
-  - 该边界由 `agent/policy/layer_test.go` 钉住（框架包不得 import `os`/`net/http`/`yaml.v3`/…；`encoding/json` 不在其列——那是框架自己的载荷格式，`ToolCall.Args` 解析要用）。
+| 情况 | 结果 | 依据 |
+| --- | --- | --- |
+| `Deny` 命中 | 一律拒绝（**优先**，无放行后门） | PI `excludedToolNames` / DSH `ToolRestriction.deny` |
+| `Allow` **未配置**（nil） | **不限制** | PI `!this._allowedTools → true`；DSH `allow === undefined` |
+| `Allow` 配置了但**是空集** | **全禁** | PI "An empty list exposes no tools"；DSH `allow !== undefined && !allow.has(name)` |
+| `Allow` 非空 | 只有名单内的可用 | 两家一致 |
+
+- **名字支持 `*` 通配**（PI 的语义）：`*` 匹配任意字符（含分隔符，`write_*` 能匹配 `write_a_b`）、整串锚定；精确名走集合。DSH 只支持精确名。
+- **分层：策略是收窄层，不是能力清单**。fail-closed 的那道门是**注册表**——没注册的工具模型看不见也调不动；策略只负责在已给出的能力上挖洞。"只允许某几个工具"靠**不注册**其余的来表达，不必在策略里再写一遍白名单。
+- **可见性与运行时是同一份名单**：`Policy.Visible` 决定工具**不出现在模型看到的清单里**（PI/DSH 的可见性层——被禁的工具不给模型看）；`Policy.Check` 是运行时守卫，拦下模型幻觉出的名字、策略中途变更、非模型路径的直接调用。两者读同一份名单，所以不会出现"看不见却能调"的矛盾。
+- **可见性过滤器无副作用**：`tool.Registry.SetVisibility(func(name string) bool)`——它每次组装工具清单都会被调用，所以必须纯判定。本包只认函数值，不认识 policy / hook 之类的具体实现（装配由宿主接上）。
+- **审计语义的变化**（承接 S5c 的"被拒也留痕"）：被禁的工具不在清单里 → 模型不会去调 → **不会有被拒记录**。仍会留痕的是：模型幻觉出的名字、策略中途变更、非模型路径的调用。真正的审计凭据变成**策略配置本身**。
+- **不做**：PI 的 MCP 特例（allow 列表会意外影响 MCP 工具注册）——MoS 还没有 MCP 工具；DSH 的 per-scope 限制层——MoS 还没有 scope 概念。
+- **分层：框架只认结构，不认文件、不认配置格式**：读文件与解析 YAML/JSON 都是宿主的活（`Config` 不带 yaml/json tag，也不提供 ParseYAML——绑一个格式就要为它背依赖，而平台可能用 JSON、配置中心或远端下发）。
 - **本切片只做工具名级规则**：参数级校验（shell 命令分级、文件路径越界）依赖 jail 与沙箱（S5d/S5f），届时以 Checker 体系扩展，不在此处造无消费者的正则引擎。
 
 ### 3.5 文件 jail（S5d）
@@ -170,6 +176,29 @@ reg.Register(builtin.NewWriteFile(fsys))
   - **写前必须先读**（DSH 的 `fs-observation-policy`：按会话记录"已观察"状态，写/edit 前必须先读，且写时校验版本防丢失更新）。MoS 现在工具只有 `ctx`，拿不到会话身份，要做需要先给工具注入会话作用域——**排在 S5f 之后的单独一片**（S5h）。它是唯一能**根治**"模型覆盖别人文件"的机制：把"我是不是该先看一眼"从模型的自觉变成框架的保证。
   - **行号输出**（DSH 的 read 每行带行号 `12: code`；PI 不带）：MoS 只做行**寻址**，不带行号——行号会放大每个 token，将来 S6 做上下文预算时再一起定。
   - **图片读取**：MoS 的 `llm.ContentPart` 已支持多模态，但**工具结果通道只走 JSON 文本**，要支持得改 `execpath` 的结果通道。
+
+### 3.7 进程沙箱（S5f-1）
+
+```go
+sb := &sandbox.Local{WorkDir: root, Timeout: 30 * time.Second, SpillDir: spillDir}
+reg.Register(builtin.NewShell(sb))
+```
+
+| 层 | 手段 | 挡住什么 |
+| --- | --- | --- |
+| ① 工作目录 | `cmd.Dir` | 相对路径的默认落点（**由宿主固定，不交给模型指定**——那等于给逃逸口） |
+| ② 超时 + 进程组击杀 | `Setpgid` + `SIGKILL(-pgid)` | 死循环、fork 出的孤儿进程 |
+| ③ 输出上限 | 内存只留前 N 字节，**丢弃而非阻塞** | 输出爆炸撑爆内存 / 管道写满挂死 |
+| ④ 资源限制 | `ulimit -t/-v/-f` | 吃满 CPU / 内存 / 磁盘 |
+| ⑤ 环境裁剪 | 白名单（PATH/HOME/LANG/…） | 把主机密钥泄给模型执行的命令 |
+| ⑥ 网络 | 剥离代理变量 | 尽力而为，**挡不住直连** |
+
+- **诚实的边界**：**限资源，不限文件**。本地实现限制的是"这次运行能消耗多少"，**不限制命令能碰哪些文件**——命令仍能访问运行用户权限内的任意路径。路径范围的强制隔离需要外部后端（bwrap / Landlock / Seatbelt / 容器），Go 标准库给不了；`sandbox.Runner` 接口就是留给它们的接缝（PRD 的 FR-E2）。命令级的语义约束属策略层（S5f-2）。
+- **平台差异**：CPU 时间（`ulimit -t`）与单文件大小（`ulimit -f`）POSIX 平台都支持；**虚拟内存（`ulimit -v`）只有 Linux 等支持**，macOS 上会被跳过（每条限制都带 `|| true`，不支持的跳过而不是让命令失败）。
+- **fail-closed**：没装配 `sandbox.Runner` 的 shell 工具**拒绝执行**——不存在"没配沙箱就跑裸命令"的默认路径（归档曾有该缺陷，用兜底 Runner 修）。
+- **命令失败是事实不是故障**：非零退出码以 `IsError` 回填，但输出照样给模型（它要靠输出自我纠正）。
+- **输出截断有逃生通道**：超限时完整输出由 Runner 落盘（`Result.OutputPath`），回执给模型 `output_path`，它可以 `read_file` 读全文（PI 的 `full_output_path` 对位，PRD 的"落盘逃生通道"）。落盘目录由宿主指定——默认的 `os.TempDir()` 在文件 jail 的可写根之外。
+- **默认不装配**：示例的 shell 工具默认**不注册**——不给模型这个能力，比给它一个必然失败的工具干净。
 
 ## 4. 治理规则（防再膨胀）
 

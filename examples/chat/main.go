@@ -38,6 +38,7 @@ import (
 	"github.com/puras/mos/llm/gemini"
 	"github.com/puras/mos/llm/openai"
 	"github.com/puras/mos/planner"
+	"github.com/puras/mos/sandbox"
 	"github.com/puras/mos/session"
 	"github.com/puras/mos/tool"
 	"github.com/puras/mos/tool/builtin"
@@ -50,6 +51,9 @@ func main() {
 	workdir := flag.String("workdir", ".", "文件工具的沙箱根目录（jail），越界路径会被拒绝")
 	trimFlag := flag.Int("trim", 0, "结果裁剪上限（字节），0 = 不裁剪（post-execute 钩子演示）")
 	concFlag := flag.Int("concurrency", 4, "同批工具调用的并发上限（1 = 串行；仅对声明可并发的工具生效）")
+	allowShell := flag.Bool("allow-shell", false, "装配 shell 工具（隔离执行；默认不装配=模型看不到这个能力）")
+	shellTimeout := flag.Int("shell-timeout", 30, "shell 命令超时（秒）")
+	shellSpill := flag.String("shell-spill", "", "shell 输出落盘目录（截断时全文写这里；默认不落盘）")
 	flag.Parse()
 
 	loadDotEnv(".env")
@@ -80,6 +84,19 @@ func main() {
 		}
 	}
 
+	// shell 工具：默认**不装配**——不给模型这个能力，比给它一个必然失败的工具
+	// 干净。装配后走 sandbox 隔离执行（超时 / 输出上限 / 资源限制 / 环境裁剪）。
+	if *allowShell {
+		sb := &sandbox.Local{
+			WorkDir:  jailRoot,
+			Timeout:  time.Duration(*shellTimeout) * time.Second,
+			SpillDir: *shellSpill,
+		}
+		if err := reg.Register(builtin.NewShell(sb)); err != nil {
+			check(fmt.Errorf("注册工具 %q: %w", "shell", err))
+		}
+	}
+
 	// 单调守卫：可改写环节走钩子，安全约束走守卫，两者不可互相绕过。
 	// 策略默认放行本示例已注册的内置工具，再叠加 -deny 拒绝名单。
 	policyPath := *policyFlag
@@ -87,8 +104,15 @@ func main() {
 		policyPath = os.Getenv("MOS_POLICY")
 	}
 	deny := list(*denyFlag + "," + os.Getenv("MOS_DENY_TOOLS"))
-	cfg := policyConfig(policyPath, reg.Names(), deny)
-	guards := mustGuards(cfg)
+	cfg := policyConfig(policyPath, deny)
+	var guards *hook.GuardBus
+	if cfg != nil {
+		p := policy.New(*cfg)
+		// 可见性过滤：被策略禁掉的工具**不出现在模型的工具清单里**（PI/DSH 的
+		// 可见性层语义）——不给模型一个它注定调不成的工具。
+		reg.SetVisibility(p.Visible)
+		guards = mustGuards(*cfg)
+	}
 
 	rt := &driver.RunContext{
 		Planner:      planner.NewReAct(model),
@@ -104,9 +128,15 @@ func main() {
 
 	fmt.Printf("MoS chat 已就绪（provider=%s model=%s session=%s 已有 %d 条事件 / 累计 %d tokens）\n",
 		provider(), os.Getenv("MOS_MODEL"), sess.ID, len(sess.Events()), sess.TotalUsage().TotalTokens)
-	fmt.Printf("  可用工具: %s\n", strings.Join(reg.Names(), ", "))
+	fmt.Printf("  已注册工具: %s\n", strings.Join(reg.Names(), ", "))
+	fmt.Printf("  模型可见工具: %s\n", strings.Join(visibleNames(reg), ", "))
 	fmt.Printf("  文件沙箱: %s（越界路径会被拒绝，工具不会执行）\n", jailRoot)
 	fmt.Printf("  并发上限: %d（仅对声明可并发的工具生效；read_file 可并发，write_file 独占）\n", *concFlag)
+	if *allowShell {
+		fmt.Printf("  shell: 已装配（隔离执行，超时 %ds；工作目录 %s）\n", *shellTimeout, jailRoot)
+	} else {
+		fmt.Println("  shell: 未装配（模型看不到这个能力；加 -allow-shell 开启）")
+	}
 	if guards == nil {
 		fmt.Println("  策略: 未装配（nil 总线 = 零开销降级，全部放行）")
 	} else {
@@ -206,6 +236,15 @@ func mustModel() llm.ChatModel {
 	return m
 }
 
+// visibleNames 列出**模型真正看到**的工具（可见性过滤之后）。
+func visibleNames(reg *tool.Registry) []string {
+	var names []string
+	for _, tl := range reg.List() {
+		names = append(names, tl.Name)
+	}
+	return names
+}
+
 // mustGuards 构建单调守卫链：安全策略（Policy）作为第一道关卡。
 //
 // cfg 为空时返回 nil——nil 总线的 Allow 直接放行，零开销降级，不装守卫的
@@ -272,17 +311,20 @@ func mustHooks(trim int) *hook.HookBus {
 
 // policyConfig 决定生效的策略：
 //   - 指定 -policy 文件：完全以该 YAML 为准（平台纯配置装配，G3）；
-//   - 否则：默认放行本示例已注册的内置工具，再叠加 -deny / MOS_DENY_TOOLS 的拒绝名单。
+//   - 否则：只有 -deny / MOS_DENY_TOOLS 的拒绝名单（allow 未配置 = 不限制）。
 //
-// 注意策略本身是 fail-closed 的（未列入 allow 即拒绝）——示例默认放行全部
-// 内置工具只是因为它是 Demo，真平台必须显式声明。
-func policyConfig(policyPath string, allow, deny []string) policy.Config {
+// 语义对齐 PI / DSH：两份名单都可选，都不给 = 不限制。策略层是**收窄层**——
+// fail-closed 的那道门是注册表（没注册的工具模型看不见也调不动）。
+func policyConfig(policyPath string, deny []string) *policy.Config {
 	if policyPath != "" {
 		cfg, err := loadPolicy(policyPath)
 		check(err)
-		return cfg
+		return &cfg
 	}
-	return policy.Config{Allow: allow, Deny: deny}
+	if len(deny) == 0 {
+		return nil // 不装策略 = 不收紧
+	}
+	return &policy.Config{Deny: deny}
 }
 
 // appPolicy 是**应用层**的策略文件格式：键名由应用定，与框架解耦。
@@ -291,8 +333,10 @@ func policyConfig(policyPath string, allow, deny []string) policy.Config {
 // 应用层的活（框架不碰文件系统、不绑定配置格式）。用独立 DTO 的好处：框架字段
 // 改名不破坏既有配置文件。
 type appPolicy struct {
-	Allow []string `yaml:"allow"`
-	Deny  []string `yaml:"deny"`
+	// Allow 可选：未配置（nil）= 不限制；配成空列表 = 全禁。
+	// 区分两者需要指针（yaml 的 `allow: []` 与不写 allow，语义不同）。
+	Allow *[]string `yaml:"allow"`
+	Deny  []string  `yaml:"deny"`
 }
 
 // loadPolicy 读策略文件并解析成框架的 policy.Config。
@@ -310,7 +354,11 @@ func loadPolicy(path string) (policy.Config, error) {
 	if err := dec.Decode(&ap); err != nil {
 		return policy.Config{}, fmt.Errorf("解析策略文件 %q: %w", path, err)
 	}
-	return policy.Config{Allow: ap.Allow, Deny: ap.Deny}, nil
+	cfg := policy.Config{Deny: ap.Deny}
+	if ap.Allow != nil {
+		cfg.Allow = *ap.Allow
+	}
+	return cfg, nil
 }
 
 // list 按逗号切分并去空白（命令行与 .env 共用）。

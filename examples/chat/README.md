@@ -22,153 +22,46 @@ go run .
 
 ## 验证策略拦截（S5c）
 
-策略的判定是**真在跑**的，不是装饰：命中拒绝名单或未列入放行名单的工具不执行，拒绝理由回填给模型。
-
-```bash
-go run . -new -deny current_time        # 命令行快捷方式
-go run . -new -policy policy.yaml       # 声明式配置（推荐，纯配置装配）
-```
-
-启动横幅会打印生效策略及其来源（默认 / 文件名）。问一句「现在几点？」，观察到：
+策略的判定是**真在跑**的，不是装饰。启动横幅会同时列出两份清单：
 
 ```text
-你 > 现在几点？
-[guard] 第 1 轮：拒绝 current_time——工具不会执行（工具 "current_time" 在策略拒绝名单中，已拒绝）
-[llm #2] stream  0.84s ... finish=tool_calls → 请求调用 current_time
-[llm #3] stream  1.20s ... finish=stop ...                 ← 模型读到拒绝理由，改用自己的知识作答
+已注册工具: current_time, read_file, write_file
+模型可见工具: read_file, write_file          ← 被策略禁掉的 current_time 消失了
 ```
 
-对照实验：删掉 `policy.yaml` 里的 `deny` 段（或不传 `-deny`）再问一次，工具会真的执行，
-`tool/result` 内容是 `{"iso8601":"2026-10-19T17:36:48+08:00",...}`。
+**被禁的工具不出现在模型的工具清单里**（可见性过滤，对齐 PI / DSH 的可见性层）——不给模型一个它注定调不成的工具。运行时守卫仍在：模型幻觉出的名字、策略中途变更、非模型路径的直接调用，都会被拦下并留下 `tool/result{isError}`。
 
-会话日志 `data/chat-*.jsonl` 是唯一事实来源，可直接翻证据：
+```bash
+go run . -new -policy policy.yaml       # 声明式配置（推荐，纯配置装配）
+go run . -new -deny current_time        # 命令行快捷方式
+```
+
+策略语义（对齐 PI / DSH）：**两份名单都可选**，都不写 = 不限制；`allow` 配成空列表 = 全禁；命中 `deny` 的工具从清单里消失。
+
+`policy.yaml` 的形态：
+
+```yaml
+deny:
+  - current_time
+# allow: [read_file, write_file]   # 配了就只剩这些可见
+# allow: []                        # 配了空列表 = 全禁
+```
+
+**并发读的正解**（同一批多个调用）：`read_file` 声明了可并发，所以让模型读多个文件时它可以一次发多个调用；`next_offset` 指向下一段的起始行号。
+
+会话日志 `data/chat-*.jsonl` 是唯一事实来源：
 
 ```bash
 grep tool/result data/chat-*.jsonl | tail -1
-# 正常：{"kind":"tool/result","toolResult":{"callId":"c1","content":"{\"iso8601\":...}"}}
-# 被拒：{"kind":"tool/result","toolResult":{"callId":"c1","content":"工具调用被安全策略拒绝: ...","isError":true}}
+# {"kind":"tool/result","toolResult":{"callId":"c1","content":"{\"iso8601\":...}"}}
 ```
 
 要点：
 
-- 策略是 **fail-closed** 的：未列入 `allow` 的工具一律拒绝，零值配置 = 拒绝一切。本示例默认放行全部已注册内置工具只是 Demo 取巧（横幅会写明），真平台必须显式声明；
-- 被拒的调用**仍有 `tool/call` 审计留痕**，只是 `tool/result` 带 `isError`——审计优先；
+- 策略是**收窄层**：`allow` 未配置 = 不限制，`deny` 命中即拒。fail-closed 的那道门是**注册表**（没注册的工具模型看不见也调不动）——"只允许某几个工具"靠**不注册**其余的来表达；
+- 被禁的工具**不在清单里** → 模型不会去试 → 没有被拒记录（审计凭据变成策略配置本身）；若模型仍调了（幻觉/策略中途变更），运行时守卫拦下并留痕；
 - 拒绝不中断 turn，模型下一轮看得见理由并自我纠正；
-- `-deny` / `MOS_DENY_TOOLS` 是快捷方式，`-policy` / `MOS_POLICY` 才是平台形态（YAML）；后者启用时前者被忽略。两者都不配时 `Guards` 为 nil，走零开销降级；
-- 读策略文件与解析 YAML 都是**应用层**的活（`os.ReadFile` → `yaml.Decoder` 严格解析 → `policy.Config`）：框架只认结构，不碰文件系统、不绑定配置格式——否则等于绕过 S5d 的文件 jail。键名由应用自己的 `appPolicy` DTO 定，与框架解耦。
-
-## 验证文件沙箱（S5d）
-
-文件工具的路径先经 **Lexical + Realpath 双层校验**，越界路径的工具**不执行**，拒绝理由回填给模型。
-
-```bash
-go run . -new -workdir .          # jail 根 = 当前目录（默认）
-go run . -new -workdir /tmp/demo   # 或指定别的根
-```
-
-启动横幅会打印 `文件沙箱: /path/to/cwd（越界路径会被拒绝，工具不会执行）`。
-
-问一句「读一下 ../../etc/passwd」，可观察到：
-
-```text
-你 > 读一下 ../../etc/passwd
-[llm #2] stream  ... finish=tool_calls → 请求调用 read_file
-[llm #3] stream  ... finish=stop ...    ← 模型读到拒绝理由后改口
-```
-
-`tool/result` 里是拒绝理由（`路径 "../../etc/passwd" 不在允许的根内（read 操作允许的根=[...]）`），带 `isError:true`；同一次调用的 `tool/call` 仍留痕（审计优先）。
-
-对照实验：`go run . -new -workdir /tmp/demo` 后让模型写一个文件，它会写到 `/tmp/demo` 下；换成 `-workdir .` 再写 `../escape.txt` 就会被拒。
-
-要点：
-
-- **读也走 Realpath**：jail 里一个指向 `/etc/passwd` 的 symlink 同样读不出来（只做词法校验的话就能读出 jail）；
-- **不装就是不开**：不装配 `filesystem` 就不该注册文件工具——不给模型这个能力，比给它一个必然失败的工具干净；
-- 沙箱根由宿主（示例的 `-workdir`）决定，框架不替宿主选路径，也不预设 Local/SaaS 形态：示例声明的是 `{ReadRoots: [根], WriteRoots: [根]}`，宿主想放开读或写就自己加根（写 `"/"` 即完全放开，且这是一条看得见的规则）。
-
-## 验证钩子与并发（S5e）
-
-钩子（HookBus）与守卫（GuardBus）是**两条轨道**：守卫单调裁决（拒绝/放行），钩子可改写（裁剪结果、环绕派发、裁决调用）。
-
-```bash
-go run . -new                       # 装好钩子（观测 + 计时）
-go run . -new -trim 200             # 追加结果裁剪（post-execute 钩子）
-go run . -new -concurrency 1        # 强制串行（对照）
-```
-
-启动横幅会打印并发上限。运行时 stderr 可见钩子的三个环节：
-
-```text
-[hook] 第 1 轮：即将执行 read_file        ← pre-execute（裁决环节）
-[hook] read_file 执行完毕（1ms）          ← tool/execute（环绕派发）
-```
-
-`-trim 200` 时，`tool/result` 里能看到被裁剪的文本（`…（已裁剪，原 N 字节）`）——这是 post-execute 钩子真正改了回填给模型的内容。
-
-### 怎么看到"并行读"
-
-`read_file` 的工具描述里写明了分段读的正解：文件较大时**调大 `limit` 一次读完**；确需分段时，**在同一条消息里一次发出多个不同 `offset` 的 `read_file` 调用**，由框架并发执行（上限 `-concurrency`）。
-
-默认 `limit` 是 **32KB**（对齐 PI 的 2000 行/256KB 与 DSH 的可配 `maxLimit` 量级）——常见文件一次读完。结果里带两个规划用的字段：
-
-| 字段 | 含义 |
-| --- | --- |
-| `size` | 文件总字节数 |
-| `next_offset` | **下一段的起始偏移，0 表示已读完**（模型直接拿来当 `offset`，不必自己拿 size 去减——对齐 PI 的 "Use offset=N to continue" 提示） |
-
-所以让模型读一个大文件（比如 `go run . -new -workdir .` 后问"读一下 agent/execpath/execpath.go"），典型轨迹是：
-
-```text
-[llm #2] finish=tool_calls → 请求调用 read_file（offset=0）
-[hook] 第 1 轮：即将执行 read_file
-[hook] read_file 执行完毕
-[llm #3] finish=tool_calls → 请求调用 read_file（offset=8192, limit=8192）…  ← 一次发多个
-```
-
-第二个 turn 里那批调用会并发跑完，结果仍按调用序回填。
-
-> 注：模型第一轮拿不到文件大小（`size` 是读之后才知道），所以"一次读完"要么靠
-> 调大 `limit`（推荐），要么先读一段拿到 `size` 再并行补齐——框架两种都支持。
->
-> **并发需要 ≥3 段才有意义**：15KB 的文件按 32KB 上限只有 1 段（一次读完），
-> 而按旧的 8KB 上限是 2 段——第二批只有 1 个调用，并发无处可发。要看到并行，
-> 读一个 >64KB 的文件（3 段以上）或一次读多个文件。
-
-### 三个文件工具
-
-| 工具 | 用途 | 关键语义 |
-| --- | --- | --- |
-| `read_file` | 读内容 | **行寻址**：`offset` = 起始行号（1 起），`limit` = 行数（默认 2000，另有 50KB 总量上限，先到先算）；结果带 `size`（字节）、`total_lines`（总行数）、`next_offset`（下一段起始**行号**，0 = 已读完）；**超长行单独截断并标记** `... (line truncated to 2000 chars)`；结尾带 PI 风格的续读提示 `[Showing lines 12-31 of 40. Use offset=32 to continue.]` |
-| `write_file` | 整体写 | **只覆盖，不追加**；**原子写**（临时文件 + rename，写一半失败不留半个文件）；回执带 `created`（新建/覆盖，对应 DSH 的 `Created`/`Updated`）与 `replaced_bytes`（被覆盖丢弃的原有字节数） |
-| `edit_file` | **精确替换**（改代码用这个） | 参数 `{path, edits: [{old_string, new_string}]}`——**一次调用改多处**；每处 `old_string` 在原文件里必须唯一命中（多处 → 报错报出次数）；各处的 `old_string` 互不重叠；匹配前行尾归一、写回时还原；BOM 保留；拒绝二进制；原子写；回执带 `replacements` 与 `first_changed_line` |
-
-**为什么改代码要用 `edit_file` 而不是 `write_file`**：整文件重写要求模型重新产出整个文件——它既怕改错别处、又无法确认自己改对了没，于是反复重写（实测：13 次写、8 次读同一批文件，直到单轮决策次数上限）。精确替换只要求给出要改的那几行。
-
-模型侧怎么用（DSH 的 read-before-mutation 建议，MoS 未强制）：
-
-```text
-read_file  →  看清要改的地方
-edit_file  →  一次调用给多处：edits: [{old_string, new_string}, …]
-```
-
-`old_string` 出现多次时会得到：
-
-```text
-第 1 处编辑的 old_string 在 "main.go" 里出现了 3 次：请提供更具体的上下文（保持唯一）
-```
-
-——据此把上下文补足即可。两处改的是同一片区域时会得到「重叠：请合并成一条 edit」。
-
-### 并发的规则
-
-- **只有声明可并发的工具才并发**：工具实现 `tool.ConcurrencySafe(args) bool` 并返回 true 才入并行组；未声明 / 参数非法 / 分类器出错 → **独占**（串行）。本示例里 `read_file` 可并发，`write_file` 独占。
-- **独占调用形成屏障**：`[read(A), read(B), write(A), read(C)]` → `[read(A) ∥ read(B)]` → `[write(A)]` → `[read(C)]`。
-- **回填顺序永远是模型的调用序**，与完成顺序无关（`tool/result` 按 `CallID` 一一对回）。
-- 只有工具体并发；preflight（守卫裁决 + pre-execute）与回填（post-execute）都按模型序串行。
-
-### 载荷冻结
-
-钩子**改不了**工具名 / 参数 / CallID——改写即违约，该调用被拒绝并说明原因。所以钩子无法绕过策略守卫：守卫判定的就是这次调用的最终载荷，且守卫只跑一次。
+- `-deny` / `MOS_DENY_TOOLS` 是快捷方式，`-policy` / `MOS_POLICY` 才是平台形态（YAML）；后者启用时前者被忽略。两者都不配时不装策略，走零开销降级。
 
 ## 对应框架能力
 
@@ -182,4 +75,5 @@ edit_file  →  一次调用给多处：edits: [{old_string, new_string}, …]
 | 策略层（fail-closed 黑白名单 + YAML） | `agent/policy` |
 | 文件沙箱（Lexical + Realpath 双层校验） | `filesystem`、`tool/builtin` |
 | 钩子三环节（裁决 / 环绕 / 结果改写）+ 屏障式并发 | `agent/hook`、`agent/execpath` |
+| 进程沙箱（超时 / 进程组 / 输出上限 / 资源限制 / 环境裁剪） | `sandbox`、`tool/builtin` |
 | 会话事件日志 / 消息投影 / 持久化 / Restore | `session` |

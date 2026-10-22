@@ -1,15 +1,17 @@
 # MoS chat 示例的策略配置（S5c 示范）。
 #
-# 语义是 fail-closed 的：只列出 allow 的工具可用，其余一律拒绝。
-# deny 优先于 allow，且不提供任何放行后门。
+# 语义对齐 PI（allowedToolNames / excludedToolNames）与 DSH（ToolRestriction）：
+# 两份名单**都可选**，都不写 = 不限制。
 #
-# 跑法：go run . -new -policy policy.yaml
+#   deny:  [x, "write_*"]     → 禁掉 x 与所有 write_ 前缀的工具
+#   allow: [a, b]            → 只有 a、b 可用
+#   allow: []                 → 全禁（配了但为空集）
+#   （不写 allow）            → 不限制
 #
-# 注意：示例把 current_time 也列进了 deny，只是为了演示拦截效果——
-# 真实平台不会禁用自己的核心工具。删掉那两行即可恢复。
-
-allow:
-  - current_time
+# 命中 deny 的工具**不出现在模型的工具清单里**（可见性过滤），运行时守卫也会拦。
+#
+# 注意：示例把 current_time 列进了 deny，只是为了演示拦截效果——真实平台不会
+# 禁用自己的核心工具。删掉那两行即可恢复。
 
 deny:
   - current_time
