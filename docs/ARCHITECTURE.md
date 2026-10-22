@@ -180,7 +180,7 @@ reg.Register(builtin.NewWriteFile(fsys))
 ### 3.7 进程沙箱（S5f-1）
 
 ```go
-sb := &sandbox.Local{WorkDir: root, Timeout: 30 * time.Second, SpillDir: spillDir}
+sb := &sandbox.Local{WorkDir: root, Timeout: 120 * time.Second, SpillDir: spillDir}
 reg.Register(builtin.NewShell(sb))
 ```
 
@@ -193,6 +193,7 @@ reg.Register(builtin.NewShell(sb))
 | ⑤ 环境裁剪 | 白名单（PATH/HOME/LANG/…） | 把主机密钥泄给模型执行的命令 |
 | ⑥ 网络 | 剥离代理变量 | 尽力而为，**挡不住直连** |
 
+- **超时的缺省与上限都由宿主定**：`Local.Timeout` 既是单次调用的缺省也是**上限**——模型可以在调用里要求更短（`{command, timeout}`），不能要求更长。否则"模型要求跑一小时"就能绕过宿主限制。缺省 30s（保守），示例用 120s（对齐 DSH，慢的 `go test` 需要）。
 - **诚实的边界**：**限资源，不限文件**。本地实现限制的是"这次运行能消耗多少"，**不限制命令能碰哪些文件**——命令仍能访问运行用户权限内的任意路径。路径范围的强制隔离需要外部后端（bwrap / Landlock / Seatbelt / 容器），Go 标准库给不了；`sandbox.Runner` 接口就是留给它们的接缝（PRD 的 FR-E2）。命令级的语义约束属策略层（S5f-2）。
 - **平台差异**：CPU 时间（`ulimit -t`）与单文件大小（`ulimit -f`）POSIX 平台都支持；**虚拟内存（`ulimit -v`）只有 Linux 等支持**，macOS 上会被跳过（每条限制都带 `|| true`，不支持的跳过而不是让命令失败）。
 - **fail-closed**：没装配 `sandbox.Runner` 的 shell 工具**拒绝执行**——不存在"没配沙箱就跑裸命令"的默认路径（归档曾有该缺陷，用兜底 Runner 修）。

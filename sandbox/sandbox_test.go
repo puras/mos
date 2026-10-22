@@ -159,3 +159,41 @@ var (
 	_ Runner = (*Local)(nil)
 	_        = exec.Command
 )
+
+// 宿主的 Timeout 既是缺省也是上限：模型不能要求更久。
+func TestHostTimeoutIsDefaultAndCap(t *testing.T) {
+	sb := &Local{Timeout: 300 * time.Millisecond}
+	// 模型没指定 → 用宿主的
+	start := time.Now()
+	res, err := sb.Run(context.Background(), Request{Command: "sleep 30"})
+	if err == nil {
+		t.Fatal("应超时")
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("应按宿主超时(300ms)终止, 实际 %v", d)
+	}
+	_ = res
+
+	// 模型要求更久 → 被夹到宿主的上限
+	start = time.Now()
+	_, err = sb.Run(context.Background(), Request{Command: "sleep 30", Timeout: 10 * time.Second})
+	if err == nil {
+		t.Fatal("应超时")
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("模型要求的更长超时应被夹到宿主上限, 实际 %v", d)
+	}
+}
+
+// 模型要求更短 → 尊重模型的。
+func TestShorterModelTimeoutIsHonored(t *testing.T) {
+	sb := &Local{Timeout: 10 * time.Second}
+	start := time.Now()
+	_, err := sb.Run(context.Background(), Request{Command: "sleep 30", Timeout: 200 * time.Millisecond})
+	if err == nil {
+		t.Fatal("应超时")
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("应按模型给的 200ms 终止, 实际 %v", d)
+	}
+}

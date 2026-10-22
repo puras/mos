@@ -6,6 +6,7 @@ S4b 里程碑示例——智能体经**驱动层循环**与模型对话，模型
 - `MOS_PROVIDER` 切换 openai 兼容 / anthropic / gemini；`llm.WithRetry` 装饰器演示
 - `llm.WithLogging` 演示调用观测：每次模型调用在 stderr 打一行（模式 / 耗时 / msgs & tools / finish_reason / token），`MOS_LOG_LLM=0` 关闭；日志套在重试之外，重试几次就见几行
 - 内置工具（`builtin.Default()`）登记后模型即可调用；当前可用 `current_time`；文件工具（`read_file`/`write_file`）经 `-workdir` 指定的 jail 根约束后一并登记
+- **shell 工具默认不装配**（`-allow-shell` 开启）：给 agent 一条验证回路——改完代码能自己跑一次 `go build` / `go test`，而不是靠反复重写去猜。命令经 `sandbox.Local` 执行（超时、进程组击杀、输出上限、资源限制、环境裁剪）
 - 流式打字机输出（协议不支持时自动回退非流式）；思维链以暗色文本透出
 - 会话事件日志落 JSONL（`data/`）：多轮上下文由事件投影累积，**重启自动恢复续聊**；中断的 turn 被合成为 `interrupted` 收尾
 - 每轮打印会话累计 token 用量（派生自 assistant 事件）
@@ -19,6 +20,42 @@ go run .
 ```
 
 `go run . -new` 开新会话；输入 `q` 退出。
+
+## 验证 shell 验证回路（S5f-1）
+
+```bash
+go run . -new -allow-shell                  # 开启 shell（默认不装配）
+go run . -new -allow-shell -shell-timeout 300   # 放宽超时（秒）
+go run . -new -allow-shell -shell-spill /tmp/mos  # 输出落盘目录
+```
+
+开启后模型多了 `shell` 工具，于是这条回路成立：
+
+```text
+你：把 main.go 的这段改掉，然后跑一下 go build ./...
+模型：edit_file → shell(go build ./...) → 发现报错 → 再改 → 再跑 → 通过
+```
+
+**这是 agent 自主收敛的关键**：没有它，模型只能靠猜；有了它，模型能看到自己的错误。
+
+沙箱做了什么（详见 `docs/ARCHITECTURE.md` §3.7）：
+
+| 层 | 挡住什么 |
+| --- | --- |
+| 工作目录（宿主固定） | 相对路径的默认落点落在工作区外 |
+| 超时 + 进程组击杀 | 死循环、fork 出的孤儿进程 |
+| 输出上限 64KB | 输出爆炸撑爆内存 |
+| 资源限制（ulimit） | 吃满 CPU / 内存 / 磁盘 |
+| 环境白名单 | 把主机密钥泄给模型执行的命令 |
+| 剥离代理变量 | 尽力而为，挡不住直连 |
+
+要点：
+
+- **超时的缺省与上限都由宿主定**（`-shell-timeout`，默认 120s，对齐 DSH）。模型可以在调用里要求**更短**，不能要求更长；
+- **路径范围不受限**（诚实边界）：命令仍能访问运行用户权限内的任意路径——Go 标准库给不了强制隔离，需要 bwrap / Landlock / Seatbelt / 容器后端（`sandbox.Runner` 是留给它们的接缝）；
+- **输出截断有逃生通道**：完整输出落盘（`-shell-spill` 指定目录），回执给模型 `output_path`，它可以 `read_file` 读全文；
+- **非零退出码是事实不是故障**：输出照样回填给模型，它要靠输出自我纠正；
+- **默认不装配**：不给模型这个能力，比给它一个必然失败的工具干净。
 
 ## 验证策略拦截（S5c）
 

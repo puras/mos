@@ -32,7 +32,7 @@ type Shell struct {
 type shellParams struct {
 	Command     string `json:"command" mos:"desc=要执行的 shell 命令"`
 	Description string `json:"description,omitempty" mos:"desc=这条命令要做什么（人类可读，便于审计）"`
-	Timeout     int    `json:"timeout,omitempty" mos:"desc=超时秒数；不传用默认 30 秒"`
+	Timeout     int    `json:"timeout,omitempty" mos:"desc=超时秒数；不传用宿主的配置（宿主定上限，模型不能要求更久）"`
 }
 
 // NewShell 构造 shell 工具。
@@ -64,10 +64,9 @@ func (s *Shell) Execute(ctx context.Context, args json.RawMessage) (any, error) 
 		return nil, &sandbox.NotConfiguredError{}
 	}
 
+	// 模型没指定超时就不指定——由 Runner 用宿主的配置（Local.Timeout 既是缺省
+	// 也是上限）。工具不替宿主决定超时策略。
 	timeout := time.Duration(p.Timeout) * time.Second
-	if p.Timeout <= 0 {
-		timeout = sandbox.DefaultTimeout
-	}
 	res, err := s.Runner.Run(ctx, sandbox.Request{Command: p.Command, Timeout: timeout})
 	if err != nil {
 		// 无法执行（启动失败 / 超时）：把已有的输出也带回去，模型能看出跑到哪了。

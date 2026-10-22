@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/puras/mos/sandbox"
 	"github.com/puras/mos/tool"
@@ -143,5 +144,20 @@ func TestShellSpillCreatesDir(t *testing.T) {
 	path := out.(map[string]any)["output_path"].(string)
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("落盘文件应存在: %v", err)
+	}
+}
+
+// 模型没指定超时 → 用宿主的配置（工具不替宿主决定超时策略）。
+func TestShellUsesHostTimeoutWhenModelOmitsIt(t *testing.T) {
+	// 宿主的超时很短：若工具自己用 30s 缺省，这条测试会超时失败。
+	sb := &sandbox.Local{Timeout: 300 * time.Millisecond}
+	s := NewShell(sb)
+	start := time.Now()
+	_, err := s.Execute(context.Background(), []byte(`{"command":"sleep 30"}`))
+	if err == nil {
+		t.Fatal("应超时")
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("应按宿主超时终止, 实际 %v", d)
 	}
 }

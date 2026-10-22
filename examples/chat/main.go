@@ -52,7 +52,7 @@ func main() {
 	trimFlag := flag.Int("trim", 0, "结果裁剪上限（字节），0 = 不裁剪（post-execute 钩子演示）")
 	concFlag := flag.Int("concurrency", 4, "同批工具调用的并发上限（1 = 串行；仅对声明可并发的工具生效）")
 	allowShell := flag.Bool("allow-shell", false, "装配 shell 工具（隔离执行；默认不装配=模型看不到这个能力）")
-	shellTimeout := flag.Int("shell-timeout", 30, "shell 命令超时（秒）")
+	shellTimeout := flag.Int("shell-timeout", 120, "shell 命令超时（秒，宿主定的缺省与上限）")
 	shellSpill := flag.String("shell-spill", "", "shell 输出落盘目录（截断时全文写这里；默认不落盘）")
 	flag.Parse()
 

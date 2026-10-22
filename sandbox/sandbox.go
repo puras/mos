@@ -40,10 +40,10 @@ import (
 )
 
 const (
-	// DefaultTimeout 是单次命令的默认超时。
+	// DefaultTimeout 是单次命令的默认超时（宿主未配置时的缺省）。
 	//
-	// 30 秒：够跑一次 `go build` / `go test`（agent 最常见的验证动作），
-	// 又不至于让一次失控的命令把会话挂住。
+	// 30 秒：一次失控的命令不该把会话挂住太久。DSH 的缺省是 120s（为慢的
+	// `go test` 留的），宿主配 Local.Timeout 即可放宽——缺省保持保守。
 	DefaultTimeout = 30 * time.Second
 	// DefaultMaxOutput 是单次命令的输出上限（字节）。
 	DefaultMaxOutput = 64 << 10 // 64KB
@@ -101,7 +101,11 @@ func (e *NotConfiguredError) Error() string {
 type Local struct {
 	// WorkDir 是命令执行目录（宿主配置，不交给模型指定）。
 	WorkDir string
-	// Timeout 是单次调用超时；<=0 用 DefaultTimeout。
+	// Timeout 是单次调用的超时，**既是缺省也是上限**。
+	//
+	// 模型可以在调用里要求更短的超时，但不能要求更长——上限由宿主定（模型请求
+	// 超过它会被夹到它，避免"模型要求跑一小时"绕过宿主限制）。
+	// <=0 时用 DefaultTimeout。
 	Timeout time.Duration
 	// MaxOutput 是输出上限（字节）；<=0 用 DefaultMaxOutput。
 	MaxOutput int64
@@ -134,10 +138,12 @@ func (s *Local) Run(ctx context.Context, req Request) (Result, error) {
 	}
 
 	timeout := req.Timeout
-	if timeout <= 0 {
-		timeout = s.Timeout
-	}
-	if timeout <= 0 {
+	if s.Timeout > 0 {
+		// 宿主的 Timeout 既是缺省也是上限：模型不能要求更久。
+		if timeout <= 0 || timeout > s.Timeout {
+			timeout = s.Timeout
+		}
+	} else if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
