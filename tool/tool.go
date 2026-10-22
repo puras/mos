@@ -51,6 +51,9 @@ type Registry struct {
 	order []string
 	// schemas 是注册时生成的 JSON Schema 缓存：避免循环内每轮 List() 重复反射。
 	schemas map[string]map[string]any
+	// visible 是可见性过滤器（可选）：返回 false 的工具不出现在 List() 里，
+	// 但仍可被 Call——执行与否由运行时守卫决定。
+	visible func(name string) bool
 }
 
 // NewRegistry 创建空注册表。
@@ -86,6 +89,21 @@ func (r *Registry) Get(name string) (Tool, bool) {
 }
 
 // Names 返回已注册工具名（按注册顺序）。
+// SetVisibility 设置可见性过滤器：返回 false 的工具不出现在 List()（模型看到的
+// 清单）里，但仍可被 Call。
+//
+// 过滤器必须是**无副作用的纯判定**——它会在每次组装工具清单时被调用。
+// nil = 不过滤（全部可见）。
+//
+// 本包只认一个函数值，不认识 policy / hook 之类的具体实现：可见性策略由宿主
+// 在装配时接上（例：reg.SetVisibility(policy.New(cfg).Visible)）。
+func (r *Registry) SetVisibility(visible func(name string) bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.visible = visible
+}
+
+// Names 返回**已注册**的全部工具名（不受可见性过滤影响）。
 func (r *Registry) Names() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -94,11 +112,18 @@ func (r *Registry) Names() []string {
 
 // List 返回工具的协议层定义（按注册顺序），供 LLM 请求使用。
 // Schema 取自注册时的缓存，不在每轮调用中重复反射。
+// List 返回**模型可见**的工具清单。
+//
+// 可见性过滤（SetVisibility）在这里生效：被过滤掉的工具不出现在清单里，模型
+// 不会去调它们（PI/DSH 的可见性层语义）。Names() 与 Call() 不受过滤影响。
 func (r *Registry) List() []llm.Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	out := make([]llm.Tool, 0, len(r.order))
 	for _, name := range r.order {
+		if r.visible != nil && !r.visible(name) {
+			continue
+		}
 		t := r.tools[name]
 		out = append(out, llm.Tool{
 			Name:        t.Name(),

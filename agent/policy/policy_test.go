@@ -24,34 +24,25 @@ func TestAllowPasses(t *testing.T) {
 	}
 }
 
-// fail-closed：未列入 allow 的一律拒绝，且拒绝理由说明原因。
-func TestUnknownToolDeniedByDefault(t *testing.T) {
+// Allow 非空时，名单外的工具仍被拒绝（策略层是收窄层）。
+func TestToolOutsideAllowDenied(t *testing.T) {
 	p := New(Config{Allow: []string{"current_time"}})
 	err := p.Check(context.Background(), event("shell"))
 	if err == nil {
-		t.Fatal("未声明的工具应被拒绝（fail-closed）")
+		t.Fatal("不在 allow 名单的工具应被拒绝")
 	}
-	if !strings.Contains(err.Error(), "shell") || !strings.Contains(err.Error(), "fail-closed") {
-		t.Fatalf("拒绝理由应点名工具并说明 fail-closed: %v", err)
+	if !strings.Contains(err.Error(), "shell") || !strings.Contains(err.Error(), "放行名单") {
+		t.Fatalf("拒绝理由应点名工具并说明原因: %v", err)
 	}
 }
 
-// 零值配置 = 拒绝一切：不配策略不等于放开。
-func TestEmptyConfigDeniesEverything(t *testing.T) {
+// Allow 未配置 = 不限制（对齐 PI / DSH）：策略层不收紧，收敛由注册表负责。
+func TestUnconfiguredConfigDoesNotRestrict(t *testing.T) {
 	p := New(Config{})
-	for _, name := range []string{"current_time", "shell", ""} {
-		if err := p.Check(context.Background(), event(name)); err == nil {
-			t.Fatalf("零值策略应拒绝 %q", name)
+	for _, name := range []string{"current_time", "shell"} {
+		if err := p.Check(context.Background(), event(name)); err != nil {
+			t.Fatalf("Allow 未配置时不应拒绝 %q: %v", name, err)
 		}
-	}
-}
-
-// deny 优先于 allow：黑白名单同时命中以拒绝为准。
-func TestDenyWinsOverAllow(t *testing.T) {
-	p := New(Config{Allow: []string{"shell"}, Deny: []string{"shell"}})
-	err := p.Check(context.Background(), event("shell"))
-	if err == nil || !strings.Contains(err.Error(), "拒绝名单") {
-		t.Fatalf("deny 应优先: %v", err)
 	}
 }
 
@@ -88,6 +79,9 @@ type echoTool struct {
 	calls int
 }
 
+// readTool 是策略未提及的工具（收窄层语义下应放行并真的执行）。
+type readTool struct{ echoTool }
+
 func (e *echoTool) Name() string        { return e.name }
 func (e *echoTool) Description() string { return "" }
 func (e *echoTool) Parameters() any     { return &struct{}{} }
@@ -97,21 +91,21 @@ func (e *echoTool) Execute(context.Context, json.RawMessage) (any, error) {
 }
 
 func TestPolicyBlocksToolThroughExecChannel(t *testing.T) {
-	ok, bad := &echoTool{name: "current_time"}, &echoTool{name: "shell"}
+	ok, bad, other := &echoTool{name: "current_time"}, &echoTool{name: "shell"}, &readTool{echoTool{name: "read_file"}}
 	reg := tool.NewRegistry()
-	for _, tl := range []tool.Tool{ok, bad} {
+	for _, tl := range []tool.Tool{ok, bad, other} {
 		if err := reg.Register(tl); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	gb := hook.NewGuardBus()
-	gb.Add(New(Config{Allow: []string{"current_time"}, Deny: []string{"shell"}}).Check)
+	gb.Add(New(Config{Deny: []string{"shell"}}).Check)
 
 	out := execpath.ExecuteBatch(context.Background(), reg, []llm.ToolCall{
 		{ID: "c1", Name: "current_time", Args: `{}`},
 		{ID: "c2", Name: "shell", Args: `{}`},
-		{ID: "c3", Name: "read_file", Args: `{}`}, // 策略未声明 → fail-closed
+		{ID: "c3", Name: "read_file", Args: `{}`}, // 策略未提及 → 放行（收窄层语义）
 	}, execpath.Options{Turn: 1, Guards: gb})
 
 	if len(out) != 3 {
@@ -123,8 +117,8 @@ func TestPolicyBlocksToolThroughExecChannel(t *testing.T) {
 	if !out[1].IsError || !strings.Contains(out[1].Content, "拒绝名单") {
 		t.Fatalf("deny 命中的工具应回填拒绝理由: %+v", out[1])
 	}
-	if !out[2].IsError || !strings.Contains(out[2].Content, "fail-closed") {
-		t.Fatalf("未声明的工具应 fail-closed: %+v", out[2])
+	if out[2].IsError {
+		t.Fatalf("策略未提及的工具应放行（收窄层语义）: %+v", out[2])
 	}
 	// 结果仍按调用顺序对回 CallID（执行通道的不变式）
 	for i, id := range []string{"c1", "c2", "c3"} {
@@ -132,7 +126,7 @@ func TestPolicyBlocksToolThroughExecChannel(t *testing.T) {
 			t.Fatalf("out[%d].Call.ID = %q, want %q", i, out[i].Call.ID, id)
 		}
 	}
-	if ok.calls != 1 || bad.calls != 0 {
-		t.Fatalf("执行次数 ok=%d bad=%d, want 1/0", ok.calls, bad.calls)
+	if ok.calls != 1 || bad.calls != 0 || other.calls != 1 {
+		t.Fatalf("执行次数 ok=%d bad=%d other=%d, want 1/0/1", ok.calls, bad.calls, other.calls)
 	}
 }
