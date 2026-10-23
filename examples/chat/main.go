@@ -166,16 +166,10 @@ func main() {
 	if sysPrompt != "" {
 		fmt.Printf("  系统引导: %s\n", promptKind)
 	}
-	if guards == nil {
-		fmt.Println("  策略: 未装配（nil 总线 = 零开销降级，全部放行）")
-	} else {
-		src := "默认（放行已注册工具）+ -deny"
-		if policyPath != "" {
-			src = "文件 " + policyPath
-		}
-		fmt.Printf("  策略[%s]: 放行 [%s] 拒绝 [%s]（未列名的工具一律拒绝）\n",
-			src, strings.Join(cfg.Allow, ", "), strings.Join(cfg.Deny, "（空）"))
-	}
+	// 名字级策略（Allow/Deny 名单）装没装，看 cfg——守卫总线本身总是非 nil
+	//（它还挂着参数级的宿主规则）。
+	fmt.Print(policyBanner(cfg, policyPath))
+	fmt.Println("  参数级规则: 宿主规则已装配（敏感文件拒绝 / 递归删除需人工确认）")
 	fmt.Println("输入 q 退出。")
 
 	in := bufio.NewScanner(os.Stdin)
@@ -308,6 +302,35 @@ func visibleNames(reg *tool.Registry) []string {
 // 本身全部委托 Policy.Check，示例不自己重写规则。GuardBus 尚无观测通道，
 // 正经日志是 S5c 之后的事。
 //
+// policyBanner 拼出策略横幅。
+//
+// 单独立函数是为了能测：cfg 为 nil（没装名字级名单）是**正常路径**，而守卫
+// 总线此时并非 nil（它还挂着参数级的宿主规则）——曾经在这里判错分支，
+// 直接解引用了 nil 的 cfg。
+func policyBanner(cfg *policy.Config, policyPath string) string {
+	if cfg == nil {
+		return "  策略: 未装配（名字级名单不收紧；参数级宿主规则仍然生效）\n"
+	}
+	src := "默认（放行已注册工具）+ -deny"
+	if policyPath != "" {
+		src = "文件 " + policyPath
+	}
+	allow := "不限制"
+	if len(cfg.Allow) > 0 {
+		allow = "[" + strings.Join(cfg.Allow, ", ") + "]"
+	}
+	deny := "无"
+	if len(cfg.Deny) > 0 {
+		deny = "[" + strings.Join(cfg.Deny, ", ") + "]"
+	}
+	// 语义：Allow 未配置 = 不限制（未列名的工具放行）；Allow 非空 = 只放行名单内。
+	unlisted := "未列名的工具默认放行"
+	if len(cfg.Allow) > 0 {
+		unlisted = "未列名的工具一律拒绝"
+	}
+	return fmt.Sprintf("  策略[%s]: 放行 %s 拒绝 %s（%s）\n", src, allow, deny, unlisted)
+}
+
 // nameLevelGuard 构建**工具名级**的守卫（Policy 的 Allow/Deny 名单）。
 //
 // 名字级策略管「能不能调这个工具」；参数级规则（hostPolicy）管「这次调用的
