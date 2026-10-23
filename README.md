@@ -37,6 +37,7 @@ S1–S7 完成即覆盖 PRD G1–G6 的最小闭环；此后按 PRD §5/§7 逐�
 ## 示例
 
 - [examples/chat](examples/chat/) — 直连 LLM 多轮对话 Demo：流式输出、多协议切换、会话日志持久化与重启恢复（`cp .env.example .env` 后 `go run .`）
+  - `-allow-shell` 开启**验证回路**：agent 能改代码后自己跑 `go build` / `go test` 看真实输出再改（配套 `lab/` 练手项目：修好一个故意留 bug 的测试）
 
 ## 构建
 

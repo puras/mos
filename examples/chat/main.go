@@ -116,13 +116,22 @@ func main() {
 		guards = mustGuards(*cfg)
 	}
 
+	// 系统引导词：自定义优先；开了 shell 而没自定义时给一份默认引导——
+	// 工具在清单里不等于模型会主动用它，得告诉它有这回事、怎么用。
+	sysPrompt := os.Getenv("MOS_SYSTEM_PROMPT")
+	promptKind := "自定义（MOS_SYSTEM_PROMPT）"
+	if sysPrompt == "" && *allowShell {
+		sysPrompt = shellSystemPrompt(jailRoot)
+		promptKind = "默认（shell 验证指引）"
+	}
+
 	rt := &driver.RunContext{
 		Planner:      planner.NewReAct(model),
 		Tools:        reg,
 		Hooks:        mustHooks(*trimFlag),
 		Guards:       guards,
 		Concurrency:  *concFlag,
-		SystemPrompt: os.Getenv("MOS_SYSTEM_PROMPT"),
+		SystemPrompt: sysPrompt,
 		Stream:       true,
 		OnChunk:      render,
 	}
@@ -139,6 +148,9 @@ func main() {
 			*shellTimeout, *shellMaxTimeout, jailRoot)
 	} else {
 		fmt.Println("  shell: 未装配（模型看不到这个能力；加 -allow-shell 开启）")
+	}
+	if sysPrompt != "" {
+		fmt.Printf("  系统引导: %s\n", promptKind)
 	}
 	if guards == nil {
 		fmt.Println("  策略: 未装配（nil 总线 = 零开销降级，全部放行）")
@@ -237,6 +249,21 @@ func mustModel() llm.ChatModel {
 		m = llm.WithLogging(m, func(r llm.CallResult) { logCall(name, r) })
 	}
 	return m
+}
+
+// shellSystemPrompt 是开启 shell 时的默认系统引导词。
+//
+// 工具在清单里 ≠ 模型会主动用它：得说清三件事——有什么能力、工作目录在哪、
+// 为什么要用（验证回路）。没有这段，模型多半仍然只写代码不验证。
+func shellSystemPrompt(workdir string) string {
+	return fmt.Sprintf(`你可以通过 shell 工具执行命令来验证改动（go build / go test / git diff 等）。
+
+- 工作目录固定为 %s，命令在那里执行（不要 cd 到别处）。
+- 命令是隔离执行的：有时限（超会被杀）、输出有上限（超了会截断并给全文路径）、
+  环境变量是白名单（不是全部主机的环境）。
+- 正确做法是「改代码 → 跑命令 → 看真实输出 → 再改」，不要靠猜代码对不对。
+- 命令失败不是故障：退出码非零、输出原样回给你，照着输出改就是。
+- 练手项目在 lab/ 子目录（独立的 go module）：修好那里的测试并跑通。`, workdir)
 }
 
 // visibleNames 列出**模型真正看到**的工具（可见性过滤之后）。

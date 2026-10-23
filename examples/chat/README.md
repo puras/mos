@@ -7,6 +7,8 @@ S4b 里程碑示例——智能体经**驱动层循环**与模型对话，模型
 - `llm.WithLogging` 演示调用观测：每次模型调用在 stderr 打一行（模式 / 耗时 / msgs & tools / finish_reason / token），`MOS_LOG_LLM=0` 关闭；日志套在重试之外，重试几次就见几行
 - 内置工具（`builtin.Default()`）登记后模型即可调用；当前可用 `current_time`；文件工具（`read_file`/`write_file`）经 `-workdir` 指定的 jail 根约束后一并登记
 - **shell 工具默认不装配**（`-allow-shell` 开启）：给 agent 一条验证回路——改完代码能自己跑一次 `go build` / `go test`，而不是靠反复重写去猜。命令经 `sandbox.Local` 执行（超时、进程组击杀、输出上限、资源限制、环境裁剪）
+- 开了 shell 会附带一份**默认系统引导词**（教模型用命令验证）；`MOS_SYSTEM_PROMPT` 可覆盖
+- `lab/` 是配套的**练手项目**（独立的 go module，故意留了个逻辑 bug）：让 agent 修好它并跑测试——仓库自己的 `go test ./...` 不受它影响（嵌套 module 被根 module 忽略）
 - 流式打字机输出（协议不支持时自动回退非流式）；思维链以暗色文本透出
 - 会话事件日志落 JSONL（`data/`）：多轮上下文由事件投影累积，**重启自动恢复续聊**；中断的 turn 被合成为 `interrupted` 收尾
 - 每轮打印会话累计 token 用量（派生自 assistant 事件）
@@ -24,22 +26,44 @@ go run .
 ## 验证 shell 验证回路（S5f-1）
 
 ```bash
-go run . -new -allow-shell                  # 开启 shell（默认不装配）
-go run . -new -allow-shell -shell-timeout 300   # 放宽缺省超时（秒）
-go run . -new -allow-shell -shell-max-timeout 600  # 放宽超时上界（秒，模型可申请到的天花板）
-go run . -new -allow-shell -shell-spill /tmp/mos  # 输出落盘目录
+go run . -new -allow-shell                       # 开启 shell（默认不装配）
+go run . -new -allow-shell -shell-timeout 300    # 放宽缺省超时（秒）
+go run . -new -allow-shell -shell-max-timeout 600  # 放宽超时上界（秒，模型申请更久的天花板）
+go run . -new -allow-shell -shell-spill /tmp/mos  # 输出落盘目录（截断时全文写这里）
 ```
 
-开启后模型多了 `shell` 工具，于是这条回路成立：
+开启后模型多了 `shell` 工具，于是这条回路成立：**改 → 跑 → 看真实输出 → 再改**。
+
+### 走一遍：`lab/` 练手项目
+
+`lab/` 是一个独立的 go module，故意留了一个逻辑 bug（`SumRange` 少算 `hi` 那一项）。问一句：
 
 ```text
-你：把 main.go 的这段改掉，然后跑一下 go build ./...
-模型：edit_file → shell(go build ./...) → 发现报错 → 再改 → 再跑 → 通过
+你 > lab 里有个测试没过，修好它并跑测试验证
 ```
 
-**这是 agent 自主收敛的关键**：没有它，模型只能靠猜；有了它，模型能看到自己的错误。
+期望看到的事件流（下面是**真实跑出来的**，非模拟）：
 
-沙箱做了什么（详见 `docs/ARCHITECTURE.md` §3.7）：
+```text
+tool/call   read_file {"path":".../lab/main.go","offset":1,"limit":30}
+tool/result ok        {"content":"// Package main 是 chat 示例的练手项目…"}
+tool/call   read_file {"path":".../lab/main_test.go","offset":1,"limit":30}
+tool/result ok        {"content":"package main\n\nimport \"testing\"…"}
+tool/call   shell     {"command":"cd lab && go test ./... "}
+tool/result ERR       命令失败（退出码 1）:
+                      --- FAIL: TestSumRange (0.00s)
+                          main_test.go:7: SumRange(1, 5) = 10, want 15（含两端）
+tool/call   edit_file {"path":".../lab/main.go","edits":[{"old_string":"for i := lo; i < hi; i++ {","new_string":"for i := lo; i <= hi; i++ {"}]}
+tool/result ok        {"bytes":484,"first_changed_line":12,...}
+tool/call   shell     {"command":"cd lab && go test ./... "}
+tool/result ok        {"exit_code":0,"output":"ok  \tmoslab\t0.501s\n","duration_ms":1008,"truncated":false}
+```
+
+关键在**中间那两条**：模型先跑了一次测试、**看到了真实失败**，才去改；改完再跑一次、通过。这条回路是 agent 自主收敛的前提——没有它，模型只能靠猜代码对不对。
+
+注意 `go test` 在 `lab/` 里跑得起来，靠的是沙箱保留了 `PATH` 与 `HOME`（`GOMODCACHE` 在 HOME 下）；环境变量是**白名单**，主机的密钥不会泄给模型执行的命令。
+
+### 沙箱做了什么（详见 `docs/ARCHITECTURE.md` §3.7）
 
 | 层 | 挡住什么 |
 | --- | --- |

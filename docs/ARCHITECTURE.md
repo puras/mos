@@ -216,6 +216,8 @@ reg.Register(builtin.NewShell(sb))
 - **命令失败是事实不是故障**：非零退出码以 `IsError` 回填，但输出照样给模型（它要靠输出自我纠正）。
 - **输出截断有逃生通道**：超限时完整输出由 Runner 落盘（`Result.OutputPath`），回执给模型 `output_path`，它可以 `read_file` 读全文（PI 的 `full_output_path` 对位，PRD 的"落盘逃生通道"）。落盘目录由宿主指定——默认的 `os.TempDir()` 在文件 jail 的可写根之外。
 - **默认不装配**：示例的 shell 工具默认**不注册**——不给模型这个能力，比给它一个必然失败的工具干净。
+- **开了 shell 就给默认系统引导词**：工具在清单里 ≠ 模型会主动用它。引导词说清三件事——有什么能力、工作目录在哪、为什么要用（"改 → 跑 → 看输出 → 再改"，别靠猜）。`MOS_SYSTEM_PROMPT` 可覆盖。
+- **配套练手项目 `examples/chat/lab/`**：独立的 go module，故意留一个逻辑 bug，让 agent 修好并跑测试。**嵌套 module 被根 module 忽略**——仓库自己的 `go build ./...` / `go test ./...` 始终是绿的。
 
 ## 4. 治理规则（防再膨胀）
 
