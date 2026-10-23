@@ -315,14 +315,16 @@ func mustHooks(trim int) *hook.HookBus {
 	hb := hook.NewHookBus()
 
 	hb.On(hook.HookToolPreExecute, func(ctx context.Context, ev *hook.HookEvent, next hook.Next) (*hook.HookEvent, error) {
-		fmt.Fprintf(os.Stderr, "[hook] 第 %d 轮：即将执行 %s\n", ev.Turn, ev.ToolCall.Name)
+		// 打 turn + callID：同一 turn 里的多次调用都只打「第 N 轮」分不清，
+		// 带上 callID 才看得出是两次不同的调用。
+		fmt.Fprintf(os.Stderr, "[hook] turn %d 即将执行 %s（call %s）\n", ev.Turn, ev.ToolCall.Name, ev.ToolCall.ID)
 		return next(ctx, ev)
 	})
 
 	hb.On(hook.HookToolExecute, func(ctx context.Context, ev *hook.HookEvent, next hook.Next) (*hook.HookEvent, error) {
 		start := time.Now()
 		out, err := next(ctx, ev) // ← 真正的工具调用在这里发生
-		fmt.Fprintf(os.Stderr, "[hook] %s 执行完毕（%v）\n", ev.ToolCall.Name, time.Since(start).Round(time.Millisecond))
+		fmt.Fprintf(os.Stderr, "[hook] turn %d %s 执行完毕（%v，call %s）\n", ev.Turn, ev.ToolCall.Name, time.Since(start).Round(time.Millisecond), ev.ToolCall.ID)
 		return out, err
 	})
 

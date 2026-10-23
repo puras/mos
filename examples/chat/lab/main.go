@@ -9,7 +9,7 @@ import "fmt"
 // SumRange 求和 [lo, hi]（**含两端**）。
 func SumRange(lo, hi int) int {
 	sum := 0
-	for i := lo; i < hi; i++ { // BUG：少算了 hi 那一项
+	for i := lo; i <= hi; i++ {
 		sum += i
 	}
 	return sum
