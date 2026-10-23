@@ -9,7 +9,8 @@
 // 最小事件目录（预算制：新增一种事件前先删一种）：
 //
 //	turn/start  一轮开始
-//	turn/end    一轮结束（reason: completed / blocked / interrupted / error）
+//	turn/end    一轮结束（reason: completed / terminated / error / interrupted；
+//	            error/terminated 另带 Error 详情）
 //	user        用户输入（投影为 user 消息）
 //	assistant   模型输出（文本 + 可选工具调用；投影为 assistant 消息）
 //	tool/call   工具调用留痕（含被守卫拦截的调用；不投影，仅审计）
@@ -19,6 +20,7 @@ package session
 import (
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/puras/mos/llm"
 )
@@ -46,7 +48,7 @@ type ToolResult struct {
 // Event 是日志中的一条记录。Seq 由 Session.Append 统一分配，全局递增从 1 开始。
 // 载荷字段按 Kind 取用：Text（user/assistant）、Reasoning（assistant，思维链）、
 // ToolCalls（assistant）、Usage（assistant，模型调用遥测）、ToolCall（tool/call）、
-// ToolResult（tool/result）、Reason（turn/end）。
+// ToolResult（tool/result）、Reason 与 Error（turn/end）。
 type Event struct {
 	Seq        int64          `json:"seq"`
 	Kind       EventKind      `json:"kind"`
@@ -59,6 +61,35 @@ type Event struct {
 	ToolResult *ToolResult    `json:"toolResult,omitempty"`
 	Usage      *llm.Usage     `json:"usage,omitempty"`
 	Reason     string         `json:"reason,omitempty"`
+	// Error 是 turn/end 的失败详情：分类之外的诊断信息（出错原因、终止理由）。
+	//
+	// 只进日志、不进模型投影（project() 不投影 turn/end）——日志是审计凭据，
+	// 失败若只有分类，事后只剩"失败了"三个字，无从追查是模型不可用、证书
+	// 过期还是守卫拦的。完整错误仍由返回值交给宿主，二者不互相替代。
+	Error string `json:"error,omitempty"`
+}
+
+// MaxErrorDetail 是记入日志的错误详情长度上限（超出部分截断）。
+//
+// 错误串可能很长（服务端返回片段、嵌套的 wrap 链），日志不该被它撑爆；
+// 完整内容仍在返回值里，宿主自行决定怎么呈现。
+const MaxErrorDetail = 4096
+
+// ErrorDetail 把错误转成可入日志的详情：nil 返回空串，超长按 UTF-8 边界截断。
+func ErrorDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	if len(s) <= MaxErrorDetail {
+		return s
+	}
+	cut := MaxErrorDetail
+	// 回退到 rune 边界：切在续字节中间会切出半个字符。
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…（已截断）"
 }
 
 // Session 是一个会话：append-only 事件日志 + 投影。

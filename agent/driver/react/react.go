@@ -118,6 +118,7 @@ func (d *Driver) Run(ctx context.Context, rt *driver.RunContext, sess *session.S
 		if terminated {
 			if _, err := sess.Append(session.Event{
 				Kind: session.EventTurnEnd, Turn: turn, Reason: "terminated",
+				Error: terminateDetail(outcomes),
 			}); err != nil {
 				return "", err
 			}
@@ -129,9 +130,26 @@ func (d *Driver) Run(ctx context.Context, rt *driver.RunContext, sess *session.S
 }
 
 // abort 以 error 原因收尾本轮并返回原错误（落盘失败时原样返回，收尾已尽力）。
+//
+// 错误详情一并落进 turn/end：分类说"失败了"，详情说"为什么"——审计时能直接
+// 看出是模型不可用、证书过期还是守卫拦截，不必再去翻终端输出。
 func (d *Driver) abort(sess *session.Session, turn int, cause error) error {
-	_, _ = sess.Append(session.Event{Kind: session.EventTurnEnd, Turn: turn, Reason: "error"})
+	_, _ = sess.Append(session.Event{
+		Kind: session.EventTurnEnd, Turn: turn, Reason: "error",
+		Error: session.ErrorDetail(cause),
+	})
 	return cause
+}
+
+// terminateDetail 取出终止本轮那条调用的拒绝理由（作为 turn/end 的详情）。
+// 理由已经在 tool/result 里落过一次，这里是给收尾事件补一句可读的来由。
+func terminateDetail(outcomes []execpath.Outcome) string {
+	for _, oc := range outcomes {
+		if oc.Terminate {
+			return oc.Content
+		}
+	}
+	return ""
 }
 
 // appendAssistant 落一条 assistant 事件：文本、思维链、工具调用与 token 用量。

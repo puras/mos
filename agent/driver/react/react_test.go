@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/puras/mos/agent/driver"
+	"github.com/puras/mos/agent/hook"
 	"github.com/puras/mos/llm"
 	"github.com/puras/mos/planner"
 	"github.com/puras/mos/session"
@@ -253,5 +254,51 @@ func TestMissingSessionAndDriver(t *testing.T) {
 	}
 	if _, err := driver.New(&driver.RunContext{}, nil).Run(context.Background(), session.New("t", nil), "问"); err == nil {
 		t.Fatal("nil 驱动应报错")
+	}
+}
+
+// 出错收尾要带详情：分类说"失败了"，详情说"为什么"——审计时能直接看出原因。
+func TestTurnEndCarriesErrorDetail(t *testing.T) {
+	sess := session.New("t", nil)
+	boom := errors.New("模型不可用：证书过期")
+	p := &errPlanner{err: boom}
+	a := driver.New(&driver.RunContext{Planner: p}, New())
+
+	if _, err := a.Run(context.Background(), sess, "问"); !errors.Is(err, boom) {
+		t.Fatalf("错误应冒泡, got %v", err)
+	}
+	last := sess.Events()[len(sess.Events())-1]
+	if last.Kind != session.EventTurnEnd || last.Reason != "error" {
+		t.Fatalf("应以 error 收尾: %+v", last)
+	}
+	if last.Error != boom.Error() {
+		t.Fatalf("收尾应带错误详情, got %q", last.Error)
+	}
+}
+
+// 终止收尾（pre-execute 的 cancel 决策）也要带理由。
+func TestTerminatedTurnCarriesReason(t *testing.T) {
+	sess := session.New("t", nil)
+	p := &scriptedPlanner{acts: []planner.Action{toolCallAction("x")}}
+	hooks := hook.NewHookBus()
+	hooks.On(hook.HookToolPreExecute, func(ctx context.Context, ev *hook.HookEvent, next hook.Next) (*hook.HookEvent, error) {
+		ev.Decision = hook.Decision{Kind: hook.DecisionCancel, Reason: "到此为止"}
+		return ev, nil
+	})
+	d := driver.New(&driver.RunContext{
+		Planner: p,
+		Tools:   registryOf(t, &fakeTool{name: "x"}),
+		Hooks:   hooks,
+	}, New())
+
+	if _, err := d.Run(context.Background(), sess, "去调用"); err != nil {
+		t.Fatal(err)
+	}
+	last := sess.Events()[len(sess.Events())-1]
+	if last.Reason != "terminated" {
+		t.Fatalf("应以 terminated 收尾: %+v", last)
+	}
+	if !strings.Contains(last.Error, "到此为止") {
+		t.Fatalf("收尾应带终止理由, got %q", last.Error)
 	}
 }

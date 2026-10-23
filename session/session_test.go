@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/puras/mos/llm"
 )
@@ -298,5 +299,67 @@ func TestNextTurn(t *testing.T) {
 	mustAppend(t, s, Event{Kind: EventUser, Turn: 5, Text: "跳号"})
 	if got := s.NextTurn(); got != 6 {
 		t.Fatalf("NextTurn = %d, want 6（取日志最大值+1）", got)
+	}
+}
+
+// turn/end 的错误详情：进日志、能落盘、且**不进模型投影**。
+func TestTurnEndErrorDetail(t *testing.T) {
+	dir := t.TempDir()
+	jl, err := NewJSONL(dir)
+	if err != nil {
+		t.Fatalf("NewJSONL: %v", err)
+	}
+	id := "err"
+	if err := jl.SaveHeader(id, Header{ID: id}); err != nil {
+		t.Fatalf("SaveHeader: %v", err)
+	}
+
+	s := New(id, jl)
+	mustAppend(t, s, Event{Kind: EventTurnStart, Turn: 1})
+	mustAppend(t, s, Event{Kind: EventUser, Text: "问"})
+	mustAppend(t, s, Event{Kind: EventTurnEnd, Turn: 1, Reason: "error", Error: "模型不可用：证书过期"})
+
+	// 落盘后详情仍在（审计凭据不能只剩"失败了"）
+	events, err := jl.Load(id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	last := events[len(events)-1]
+	if last.Reason != "error" || last.Error != "模型不可用：证书过期" {
+		t.Fatalf("错误详情未落盘: %+v", last)
+	}
+
+	// 投影里没有它：模型历史不该被诊断信息污染
+	for _, m := range s.Messages() {
+		if m.Content == "模型不可用：证书过期" {
+			t.Fatalf("错误详情不应进入模型投影: %+v", m)
+		}
+	}
+}
+
+// 错误详情超长要截断，且不能切出半个字符。
+func TestErrorDetailTruncation(t *testing.T) {
+	if got := ErrorDetail(nil); got != "" {
+		t.Fatalf("nil 错误应返回空串, got %q", got)
+	}
+	if got := ErrorDetail(errors.New("短")); got != "短" {
+		t.Fatalf("短错误应原样保留, got %q", got)
+	}
+
+	long := strings.Repeat("错", MaxErrorDetail) // 每个 3 字节
+	got := ErrorDetail(errors.New(long))
+	if !strings.HasSuffix(got, "…（已截断）") {
+		t.Fatalf("超长应截断并标记: %q", got)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("截断后必须是合法 UTF-8: %q", got)
+	}
+	// 截断后的内容应是原串的**前缀**（不多不少）
+	body := strings.TrimSuffix(got, "…（已截断）")
+	if !strings.HasPrefix(long, body) {
+		t.Fatalf("截断内容应是原文前缀")
+	}
+	if len(body) > MaxErrorDetail {
+		t.Fatalf("截断后长度 %d 超过上限 %d", len(body), MaxErrorDetail)
 	}
 }

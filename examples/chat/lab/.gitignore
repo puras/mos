@@ -1,0 +1,2 @@
+# agent 在这里跑 `go build` 会留下二进制，别让它进 git
+/moslab
