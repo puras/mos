@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -330,5 +331,49 @@ func TestChatStreamUsage(t *testing.T) {
 	}
 	if resp.Usage.Details.Output.Reasoning != 2 {
 		t.Fatalf("reasoning = %+v", resp.Usage.Details)
+	}
+}
+
+// 非 200 响应要带出 HTTP 状态码：上层据此判定该不该重试
+// （429/5xx 可重试，4xx 快速失败）。
+func TestStatusErrorCarriesStatusCode(t *testing.T) {
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited","type":"rate_limit_error"}}`))
+	})
+	defer srv.Close()
+
+	_, err := p.Chat(context.Background(), &llm.Request{})
+	if err == nil {
+		t.Fatal("应当报错")
+	}
+	if got := llm.StatusCodeOf(err); got != http.StatusTooManyRequests {
+		t.Fatalf("StatusCodeOf = %d, want 429", got)
+	}
+	if !llm.DefaultRetryable(err) {
+		t.Fatalf("429 应判为可重试: %v", err)
+	}
+	// 文本格式保持不变（既有日志不必改）
+	if !strings.Contains(err.Error(), "rate limited") {
+		t.Fatalf("错误文本应保留服务端信息: %v", err)
+	}
+}
+
+// 空响应是可重试的瞬时故障（网关抖动），用哨兵标出来。
+func TestEmptyResponseIsRetryable(t *testing.T) {
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[]}`))
+	})
+	defer srv.Close()
+
+	_, err := p.Chat(context.Background(), &llm.Request{})
+	if err == nil {
+		t.Fatal("应当报错")
+	}
+	if !errors.Is(err, llm.ErrEmptyResponse) {
+		t.Fatalf("应标记为空响应: %v", err)
+	}
+	if !llm.DefaultRetryable(err) {
+		t.Fatalf("空响应应判为可重试: %v", err)
 	}
 }

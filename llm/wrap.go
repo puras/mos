@@ -53,47 +53,6 @@ func (w *loggingWrapper) ChatStream(ctx context.Context, req *Request, emit func
 	return resp, err
 }
 
-// WithRetry 返回一个在非流式 Chat 失败时按固定间隔重试的包装器。
-// attempts 为总尝试次数（<=0 视为 1）；ChatStream 不重试（增量已下发，重试会重复输出），直接透传。
-func WithRetry(m ChatModel, attempts int, delay time.Duration) ChatModel {
-	return &retryWrapper{m: m, attempts: attempts, delay: delay}
-}
-
-type retryWrapper struct {
-	m        ChatModel
-	attempts int
-	delay    time.Duration
-}
-
-func (w *retryWrapper) Capabilities() Capability { return w.m.Capabilities() }
-
-func (w *retryWrapper) Chat(ctx context.Context, req *Request) (*Response, error) {
-	attempts := w.attempts
-	if attempts <= 0 {
-		attempts = 1
-	}
-	var lastErr error
-	for i := 0; i < attempts; i++ {
-		resp, err := w.m.Chat(ctx, req)
-		if err == nil {
-			return resp, nil
-		}
-		lastErr = err
-		if i < attempts-1 {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(w.delay):
-			}
-		}
-	}
-	return nil, lastErr
-}
-
-func (w *retryWrapper) ChatStream(ctx context.Context, req *Request, emit func(StreamChunk) error) (*Response, error) {
-	return w.m.ChatStream(ctx, req, emit)
-}
-
 // WithTimeout 返回一个为每次调用设置超时的包装器（Chat 与 ChatStream 均生效）。
 func WithTimeout(m ChatModel, timeout time.Duration) ChatModel {
 	return &timeoutWrapper{m: m, timeout: timeout}

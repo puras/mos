@@ -4,7 +4,9 @@ S4b 里程碑示例——智能体经**驱动层循环**与模型对话，模型
 
 - 装配链：llm 协议注册表建模型（套 `llm.WithRetry` + `llm.WithLogging`）→ `tool.Registry` 登记内置工具 → `agent/policy` 策略装进 `hook.GuardBus` → `planner.NewReAct` 决策器 → `driver.RunContext`（含 `Tools` + `Guards`）→ `react.New()` 驱动
 - `MOS_PROVIDER` 切换 openai 兼容 / anthropic / gemini；`llm.WithRetry` 装饰器演示
+- **重试策略是宿主的**（`-retry-attempts` / `-retry-delay`，默认 3 次 / 1 秒基数）：只重试**瞬时**错误（限流 429、5xx、连接失败、空响应），4xx、鉴权失败、用户取消一律**快速失败**——重试确定性的错误只是浪费配额。退避是**有界指数 + 抖动**；流式只在还没吐出内容时才重试
 - `llm.WithLogging` 演示调用观测：每次模型调用在 stderr 打一行（模式 / 耗时 / msgs & tools / finish_reason / token），`MOS_LOG_LLM=0` 关闭；日志套在重试之外，重试几次就见几行
+- **重试也要看得见**：每次重试前在 stderr 打一行 `[llm] 第 N 次重试（…后）：<错误>`——静默重试是查不出问题的
 - 内置工具（`builtin.Default()`）登记后模型即可调用；当前可用 `current_time`；文件工具（`read_file`/`write_file`）经 `-workdir` 指定的 jail 根约束后一并登记
 - **shell 工具默认不装配**（`-allow-shell` 开启）：给 agent 一条验证回路——改完代码能自己跑一次 `go build` / `go test`，而不是靠反复重写去猜。命令经 `sandbox.Local` 执行（超时、进程组击杀、输出上限、资源限制、环境裁剪）
 - 开了 shell 会附带一份**默认系统引导词**（教模型用命令验证）；`MOS_SYSTEM_PROMPT` 可覆盖

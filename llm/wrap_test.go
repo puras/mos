@@ -73,8 +73,8 @@ func TestWithLogging(t *testing.T) {
 
 func TestWithRetry(t *testing.T) {
 	base := &fakeModel{resp: &Response{}}
-	m := WithRetry(base, 3, time.Millisecond)
-	base.err = errors.New("boom")
+	m := WithRetry(base, RetryPolicy{MaxAttempts: 3, BaseDelay: time.Millisecond})
+	base.err = &StatusError{Provider: "openai", StatusCode: 503, Message: "服务不可用"}
 	if _, err := m.Chat(context.Background(), &Request{}); err == nil {
 		t.Fatal("Chat should fail after exhausted retries")
 	}
@@ -87,15 +87,43 @@ func TestWithRetry(t *testing.T) {
 	}
 }
 
-func TestWithRetryStreamPassthrough(t *testing.T) {
+// 不可重试的错误要**快速失败**：重试确定性的错误只是浪费配额、拖长失败。
+func TestWithRetrySkipsNonRetryable(t *testing.T) {
 	base := &fakeModel{resp: &Response{}}
-	m := WithRetry(base, 3, time.Millisecond)
-	base.err = errors.New("boom")
-	if _, err := m.ChatStream(context.Background(), &Request{}, nil); err == nil {
-		t.Fatal("ChatStream should not retry and return error")
+	m := WithRetry(base, RetryPolicy{MaxAttempts: 3, BaseDelay: time.Millisecond})
+	base.err = &StatusError{Provider: "openai", StatusCode: 401, Message: "密钥无效"}
+	if _, err := m.Chat(context.Background(), &Request{}); err == nil {
+		t.Fatal("应当报错")
 	}
 	if base.calls != 1 {
-		t.Fatalf("calls = %d, want 1 (no retry on stream)", base.calls)
+		t.Fatalf("calls = %d, want 1（4xx/鉴权失败不重试）", base.calls)
+	}
+}
+
+// 流式：还没吐出内容时可重试；已吐过内容则不重试（否则用户看到重复内容）。
+func TestWithRetryStream(t *testing.T) {
+	base := &fakeModel{resp: &Response{}}
+	m := WithRetry(base, RetryPolicy{MaxAttempts: 3, BaseDelay: time.Millisecond})
+	base.err = &StatusError{Provider: "openai", StatusCode: 503, Message: "服务不可用"}
+	if _, err := m.ChatStream(context.Background(), &Request{}, nil); err == nil {
+		t.Fatal("ChatStream should fail")
+	}
+	if base.calls != 3 {
+		t.Fatalf("calls = %d, want 3（未吐内容可重试）", base.calls)
+	}
+
+	// 已吐内容后失败：不重试。
+	base2 := &fakeModel{resp: &Response{}}
+	m2 := WithRetry(base2, RetryPolicy{MaxAttempts: 3, BaseDelay: time.Millisecond})
+	base2.stream = func(ctx context.Context, req *Request, emit func(StreamChunk) error) (*Response, error) {
+		_ = emit(StreamChunk{Delta: "部分内容"})
+		return nil, &StatusError{Provider: "openai", StatusCode: 503, Message: "流中断"}
+	}
+	if _, err := m2.ChatStream(context.Background(), &Request{}, func(StreamChunk) error { return nil }); err == nil {
+		t.Fatal("应当报错")
+	}
+	if base2.calls != 1 {
+		t.Fatalf("calls = %d, want 1（已吐内容不重试）", base2.calls)
 	}
 }
 
@@ -155,7 +183,7 @@ func TestWrappersCapabilitiesPassthrough(t *testing.T) {
 	if got := WithLogging(base, nil).Capabilities(); got != CapStreaming|CapFunctionCalling {
 		t.Fatalf("logging caps = %v", got)
 	}
-	if got := WithRetry(base, 1, 0).Capabilities(); got != CapStreaming|CapFunctionCalling {
+	if got := WithRetry(base, RetryPolicy{MaxAttempts: 1}).Capabilities(); got != CapStreaming|CapFunctionCalling {
 		t.Fatalf("retry caps = %v", got)
 	}
 	if got := WithTimeout(base, time.Second).Capabilities(); got != CapStreaming|CapFunctionCalling {

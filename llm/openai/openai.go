@@ -406,7 +406,8 @@ func (p *Chat) handleResponse(r io.Reader) (*llm.Response, error) {
 		return nil, fmt.Errorf("openai: %s (%s)", raw.Error.Message, code)
 	}
 	if len(raw.Choices) == 0 {
-		return nil, errors.New("openai: empty choices in response")
+		// 空响应是瞬时故障（网关抖动），值得重试——用哨兵让重试层能认出来。
+		return nil, fmt.Errorf("openai: %w", llm.ErrEmptyResponse)
 	}
 	return &llm.Response{
 		Message: fromChatMessage(raw.Choices[0].Message),

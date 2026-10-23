@@ -98,13 +98,21 @@ func (c *Client) httpClient(ctx context.Context) *http.Client {
 // 因此必须在确认不再读取 Body 后调用。
 // parse 返回 ok=true 时错误为 "<provider>: <msg>"，否则兜底为
 // "<provider>: unexpected status <code>: <body>"。parse 可为 nil。
+//
+// 返回的是 *llm.StatusError：**HTTP 状态码不会随字符串一起丢掉**——
+// 上层要判定"该不该重试"（429/5xx 可重试，400/401 不可），靠的是结构化
+// 字段而不是 parse 文本。
 func ParseStatusError(provider string, resp *http.Response, parse func(statusCode int, body []byte) (msg string, ok bool)) error {
 	data, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
+	msg := ""
 	if parse != nil {
-		if msg, ok := parse(resp.StatusCode, data); ok {
-			return fmt.Errorf("%s: %s", provider, msg)
+		if m, ok := parse(resp.StatusCode, data); ok {
+			msg = m
 		}
 	}
-	return fmt.Errorf("%s: unexpected status %d: %s", provider, resp.StatusCode, string(data))
+	if msg == "" {
+		msg = fmt.Sprintf("unexpected status %d: %s", resp.StatusCode, string(data))
+	}
+	return &llm.StatusError{Provider: provider, StatusCode: resp.StatusCode, Message: msg}
 }

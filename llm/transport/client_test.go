@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -214,3 +215,25 @@ type closeTrackingBody struct {
 }
 
 func (b closeTrackingBody) Close() error { *b.closed = true; return nil }
+
+// 状态码不能随字符串一起丢掉：上层要靠它判定该不该重试。
+func TestParseStatusErrorKeepsStatusCode(t *testing.T) {
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"rate limited"}}`)),
+	}
+	err := ParseStatusError("openai", resp, func(code int, body []byte) (string, bool) {
+		return "rate limited", true
+	})
+	if got := llm.StatusCodeOf(err); got != http.StatusTooManyRequests {
+		t.Fatalf("StatusCodeOf = %d, want 429", got)
+	}
+	var se *llm.StatusError
+	if !errors.As(err, &se) {
+		t.Fatalf("应返回 *llm.StatusError: %T", err)
+	}
+	if se.Provider != "openai" {
+		t.Fatalf("Provider = %q", se.Provider)
+	}
+}

@@ -55,11 +55,13 @@ func main() {
 	shellTimeout := flag.Int("shell-timeout", 120, "shell 命令缺省超时（秒）")
 	shellMaxTimeout := flag.Int("shell-max-timeout", 300, "shell 命令超时上界（秒，模型申请更久会被夹到这里）")
 	shellSpill := flag.String("shell-spill", "", "shell 输出落盘目录（截断时全文写这里；默认不落盘）")
+	retryAttempts := flag.Int("retry-attempts", 3, "模型调用总尝试次数（含首次）；1 = 不重试")
+	retryDelay := flag.Int("retry-delay", 1, "首次退避基数（秒），之后指数增长（带抖动）")
 	flag.Parse()
 
 	loadDotEnv(".env")
 
-	model := mustModel()
+	model := mustModel(*retryAttempts, *retryDelay)
 	jl, sess := mustSession(*fresh)
 	defer jl.Close()
 
@@ -143,6 +145,11 @@ func main() {
 	fmt.Printf("  模型可见工具: %s\n", strings.Join(visibleNames(reg), ", "))
 	fmt.Printf("  文件沙箱: %s（越界路径会被拒绝，工具不会执行）\n", jailRoot)
 	fmt.Printf("  并发上限: %d（仅对声明可并发的工具生效；read_file 可并发，write_file 独占）\n", *concFlag)
+	if *retryAttempts > 1 {
+		fmt.Printf("  重试: %d 次尝试（首次退避 %ds，指数增长带抖动；只重试瞬时错误）\n", *retryAttempts, *retryDelay)
+	} else {
+		fmt.Println("  重试: 未开启（1 次尝试，失败即报错）")
+	}
 	if *allowShell {
 		fmt.Printf("  shell: 已装配（隔离执行，超时缺省 %ds / 上界 %ds；工作目录 %s）\n",
 			*shellTimeout, *shellMaxTimeout, jailRoot)
@@ -222,7 +229,7 @@ func flushLine() {
 // 装饰器嵌套顺序即执行顺序（外层先进）：日志刻意套在重试之外——重试失败再试
 // 会各打一行，重试了几次、共耗时多久一目了然；若把日志放里面，只会看到最后
 // 一次成功，失败被静默吞掉。
-func mustModel() llm.ChatModel {
+func mustModel(retryAttempts, retryDelay int) llm.ChatModel {
 	reg := llm.NewRegistry()
 	reg.Register("openai", openai.New)
 	reg.Register("anthropic", anthropic.New)
@@ -242,7 +249,17 @@ func mustModel() llm.ChatModel {
 	})
 	check(err)
 
-	var m llm.ChatModel = llm.WithRetry(model, 2, time.Second)
+	// 重试策略：**参数是宿主的，机制是框架的**（llm.WithRetry）。
+	// 只重试瞬时错误（限流 / 5xx / 连接失败 / 空响应）；4xx、鉴权失败、
+	// 配额耗尽、用户取消一律快速失败——重试确定性的错误只是浪费配额。
+	m := llm.WithRetry(model, llm.RetryPolicy{
+		MaxAttempts: retryAttempts,
+		BaseDelay:   time.Duration(retryDelay) * time.Second,
+		// 重试要看得见：静默重试是查不出问题的。
+		OnScheduled: func(attempt int, delay time.Duration, err error) {
+			fmt.Fprintf(os.Stderr, "[llm] 第 %d 次重试（%v 后）：%v\n", attempt, delay.Round(time.Millisecond), err)
+		},
+	})
 	if logLLM() {
 		// 模型名等日志内容由闭包持有，装饰器只管「调用结束时回调一次」
 		name := os.Getenv("MOS_MODEL")

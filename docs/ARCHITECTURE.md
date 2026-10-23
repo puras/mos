@@ -30,7 +30,7 @@
 | 包 | 职责 | 来源 | 切片 |
 | --- | --- | --- | --- |
 | `session` | 会话事件日志、消息投影、TaskState、JSONL 持久化 | 重写瘦身 | S1 |
-| `llm`（+`llm/transport`） | ChatModel 抽象、协议适配、共享 HTTP envelope | 移植归档 | S2 |
+| `llm`（+`llm/transport`） | ChatModel 抽象、协议适配、共享 HTTP envelope；**重试机制**（`WithRetry`）+ 策略结构体 | 移植归档 | S2 ✅ / S2b |
 | `tool`（+`tool/builtin`） | 工具接口、注册表、Schema 生成、`ConcurrencySafe` 并发分类器；`current_time` / `read_file` / `write_file` / `edit_file` | 移植裁剪 | S3 ✅ / S5e / S5d+ |
 | `planner` + `driver` | Planner 接口 + ReAct 决策；LoopDriver + ReActDriver | planner 移植 / 驱动重写 | S4a ✅ |
 | `agent/execpath` | 工具调用统一执行通道：preflight 裁决 + 调度 + 按调用序回填 | 重写 | S5a ✅ |
@@ -219,6 +219,30 @@ reg.Register(builtin.NewShell(sb))
 - **默认不装配**：示例的 shell 工具默认**不注册**——不给模型这个能力，比给它一个必然失败的工具干净。
 - **开了 shell 就给默认系统引导词**：工具在清单里 ≠ 模型会主动用它。引导词说清三件事——有什么能力、工作目录在哪、为什么要用（"改 → 跑 → 看输出 → 再改"，别靠猜）。`MOS_SYSTEM_PROMPT` 可覆盖。
 - **配套练手项目 `examples/chat/lab/`**：独立的 go module，故意留一个逻辑 bug，让 agent 修好并跑测试。**嵌套 module 被根 module 忽略**——仓库自己的 `go build ./...` / `go test ./...` 始终是绿的。
+
+### 3.8 模型调用的重试（S2b）
+
+**机制在框架，策略在宿主**——与 PI / DSH 同构：重试是模型调用层的事，不该散落到业务各处各写一遍；但"重试几次、退避多久、哪些错误值得重试"是产品决策，框架不发明默认策略。
+
+```go
+llm.WithRetry(model, llm.RetryPolicy{
+    MaxAttempts: 3,        // 总尝试次数（含首次）；<=1 = 不重试
+    BaseDelay:   time.Second,
+    MaxDelay:    30 * time.Second,
+    Jitter:      0.1,      // <0 关闭；0 用默认 0.1
+    Retryable:   nil,      // nil 用默认分类；宿主可覆盖
+    OnScheduled: func(attempt int, delay time.Duration, err error) { /* 记日志/指标 */ },
+})
+```
+
+- **默认不装配就没有重试**（fail-fast，把问题早暴露）；机制在 `llm`，参数由宿主给（示例：`-retry-attempts` / `-retry-delay`）。
+- **只重试瞬时错误**（`llm.DefaultRetryable`）：429 / 408 / 5xx / 连接层失败 / 空响应。**4xx、鉴权失败、配额耗尽、用户取消一律快速失败**——重试确定性的错误只是浪费配额、拖长失败、放大日志。
+- **状态码不能随字符串一起丢**：`llm.StatusError{Provider, StatusCode, Message}` 由适配器层返回（`transport.ParseStatusError`），`llm.StatusCodeOf(err)` 穿透错误链取状态码。分类靠**结构化字段**，不靠 parse 文本。
+- **退避是有界指数 + 抖动**：`min(BaseDelay × 2^(n-1), MaxDelay)`，再乘 (1 ± Jitter)——抖动避开惊群（多个实例同时失败、同时重试、同时再失败）。
+- **取消是终止性的**：ctx 结束（取消/超时）立即停止，不再重试；退避等待中 ctx 结束则直接返回 `ctx.Err()`。
+- **流式只在还没吐出内容时重试**：增量已下发的话重试会让用户看到重复内容。
+- **重试要看得见**：`OnScheduled` / `OnFinished` 回调——静默重试是查不出问题的。
+- 对标：PI `packages/ai/src/utils/retry.ts`、DSH `packages/llm/llm/src/retry-policy.ts`。
 
 ## 4. 治理规则（防再膨胀）
 
