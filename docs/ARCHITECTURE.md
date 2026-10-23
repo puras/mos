@@ -199,6 +199,17 @@ reg.Register(builtin.NewShell(sb))
   - 模型可以在调用里要求更短（`{command, timeout}`，收紧自己的额度永远允许），要求更长则被夹到上界——超时是**资源预算**（卡死的命令占着 worker 槽、烧 CPU），若模型能无限加长，宿主设的预算就形同虚设；
   - 解析式同 DSH 的 `clampTimeout`：`min(请求 ?? 缺省, 上界)`。
   - 示例用缺省 120s / 上界 300s（慢的 `go test` 需要更多，但有天花板）。
+- **预算可以是"活的"**（DSH 的 `Volatile` 对位）：`Local.Budget func() Budget` 是可选的动态来源，每次调用前解析一次——宿主据此在运行期调整预算（配置中心热更新、按租户给不同额度、按负载收紧）。
+  - **为什么是函数而不是字段**：宿主要改的是**背后的状态**。直接改字段在工具并发执行时是数据竞争（race detector 会报）。正确姿势是让函数去读一个并发安全的状态：
+
+    ```go
+    var cell atomic.Value // 存 sandbox.Budget
+    sb.Budget = func() sandbox.Budget { return cell.Load().(sandbox.Budget) }
+    cell.Store(sandbox.Budget{Default: time.Minute, Max: 10 * time.Minute}) // 并发安全地改
+    ```
+
+  - 动态预算返回零值 → 回落到静态字段（不丢配置）；动态只给 `Max` 不给 `Default` → 缺省用静态的，上界用动态的。
+  - 要**整体换掉** `Budget` 字段本身，只在装配期做（并发开始后换请换新的 Runner 实例）。
 - **诚实的边界**：**限资源，不限文件**。本地实现限制的是"这次运行能消耗多少"，**不限制命令能碰哪些文件**——命令仍能访问运行用户权限内的任意路径。路径范围的强制隔离需要外部后端（bwrap / Landlock / Seatbelt / 容器），Go 标准库给不了；`sandbox.Runner` 接口就是留给它们的接缝（PRD 的 FR-E2）。命令级的语义约束属策略层（S5f-2）。
 - **平台差异**：CPU 时间（`ulimit -t`）与单文件大小（`ulimit -f`）POSIX 平台都支持；**虚拟内存（`ulimit -v`）只有 Linux 等支持**，macOS 上会被跳过（每条限制都带 `|| true`，不支持的跳过而不是让命令失败）。
 - **fail-closed**：没装配 `sandbox.Runner` 的 shell 工具**拒绝执行**——不存在"没配沙箱就跑裸命令"的默认路径（归档曾有该缺陷，用兜底 Runner 修）。

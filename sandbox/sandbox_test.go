@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -228,4 +230,102 @@ func TestShorterModelTimeoutIsHonored(t *testing.T) {
 	if d := time.Since(start); d > 2*time.Second {
 		t.Fatalf("应按模型给的 200ms 终止, 实际 %v", d)
 	}
+}
+
+// 动态预算：宿主在运行期换预算，缺省与上界都跟着变。
+func TestDynamicBudgetOverridesStatic(t *testing.T) {
+	var cell atomic.Value
+	cell.Store(Budget{Default: 200 * time.Millisecond, Max: 400 * time.Millisecond})
+	sb := &Local{Timeout: 10 * time.Second, MaxTimeout: 20 * time.Second}
+	sb.Budget = func() Budget { return cell.Load().(Budget) }
+
+	// 静态值是 10s/20s，动态值 200ms/400ms —— 动态优先
+	start := time.Now()
+	_, err := sb.Run(context.Background(), Request{Command: "sleep 30", Timeout: 5 * time.Second})
+	if err == nil {
+		t.Fatal("应超时")
+	}
+	d := time.Since(start)
+	if d > 2*time.Second {
+		t.Fatalf("应按动态上界(400ms)终止, 实际 %v", d)
+	}
+
+	// 运行期把预算放宽 → 立刻生效（要 1.5s，动态上界 2s 允许；若还按旧的
+	// 400ms 夹住，这个断言会失败）
+	cell.Store(Budget{Default: time.Second, Max: 2 * time.Second})
+	start = time.Now()
+	_, err = sb.Run(context.Background(), Request{Command: "sleep 30", Timeout: 1500 * time.Millisecond})
+	if err == nil {
+		t.Fatal("应超时")
+	}
+	if d := time.Since(start); d < time.Second {
+		t.Fatalf("放宽后应按 1.5s 终止, 实际 %v", d)
+	}
+}
+
+// 动态预算返回零值 → 回落到静态字段（不丢配置）。
+func TestDynamicBudgetZeroFallsBackToStatic(t *testing.T) {
+	sb := &Local{Timeout: 300 * time.Millisecond, MaxTimeout: 300 * time.Millisecond}
+	sb.Budget = func() Budget { return Budget{} }
+	start := time.Now()
+	_, err := sb.Run(context.Background(), Request{Command: "sleep 30", Timeout: 10 * time.Second})
+	if err == nil {
+		t.Fatal("应超时")
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("应回落到静态上界(300ms)终止, 实际 %v", d)
+	}
+}
+
+// 动态预算只给 Max 不给 Default → 缺省回落到静态，上界用动态的。
+func TestDynamicBudgetMaxOnly(t *testing.T) {
+	sb := &Local{Timeout: 200 * time.Millisecond}
+	sb.Budget = func() Budget { return Budget{Max: 5 * time.Second} }
+	// 模型要 3s（静态上界本会夹到 200ms，动态上界 5s 允许）
+	start := time.Now()
+	_, err := sb.Run(context.Background(), Request{Command: "sleep 30", Timeout: 3 * time.Second})
+	if err == nil {
+		t.Fatal("应超时")
+	}
+	if d := time.Since(start); d < 2*time.Second {
+		t.Fatalf("应按模型的 3s 终止, 实际 %v", d)
+	}
+}
+
+// 动态预算的 Max 未给 → 不比缺省更宽（没给上界就不给模型加钱的余地）。
+func TestDynamicBudgetWithoutMaxIsNotWider(t *testing.T) {
+	sb := &Local{}
+	sb.Budget = func() Budget { return Budget{Default: 300 * time.Millisecond} }
+	start := time.Now()
+	_, err := sb.Run(context.Background(), Request{Command: "sleep 30", Timeout: 10 * time.Second})
+	if err == nil {
+		t.Fatal("应超时")
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("应按动态缺省(300ms)终止, 实际 %v", d)
+	}
+}
+
+// 宿主在业务里热更新预算，同时命令在跑 —— 不能有数据竞争。
+func TestDynamicBudgetConcurrentUpdateIsRaceFree(t *testing.T) {
+	var cell atomic.Value
+	cell.Store(Budget{Default: time.Second, Max: 2 * time.Second})
+	sb := &Local{}
+	sb.Budget = func() Budget { return cell.Load().(Budget) }
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			cell.Store(Budget{Default: time.Duration(i+1) * time.Millisecond, Max: 2 * time.Second})
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 10; i++ {
+			sb.Run(context.Background(), Request{Command: "echo hi"}) //nolint:errcheck
+		}
+	}()
+	wg.Wait()
 }

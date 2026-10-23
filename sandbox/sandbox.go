@@ -94,10 +94,22 @@ func (e *NotConfiguredError) Error() string {
 	return "命令执行能力未装配（拒绝执行）"
 }
 
+// Budget 是一次调用的超时预算（宿主动态提供）。
+type Budget struct {
+	// Default 是缺省超时（模型没有指定时用它）。<=0 视为未设置。
+	Default time.Duration
+	// Max 是上界（模型最多能要求到哪）。<=0 视为未设置 → 退化为 Default
+	//（**不比缺省更宽**：没给上界就不给模型加钱的余地）。
+	Max time.Duration
+}
+
 // Local 是本地进程级隔离的执行器。
 //
 // 隔离手段见包注释的六层。零值可用：WorkDir 空表示用进程当前目录，Timeout
 // 空用 DefaultTimeout，其余限制为 0 表示不限制。
+//
+// 预算是"活的"：填了 Budget 就在每次调用前重新解析（宿主可热更新）；直接改
+// 字段在并发执行下是数据竞争——改 Budget 背后的状态，别改字段。
 type Local struct {
 	// WorkDir 是命令执行目录（宿主配置，不交给模型指定）。
 	WorkDir string
@@ -113,6 +125,22 @@ type Local struct {
 	//
 	// <=0 时退化为 Timeout（**不放宽**）——没显式配置上界就不给模型加钱的余地。
 	MaxTimeout time.Duration
+
+	// Budget 是**动态预算来源**（可选）：每次调用前解析一次，宿主据此在运行期
+	// 调整预算（配置中心热更新、按租户给不同额度、按负载收紧）。
+	//
+	// 非 nil 时以它为准；它返回的零值回落到本结构体的 Timeout / MaxTimeout。
+	//
+	// 为什么是函数而不是字段：宿主要改的是**背后的状态**，不是这个字段本身。
+	// 直接改字段在工具并发执行时是数据竞争（race detector 会报）。正确姿势是
+	// 让函数去读一个并发安全的状态：
+	//
+	//	var cell atomic.Value // 存 Budget
+	//	sb.Budget = func() Budget { return cell.Load().(Budget) }
+	//	cell.Store(Budget{Default: time.Minute, Max: 10 * time.Minute})
+	//
+	// 要整体换掉这个字段，则只在装配期做（并发开始后换请换新的 Runner 实例）。
+	Budget func() Budget
 	// MaxOutput 是输出上限（字节）；<=0 用 DefaultMaxOutput。
 	MaxOutput int64
 	// CpuSeconds 是 CPU 时间上限（秒）；0 = 不限制。
@@ -134,6 +162,37 @@ type Local struct {
 
 var _ Runner = (*Local)(nil)
 
+// resolveTimeout 解析本次调用生效的超时：min(请求 ?? 缺省, 上界)。
+//
+// 缺省与上界的来源：宿主动态预算（Budget）优先，其次本结构体的 Timeout /
+// MaxTimeout，最后是框架缺省。语义同 DSH 的 clampTimeout。
+func (s *Local) resolveTimeout(requested time.Duration) time.Duration {
+	def, max := s.Timeout, s.MaxTimeout
+	if s.Budget != nil {
+		b := s.Budget()
+		if b.Default > 0 {
+			def = b.Default
+		}
+		if b.Max > 0 {
+			max = b.Max
+		}
+	}
+	if def <= 0 {
+		def = DefaultTimeout
+	}
+	if max <= 0 {
+		max = def // 没配上界 → 不比缺省更宽
+	}
+	t := requested
+	if t <= 0 {
+		t = def
+	}
+	if t > max {
+		t = max
+	}
+	return t
+}
+
 // Run 实现 Runner。
 func (s *Local) Run(ctx context.Context, req Request) (Result, error) {
 	if s == nil {
@@ -143,25 +202,7 @@ func (s *Local) Run(ctx context.Context, req Request) (Result, error) {
 		return Result{}, errors.New("sandbox: 命令不能为空")
 	}
 
-	// 超时解析：缺省取宿主的 Timeout，上界取宿主的 MaxTimeout（DSH 的
-	// clampTimeout 同形：min(请求 ?? 缺省, 上界)）。
-	timeout := req.Timeout
-	if timeout <= 0 {
-		timeout = s.Timeout
-		if timeout <= 0 {
-			timeout = DefaultTimeout
-		}
-	}
-	max := s.MaxTimeout
-	if max <= 0 {
-		max = s.Timeout // 没配上界 → 不比缺省更宽
-		if max <= 0 {
-			max = DefaultTimeout
-		}
-	}
-	if timeout > max {
-		timeout = max
-	}
+	timeout := s.resolveTimeout(req.Timeout)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
