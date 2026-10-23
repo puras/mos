@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -43,8 +44,30 @@ func TestHostPolicyVerdicts(t *testing.T) {
 	if got := verdict("write_file", `{"path":"/tmp/id_rsa","content":"x"}`); got != policy.VerdictDeny {
 		t.Fatalf("写 id_rsa 应 deny, got %v", got)
 	}
-	if got := verdict("shell", `{"command":"rm -rf build"}`); got != policy.VerdictAsk {
-		t.Fatalf("rm -rf 应 ask, got %v", got)
+	// 删除命令一律 ask——不看 flag 里有没有字母 r。
+	// （2026-10 事故：规则键的是"含 r 的 flag"，`git status --short` 误触发，
+	// 而逐个 `git rm` 漏过，被拒后模型拆解命令绕过了拦截。）
+	for _, cmd := range []string{
+		"rm -rf build",                             // 递归删除
+		"git rm -r --quiet lab",                    // git 递归删除
+		"git rm --quiet lab/.gitignore lab/go.mod", // git 逐个删除（事故里漏过的那条）
+		"git rm lab/go.mod",                        // git 删除单文件
+		"unlink /tmp/x",                            // unlink
+	} {
+		if got := verdict("shell", fmt.Sprintf(`{"command":%q}`, cmd)); got != policy.VerdictAsk {
+			t.Fatalf("%q 应 ask, got %v", cmd, got)
+		}
+	}
+	// 非删除命令不该误触发
+	for _, cmd := range []string{
+		"git status --short", // --short 含字母 r，但不能因为字母就拦
+		"go test ./...",
+		"ls -la",
+		"rmdir build", // 只能删空目录，豁免
+	} {
+		if got := verdict("shell", fmt.Sprintf(`{"command":%q}`, cmd)); got != policy.VerdictAllow {
+			t.Fatalf("%q 应放行, got %v", cmd, got)
+		}
 	}
 	if got := verdict("shell", `{"command":"go test ./..."}`); got != policy.VerdictAllow {
 		t.Fatalf("普通命令应放行, got %v", got)
@@ -244,7 +267,7 @@ func TestHostPolicyAskReachesTerminalApproval(t *testing.T) {
 	if executed {
 		t.Fatal("拒绝后不该执行")
 	}
-	if !strings.Contains(result, "人工拒绝") {
-		t.Fatalf("拒绝理由应回填: %s", result)
+	if !strings.Contains(result, "保持拒绝状态") {
+		t.Fatalf("拒绝理由应含制止绕过的语义: %s", result)
 	}
 }

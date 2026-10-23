@@ -183,7 +183,15 @@ func preflight(ctx context.Context, reg *tool.Registry, calls []llm.ToolCall, op
 				// 批准只对**本次调用**生效（DSH 的 allowed-once）：放行，照常执行。
 				p.pending = true
 			case out == approval.Rejected:
-				p.err = fmt.Errorf("工具调用被人工拒绝: %s", reasonOf(ev.Decision))
+				// 拒绝文案对齐 DSH（escalation.ts:203："it stays denied, so stop
+				// and explain instead of working around it"）。
+				//
+				// 拒绝的语义是「这个操作保持拒绝状态」，模型该做的是停下解释，
+				// 而不是换条路再试——实测不加这句话，模型会在被拒后拆解命令
+				// 绕开规则（把 `git rm -r lab` 改成逐个 `git rm` 达成同一目的）。
+				// 合法的重试只有一条路：征得同意后**原样**重新发起（会再次弹
+				// 审批，批准不缓存）。
+				p.err = fmt.Errorf("用户已拒绝此操作，该操作保持拒绝状态。请停下，向用户说明情况；不要尝试用其他命令或方式达成同一目的。若确有必要，请先向用户说明并获得同意，然后原样重新发起这次调用（会再次请求批准）。拒绝时给出的理由：%s", reasonOf(ev.Decision))
 			case out == approval.Cancelled:
 				p.err = fmt.Errorf("人工确认被撤回: %s", reasonOf(ev.Decision))
 			default:

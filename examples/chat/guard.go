@@ -40,8 +40,8 @@ func hostPolicy() *policy.ParamPolicy {
 				if err != nil {
 					return policy.VerdictDeny, "参数解析失败：" + err.Error()
 				}
-				if hasRecursiveDelete(cmd) {
-					return policy.VerdictAsk, "命令包含递归删除（rm -rf 一类），执行前需要人工确认"
+				if hasDeleteCommand(cmd) {
+					return policy.VerdictAsk, "命令会删除文件，执行前需要人工确认"
 				}
 			}
 			return policy.VerdictAllow, ""
@@ -59,18 +59,27 @@ func sensitivePath(p string) bool {
 	return strings.HasSuffix(base, ".pem") || strings.HasSuffix(base, ".key")
 }
 
-// hasRecursiveDelete 粗判命令里是否有递归删除（rm -rf / rm -fr 一类）。
+// hasDeleteCommand 判断命令是否在**删除东西**。
 //
-// 词法判定，看不穿别名、变量展开、base64 之类——所以它只是**业务规则**，
-// 不是安全边界（真正的边界靠 jail 与沙箱）。
-func hasRecursiveDelete(cmd string) bool {
+// 键的是「删除命令」本身，不是某个 flag：曾经键的是「含 r 的 flag」——结果
+// `git status --short` 里的 r 误触发拦截，而逐个 `git rm`（无 flag）反而漏过，
+// 被拒后模型拆解命令绕过了拦截（2026-10 事故）。
+//
+// 覆盖：rm / unlink / git rm（无论带什么 flag）。rmdir 豁免（只能删空目录，
+// 风险低）。
+//
+// 诚实边界：这只是**业务规则**，不是边界——find -delete、脚本语言、别名、
+// 变量拼接都绕得过去。真正的边界是路径强制隔离（S5f-2b，未落地）；在那之前，
+// 这条规则的作用是把最常见的删除动作送进人工审批，减少事故面。
+func hasDeleteCommand(cmd string) bool {
 	fields := strings.Fields(cmd)
 	for i, f := range fields {
-		if path.Base(f) != "rm" {
-			continue
-		}
-		for _, a := range fields[i+1:] {
-			if strings.HasPrefix(a, "-") && strings.ContainsAny(a, "rR") {
+		switch path.Base(f) {
+		case "rm", "unlink":
+			return true
+		case "git":
+			// git rm ...（git 的删除子命令）
+			if i+1 < len(fields) && fields[i+1] == "rm" {
 				return true
 			}
 		}

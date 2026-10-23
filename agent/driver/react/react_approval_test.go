@@ -133,8 +133,10 @@ func TestApprovalRejectedBlocksTool(t *testing.T) {
 			result = ev.ToolResult.Content
 		}
 	}
-	if !strings.Contains(result, "人工拒绝") {
-		t.Fatalf("拒绝理由应回填给模型: %s", result)
+	// 拒绝文案要带"不许绕"的语义（对齐 DSH："stop and explain instead of
+	// working around it"）——被拒后模型该停下解释，不是换条路再试。
+	if !strings.Contains(result, "保持拒绝状态") || !strings.Contains(result, "不要尝试用其他命令或方式") {
+		t.Fatalf("拒绝理由应含制止绕过的语义: %s", result)
 	}
 }
 
