@@ -2,7 +2,9 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -264,5 +266,26 @@ func TestCacheTTLExpiry(t *testing.T) {
 	}
 	if base.calls != 2 {
 		t.Fatalf("calls = %d, want 2 (cache expired)", base.calls)
+	}
+}
+
+// usage 的空 details 不该拖一个空壳进 JSON（omitempty 对结构体无效）。
+func TestUsageOmitsEmptyDetails(t *testing.T) {
+	b, err := json.Marshal(Usage{TotalTokens: 100})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(b), "details") {
+		t.Fatalf("空 details 应省略: %s", string(b))
+	}
+	b, err = json.Marshal(Usage{TotalTokens: 100, Details: UsageDetails{Input: InputTokenDetails{CacheRead: 7}}})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"cache_read":7`) {
+		t.Fatalf("有明细时应保留: %s", string(b))
+	}
+	if strings.Contains(string(b), `"output":{}`) {
+		t.Fatalf("空的 output 不该出现: %s", string(b))
 	}
 }

@@ -49,15 +49,26 @@ func TestShellSuccess(t *testing.T) {
 	}
 }
 
-// 非零退出码 → 失败，但输出照样回填（模型要靠它自我纠正）。
-func TestShellNonZeroExitBackfillsOutput(t *testing.T) {
+// 非零退出码 → **正常结果**（不是工具故障）：回执带 exit_code，输出末尾有
+// [exit code: N] 标记。对齐 DSH：那里非零退出同样不是 isError。
+// 理由：把非零退出当失败，模型就得自己写 hack 绕开（拼 `; echo "exit=$?"`
+// 让整条命令以 0 退出）——实测它真会这么做。
+func TestShellNonZeroExitIsNormalResult(t *testing.T) {
 	s := NewShell(&sandbox.Local{})
-	_, err := s.Execute(context.Background(), []byte(`{"command":"echo boom >&2; exit 2"}`))
-	if err == nil {
-		t.Fatal("非零退出码应视为失败")
+	out, err := s.Execute(context.Background(), []byte(`{"command":"echo boom >&2; exit 2"}`))
+	if err != nil {
+		t.Fatalf("非零退出码不该是工具错误: %v", err)
 	}
-	if !strings.Contains(err.Error(), "退出码 2") || !strings.Contains(err.Error(), "boom") {
-		t.Fatalf("错误应含退出码与输出: %v", err)
+	m := out.(map[string]any)
+	if m["exit_code"].(int) != 2 {
+		t.Fatalf("exit_code = %v, want 2", m["exit_code"])
+	}
+	o := m["output"].(string)
+	if !strings.Contains(o, "boom") {
+		t.Fatalf("输出应照样给模型: %q", o)
+	}
+	if !strings.Contains(o, "[exit code: 2]") {
+		t.Fatalf("输出末尾应带退出码标记: %q", o)
 	}
 }
 

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -52,16 +53,16 @@ func (j *JSONL) SaveHeader(id string, h Header) error {
 	if _, err := os.Stat(p); err == nil {
 		return nil
 	}
-	b, err := json.Marshal(h)
+	b, err := encodeLine(h)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p, append(b, '\n'), 0o644)
+	return os.WriteFile(p, b, 0o644)
 }
 
 // Append 追加一行事件并落盘。写失败返回错误，由 Session.Append 落实 fail-fast。
 func (j *JSONL) Append(id string, ev Event) error {
-	b, err := json.Marshal(ev)
+	b, err := encodeLine(ev)
 	if err != nil {
 		return err
 	}
@@ -70,10 +71,25 @@ func (j *JSONL) Append(id string, ev Event) error {
 		return err
 	}
 	defer f.Close()
-	if _, err := f.Write(append(b, '\n')); err != nil {
+	if _, err := f.Write(b); err != nil {
 		return err
 	}
 	return f.Sync()
+}
+
+// encodeLine 把一条记录编成一行 JSON（含换行）。
+//
+// **关掉 HTML 转义**：encoding/json 默认会把 & < > 写成 \u0026 之类。JSON 照样
+// 合法、解码也正确，但日志是给人读的——模型的 shell 命令里全是 && 和 >，转义
+// 之后全是噪声（"cd lab \u0026\u0026 go test"）。
+func encodeLine(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 // Load 读取事件（跳过首行 Header）。

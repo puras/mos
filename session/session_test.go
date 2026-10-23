@@ -363,3 +363,31 @@ func TestErrorDetailTruncation(t *testing.T) {
 		t.Fatalf("截断后长度 %d 超过上限 %d", len(body), MaxErrorDetail)
 	}
 }
+
+// 日志是人读的：不能把 & < > 转义成 \u0026 之类（JSON 合法但全是噪声）。
+func TestJSONLDoesNotEscapeHTML(t *testing.T) {
+	dir := t.TempDir()
+	jl, err := NewJSONL(dir)
+	if err != nil {
+		t.Fatalf("NewJSONL: %v", err)
+	}
+	id := "esc"
+	if err := jl.SaveHeader(id, Header{ID: id}); err != nil {
+		t.Fatalf("SaveHeader: %v", err)
+	}
+	s := New(id, jl)
+	mustAppend(t, s, Event{Kind: EventToolCall, Turn: 1, ToolCall: &llm.ToolCall{
+		ID: "c1", Name: "shell", Args: `{"command":"cd lab && go test ./... 2>&1"}`,
+	}})
+
+	raw, err := os.ReadFile(jl.path(id))
+	if err != nil {
+		t.Fatalf("读日志: %v", err)
+	}
+	if strings.Contains(string(raw), `\u0026`) || strings.Contains(string(raw), `\u003e`) {
+		t.Fatalf("不该有 HTML 转义: %s", string(raw))
+	}
+	if !strings.Contains(string(raw), "&&") {
+		t.Fatalf("&& 应原样出现: %s", string(raw))
+	}
+}

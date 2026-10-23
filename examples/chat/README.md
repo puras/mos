@@ -53,9 +53,9 @@ tool/result ok        {"content":"// Package main 是 chat 示例的练手项目
 tool/call   read_file {"path":".../lab/main_test.go","offset":1,"limit":30}
 tool/result ok        {"content":"package main\n\nimport \"testing\"…"}
 tool/call   shell     {"command":"cd lab && go test ./... "}
-tool/result ERR       命令失败（退出码 1）:
-                      --- FAIL: TestSumRange (0.00s)
+tool/result ok        {"exit_code":1,"output":"--- FAIL: TestSumRange (0.00s)
                           main_test.go:7: SumRange(1, 5) = 10, want 15（含两端）
+                          [exit code: 1]",...}
 tool/call   edit_file {"path":".../lab/main.go","edits":[{"old_string":"for i := lo; i < hi; i++ {","new_string":"for i := lo; i <= hi; i++ {"}]}
 tool/result ok        {"bytes":484,"first_changed_line":12,...}
 tool/call   shell     {"command":"cd lab && go test ./... "}
@@ -82,7 +82,7 @@ tool/result ok        {"exit_code":0,"output":"ok  \tmoslab\t0.501s\n","duration
 - **超时的缺省与上界都由宿主定**（两个旋钮）：`-shell-timeout` 是缺省（默认 120s），`-shell-max-timeout` 是上界（默认 300s）。模型可以在调用里要求更短，**要求更长会被夹到上界**——超时是资源预算，预算的宽窄由宿主定，不由模型定；
 - **路径范围不受限**（诚实边界）：命令仍能访问运行用户权限内的任意路径——Go 标准库给不了强制隔离，需要 bwrap / Landlock / Seatbelt / 容器后端（`sandbox.Runner` 是留给它们的接缝）；
 - **输出截断有逃生通道**：完整输出落盘（`-shell-spill` 指定目录），回执给模型 `output_path`，它可以 `read_file` 读全文；
-- **非零退出码是事实不是故障**：输出照样回填给模型，它要靠输出自我纠正；
+- **非零退出码是事实不是故障**：命令跑了但没成功 → **正常结果**（回执带 `exit_code`，输出末尾有 `[exit code: N]` 标记）；只有"命令根本没起来"（超时/被拒）才报错。对齐 DSH——这么分是因为把非零退出当失败会逼模型自己写 hack 绕开（它会拼 `; echo "exit=$?"` 让整条命令以 0 退出）；
 - **默认不装配**：不给模型这个能力，比给它一个必然失败的工具干净。
 
 ## 验证策略拦截（S5c）

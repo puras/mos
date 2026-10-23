@@ -3,6 +3,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 )
 
@@ -84,10 +85,44 @@ type Usage struct {
 	Details UsageDetails `json:"details,omitempty"`
 }
 
+// MarshalJSON 省略空的 details。
+//
+// **omitempty 对结构体无效**（encoding/json 只对基本类型/切片/映射判空），
+// 否则每条 usage 都会拖一个空壳 {"details":{"input":{},"output":{}}}——
+// 那是噪声，不是信息。
+func (u Usage) MarshalJSON() ([]byte, error) {
+	type usageNoMethod Usage // 去掉方法，避免递归
+	aux := struct {
+		usageNoMethod
+		Details *UsageDetails `json:"details,omitempty"`
+	}{usageNoMethod: usageNoMethod(u)}
+	if u.Details != (UsageDetails{}) {
+		aux.Details = &u.Details
+	}
+	return json.Marshal(aux)
+}
+
 // UsageDetails 是 token 用量的细分明细。
 type UsageDetails struct {
 	Input  InputTokenDetails  `json:"input,omitempty"`
 	Output OutputTokenDetails `json:"output,omitempty"`
+}
+
+// MarshalJSON 省略空的 input / output（道理同 Usage.MarshalJSON）。
+func (d UsageDetails) MarshalJSON() ([]byte, error) {
+	type detailsNoMethod UsageDetails
+	aux := struct {
+		detailsNoMethod
+		Input  *InputTokenDetails  `json:"input,omitempty"`
+		Output *OutputTokenDetails `json:"output,omitempty"`
+	}{detailsNoMethod: detailsNoMethod(d)}
+	if d.Input != (InputTokenDetails{}) {
+		aux.Input = &d.Input
+	}
+	if d.Output != (OutputTokenDetails{}) {
+		aux.Output = &d.Output
+	}
+	return json.Marshal(aux)
 }
 
 // InputTokenDetails 是输入侧 token 明细。

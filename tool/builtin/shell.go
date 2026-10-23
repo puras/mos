@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/puras/mos/sandbox"
@@ -15,8 +16,13 @@ import (
 // 三条纪律：
 //   - **fail-closed**：没装配 sandbox.Runner 就不执行——不存在"没配沙箱就跑裸
 //     命令"的默认路径（归档曾有该缺陷，用兜底 Runner 修）。
-//   - **命令失败是事实不是故障**：非零退出码以 IsError 回填，但输出照样给模型
-//     （它要靠输出自我纠正）。
+//   - **命令跑了但失败 ≠ 工具坏了**：非零退出码是**正常结果**（回执里带
+//     exit_code，输出末尾附 [exit code: N] 标记），只有"命令根本没起来"
+//     （启动失败 / 超时被杀 / 沙箱拒绝）才算错误（对齐 DSH：
+//     packages/shell/tool-bash/src/render.ts——那里非零退出同样不是 isError，
+//     isError 只留给 spawn 错误与中断）。这个区分很重要：把非零退出当失败，
+//     模型就得自己写 hack 绕开（实测：它会拼 `; echo "exit=$?"` 让整条命令
+//     以 0 退出，把失败塞进输出里）。
 //   - **输出截断有逃生通道**：超限时全文落盘并回传路径，模型可以 read_file 读
 //     全文（PI 的 full_output_path 对位，PRD 的"落盘逃生通道"）。
 //
@@ -45,7 +51,8 @@ func (Shell) Name() string { return "shell" }
 func (Shell) Description() string {
 	return "执行一条 shell 命令（隔离执行：超时、输出上限、资源限制、环境裁剪）。" +
 		"可用于验证改动（go build / go test / git diff）。" +
-		"非零退出码视为失败，输出照样返回。输出过长会被截断，" +
+		"非零退出码是正常结果（回执里带 exit_code，输出末尾有 [exit code: N] 标记），" +
+		"命令根本没跑起来（超时/被拒）才报错。输出过长会被截断，" +
 		"截断时 output_path 指向全文文件。"
 }
 
@@ -93,18 +100,29 @@ func (s *Shell) Execute(ctx context.Context, args json.RawMessage) (any, error) 
 		out["output_path"] = res.OutputPath
 	}
 	if res.ExitCode != 0 {
-		// 命令失败：回填给模型（它要靠输出自我纠正）。结构化字段随内容一起给。
-		return nil, fmt.Errorf("命令失败（退出码 %d）:\n%s%s", res.ExitCode, res.Output, s.spillHint(out))
+		// **非零退出码是正常结果**，不是工具故障：命令跑了，只是没成功。
+		// 回执带 exit_code，输出末尾再补一个 [exit code: N] 标记——对齐 DSH
+		// （packages/shell/tool-bash/src/render.ts），那里非零退出同样不是
+		// isError，isError 只留给 spawn 错误与中断。
+		//
+		// 为什么这么分：把非零退出当失败，模型就得自己写 hack 绕开（实测：它
+		// 会拼 `; echo "exit=$?"` 让整条命令以 0 退出，把失败塞进输出里），
+		// 而"命令失败了"本来就该是**事实**、由模型自己判断要不要重试。
+		out["output"] = exitMarker(res.Output, res.ExitCode)
 	}
 	return out, nil
 }
 
-// spillHint 在失败消息里附上落盘路径（截断时）。
-func (s *Shell) spillHint(out map[string]any) string {
-	if p, ok := out["output_path"].(string); ok && p != "" {
-		return fmt.Sprintf("\n[输出已截断，全文见 %s]", p)
+// exitMarker 在输出末尾补上退出码标记（DSH 对位）。
+func exitMarker(output string, code int) string {
+	marker := fmt.Sprintf("[exit code: %d]", code)
+	if output == "" {
+		return marker
 	}
-	return ""
+	if !strings.HasSuffix(output, "\n") {
+		output += "\n"
+	}
+	return output + marker
 }
 
 var _ tool.Tool = (*Shell)(nil)
