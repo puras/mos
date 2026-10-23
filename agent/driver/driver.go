@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/puras/mos/agent/approval"
 	"github.com/puras/mos/agent/hook"
 	"github.com/puras/mos/llm"
 	"github.com/puras/mos/planner"
@@ -51,6 +52,12 @@ type RunContext struct {
 	// 一律独占，所以默认行为仍是串行。并发只影响完成顺序，回填顺序永远是
 	// 模型的调用序。
 	Concurrency int
+	// Answerer 是人工审批的应答方（可选，nil = 未装配）。
+	//
+	// 框架负责"什么时候问、怎么记审计"，**问人由宿主实现**：弹窗、读终端、
+	// 从另一个进程收决定都行。nil 时，pre-execute 的「需人工确认」降级为
+	// 拒绝（fail-closed）。
+	Answerer approval.Answerer
 	// SystemPrompt 是静态系统引导词（可选，作为历史首条消息注入）。
 	SystemPrompt string
 	// Stream 为 true 时优先走决策器的流式接口（若实现），

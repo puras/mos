@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/puras/mos/agent/approval"
 	"github.com/puras/mos/agent/hook"
 	"github.com/puras/mos/llm"
 	"github.com/puras/mos/tool"
@@ -56,6 +57,12 @@ type Options struct {
 	Hooks *hook.HookBus
 	// Concurrency 是并发上限（<=0 取默认 4；1 = 串行）。
 	Concurrency int
+	// Approver 是人工审批通道（可选，nil = 未装配）。
+	//
+	// 只有 pre-execute 钩子给出「需人工确认」（ask）时才会用到它。nil 时
+	// ask 降级为拒绝（fail-closed，NFR-1「审批未配置即拒绝」）——不"先执行
+	// 再问"。
+	Approver approval.Approver
 }
 
 // Outcome 是一次工具调用的执行结果。
@@ -156,9 +163,32 @@ func preflight(ctx context.Context, reg *tool.Registry, calls []llm.ToolCall, op
 		case hook.DecisionDeny:
 			p.err = fmt.Errorf("工具调用被扩展点拒绝: %s", reasonOf(ev.Decision))
 		case hook.DecisionAsk:
-			// 没有审批通道时 fail-closed（对齐 DSH：未装配 ApprovalService 时
-			// ask 降级为 deny）。S5g 落地审批后，这里改为挂起等待。
-			p.err = fmt.Errorf("工具调用需要人工确认，但未装配审批通道（fail-closed）: %s", reasonOf(ev.Decision))
+			// 需要人工确认：问审批通道（S5g）。没有审批通道时 fail-closed
+			// （对齐 DSH：未装配 ApprovalService 时 ask 降级为 deny；NFR-1
+			// 「审批未配置即拒绝」）。
+			if opts.Approver == nil {
+				p.err = fmt.Errorf("工具调用需要人工确认，但未装配审批通道（fail-closed）: %s", reasonOf(ev.Decision))
+				continue
+			}
+			out, aerr := opts.Approver.Decide(ctx, approval.Request{
+				ToolName: call.Name,
+				CallID:   call.ID,
+				Reason:   reasonOf(ev.Decision),
+				Turn:     opts.Turn,
+			})
+			switch {
+			case aerr != nil:
+				p.err = fmt.Errorf("人工确认失败（fail-closed）: %v: %s", aerr, reasonOf(ev.Decision))
+			case out == approval.Approved:
+				// 批准只对**本次调用**生效（DSH 的 allowed-once）：放行，照常执行。
+				p.pending = true
+			case out == approval.Rejected:
+				p.err = fmt.Errorf("工具调用被人工拒绝: %s", reasonOf(ev.Decision))
+			case out == approval.Cancelled:
+				p.err = fmt.Errorf("人工确认被撤回: %s", reasonOf(ev.Decision))
+			default:
+				p.err = fmt.Errorf("人工确认无人应答（fail-closed）: %s", reasonOf(ev.Decision))
+			}
 		case hook.DecisionCancel:
 			p.err = fmt.Errorf("工具调用被终止: %s", reasonOf(ev.Decision))
 			p.term = true

@@ -35,7 +35,30 @@ const (
 	EventAssistant  EventKind = "assistant"
 	EventToolCall   EventKind = "tool/call"
 	EventToolResult EventKind = "tool/result"
+	// EventApprovalAsked 是「问了人工」：审批请求发出时记一条。
+	EventApprovalAsked EventKind = "approval/asked"
+	// EventApprovalDecided 是「人工答了」：审批有结果时记一条（与 asked 用
+	// 同一个 id 配对）。
+	//
+	// 这两个事件是 PRD 点名的（§可观测「approval/* 等事件全量落会话日志」、
+	// G4「审批挂起-恢复 E2E」），不走事件目录的预算制。
+	EventApprovalDecided EventKind = "approval/decided"
 )
+
+// Approval 是审批事件载荷（approval/asked 与 approval/decided）。
+type Approval struct {
+	// ID 是审批请求标识（配对 asked 与 decided）。
+	ID string `json:"id"`
+	// ToolName 是被审批的工具名。
+	ToolName string `json:"toolName"`
+	// CallID 是被审批的那次调用。
+	CallID string `json:"callId,omitempty"`
+	// Reason 是问人的理由（asked 才有）。
+	Reason string `json:"reason,omitempty"`
+	// Outcome 是审批结果（decided 才有）：approved / rejected / cancelled /
+	// unavailable。
+	Outcome string `json:"outcome,omitempty"`
+}
 
 // ToolResult 是一次工具执行的回填（事件日志审计载荷；
 // IsError 记录显式失败——守卫拦截或工具报错，协议消息无此语义）。
@@ -48,7 +71,7 @@ type ToolResult struct {
 // Event 是日志中的一条记录。Seq 由 Session.Append 统一分配，全局递增从 1 开始。
 // 载荷字段按 Kind 取用：Text（user/assistant）、Reasoning（assistant，思维链）、
 // ToolCalls（assistant）、Usage（assistant，模型调用遥测）、ToolCall（tool/call）、
-// ToolResult（tool/result）、Reason 与 Error（turn/end）。
+// ToolResult（tool/result）、Reason 与 Error（turn/end）、Approval（approval/*）。
 type Event struct {
 	Seq        int64          `json:"seq"`
 	Kind       EventKind      `json:"kind"`
@@ -61,6 +84,8 @@ type Event struct {
 	ToolResult *ToolResult    `json:"toolResult,omitempty"`
 	Usage      *llm.Usage     `json:"usage,omitempty"`
 	Reason     string         `json:"reason,omitempty"`
+	// Approval 是审批事件载荷（approval/asked 与 approval/decided）。
+	Approval *Approval `json:"approval,omitempty"`
 	// Error 是 turn/end 的失败详情：分类之外的诊断信息（出错原因、终止理由）。
 	//
 	// 只进日志、不进模型投影（project() 不投影 turn/end）——日志是审计凭据，

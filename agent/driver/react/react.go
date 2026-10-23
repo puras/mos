@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/puras/mos/agent/approval"
 	"github.com/puras/mos/agent/driver"
 	"github.com/puras/mos/agent/execpath"
 	"github.com/puras/mos/llm"
@@ -101,6 +102,13 @@ func (d *Driver) Run(ctx context.Context, rt *driver.RunContext, sess *session.S
 			Hooks:       rt.Hooks,
 			Concurrency: rt.Concurrency,
 		}
+		// 审批通道：宿主注入应答方，框架负责签发 id 与记审计。
+		// **没注入应答方就不装通道**（而不是装一个空的）——这样执行通道那边
+		// 的「未装配审批通道 → 拒绝」分支才真的走得到，拒绝理由里也带着
+		// "为什么要人工确认"。
+		if rt.Answerer != nil {
+			opts.Approver = approval.NewService(rt.Answerer, sessionAudit{sess: sess})
+		}
 		outcomes := execpath.ExecuteBatch(ctx, rt.Tools, action.ToolCalls, opts)
 		terminated := false
 		for _, oc := range outcomes {
@@ -150,6 +158,34 @@ func terminateDetail(outcomes []execpath.Outcome) string {
 		}
 	}
 	return ""
+}
+
+// sessionAudit 把审批审计写进会话日志。
+//
+// 两条事件配对：approval/asked（问了）与 approval/decided（答了），用同一个
+// 请求 id 串起来——事后能看出"谁批的、批了哪次调用、等了多久"。
+type sessionAudit struct{ sess *session.Session }
+
+// Asked 记录「问了人工」。
+func (a sessionAudit) Asked(req approval.Request) error {
+	_, err := a.sess.Append(session.Event{
+		Kind: session.EventApprovalAsked, Turn: req.Turn,
+		Approval: &session.Approval{
+			ID: req.ID, ToolName: req.ToolName, CallID: req.CallID, Reason: req.Reason,
+		},
+	})
+	return err
+}
+
+// Decided 记录「人工答了」。
+func (a sessionAudit) Decided(req approval.Request, out approval.Outcome) error {
+	_, err := a.sess.Append(session.Event{
+		Kind: session.EventApprovalDecided, Turn: req.Turn,
+		Approval: &session.Approval{
+			ID: req.ID, ToolName: req.ToolName, CallID: req.CallID, Outcome: out.String(),
+		},
+	})
+	return err
 }
 
 // appendAssistant 落一条 assistant 事件：文本、思维链、工具调用与 token 用量。
