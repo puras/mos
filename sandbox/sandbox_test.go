@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
@@ -328,4 +329,20 @@ func TestDynamicBudgetConcurrentUpdateIsRaceFree(t *testing.T) {
 		}
 	}()
 	wg.Wait()
+}
+
+// 路径强制范围是**要求即强制**：Local 做不到就明确拒绝，不假装约束了。
+func TestLocalRefusesPathScope(t *testing.T) {
+	s := &Local{WorkDir: t.TempDir()}
+	_, err := s.Run(context.Background(), Request{
+		Command:   "ls",
+		PathScope: &PathScope{ReadRoots: []string{"/tmp"}, WriteRoots: []string{"/tmp"}},
+	})
+	if !errors.Is(err, ErrPathScopeUnsupported) {
+		t.Fatalf("应返回 ErrPathScopeUnsupported, got %v", err)
+	}
+	// 不带 PathScope 的调用照常执行（不因为这个能力缺失就整体不可用）
+	if _, err := s.Run(context.Background(), Request{Command: "echo hi"}); err != nil {
+		t.Fatalf("普通调用应正常: %v", err)
+	}
 }

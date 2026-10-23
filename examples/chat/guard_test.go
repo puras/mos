@@ -1,0 +1,167 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/puras/mos/agent/driver"
+	"github.com/puras/mos/agent/driver/react"
+	"github.com/puras/mos/agent/hook"
+	"github.com/puras/mos/agent/policy"
+	"github.com/puras/mos/llm"
+	"github.com/puras/mos/planner"
+	"github.com/puras/mos/session"
+	"github.com/puras/mos/tool"
+)
+
+// 宿主参数级规则的判定（deny / ask / allow 三档）。
+func TestHostPolicyVerdicts(t *testing.T) {
+	hp := hostPolicy()
+	verdict := func(name, args string) policy.Verdict {
+		if err := hp.Guard()(context.Background(), &hook.HookEvent{
+			ToolCall: llm.ToolCall{Name: name, Args: args},
+		}); err != nil {
+			return policy.VerdictDeny
+		}
+		// 守卫只认 deny；ask 档要看钩子
+		ev := &hook.HookEvent{ToolCall: llm.ToolCall{Name: name, Args: args}}
+		_, _ = hp.Approval()(context.Background(), ev,
+			func(ctx context.Context, e *hook.HookEvent) (*hook.HookEvent, error) { return e, nil })
+		if ev.Decision.Kind == hook.DecisionAsk {
+			return policy.VerdictAsk
+		}
+		return policy.VerdictAllow
+	}
+
+	if got := verdict("read_file", `{"path":"/tmp/.env"}`); got != policy.VerdictDeny {
+		t.Fatalf("读 .env 应 deny, got %v", got)
+	}
+	if got := verdict("write_file", `{"path":"/tmp/id_rsa","content":"x"}`); got != policy.VerdictDeny {
+		t.Fatalf("写 id_rsa 应 deny, got %v", got)
+	}
+	if got := verdict("shell", `{"command":"rm -rf build"}`); got != policy.VerdictAsk {
+		t.Fatalf("rm -rf 应 ask, got %v", got)
+	}
+	if got := verdict("shell", `{"command":"go test ./..."}`); got != policy.VerdictAllow {
+		t.Fatalf("普通命令应放行, got %v", got)
+	}
+	if got := verdict("read_file", `{"path":"/tmp/notes.md"}`); got != policy.VerdictAllow {
+		t.Fatalf("普通文件应放行, got %v", got)
+	}
+	// 参数坏掉 → fail-closed
+	if got := verdict("shell", `{坏 JSON}`); got != policy.VerdictDeny {
+		t.Fatalf("参数坏掉应 deny, got %v", got)
+	}
+}
+
+// 端到端：deny 档拦住工具，理由经 tool/result 回填给模型。
+func TestHostPolicyDenyBlocksTool(t *testing.T) {
+	reg := tool.NewRegistry()
+	ft := &fakeTool{name: "read_file"}
+	if err := reg.Register(ft); err != nil {
+		t.Fatalf("注册: %v", err)
+	}
+	hp := hostPolicy()
+	guards := hook.NewGuardBus()
+	guards.Add(hp.Guard())
+	hooks := hook.NewHookBus()
+	hooks.On(hook.HookToolPreExecute, hp.Approval())
+
+	sess := session.New("t", nil)
+	p := &scriptPlanner{acts: []planner.Action{{
+		ToolCalls: []llm.ToolCall{{
+			ID: "c1", Name: "read_file", Args: `{"path":"/tmp/.env"}`,
+		}},
+	}, {Content: "好"}}}
+	d := driver.New(&driver.RunContext{
+		Planner: p, Tools: reg, Guards: guards, Hooks: hooks,
+	}, react.New())
+
+	if _, err := d.Run(context.Background(), sess, "读一下 .env"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	evs := sess.Events()
+	var result string
+	for _, ev := range evs {
+		if ev.Kind == session.EventToolResult && ev.ToolResult != nil {
+			result = ev.ToolResult.Content
+		}
+	}
+	if !strings.Contains(result, "敏感文件") {
+		t.Fatalf("拒绝理由应回填给模型: %s", result)
+	}
+	if ft.executed {
+		t.Fatal("被拒的工具不该执行")
+	}
+}
+
+// 端到端：ask 档在没有审批通道时 fail-closed（拒绝），理由同样回填给模型。
+func TestHostPolicyAskFailsClosed(t *testing.T) {
+	reg := tool.NewRegistry()
+	ft := &fakeTool{name: "shell"}
+	if err := reg.Register(ft); err != nil {
+		t.Fatalf("注册: %v", err)
+	}
+	hp := hostPolicy()
+	guards := hook.NewGuardBus()
+	guards.Add(hp.Guard())
+	hooks := hook.NewHookBus()
+	hooks.On(hook.HookToolPreExecute, hp.Approval())
+
+	sess := session.New("t", nil)
+	p := &scriptPlanner{acts: []planner.Action{{
+		ToolCalls: []llm.ToolCall{{
+			ID: "c1", Name: "shell", Args: `{"command":"rm -rf build"}`,
+		}},
+	}, {Content: "好"}}}
+	d := driver.New(&driver.RunContext{
+		Planner: p, Tools: reg, Guards: guards, Hooks: hooks,
+	}, react.New())
+
+	if _, err := d.Run(context.Background(), sess, "删掉 build"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var result string
+	for _, ev := range sess.Events() {
+		if ev.Kind == session.EventToolResult && ev.ToolResult != nil {
+			result = ev.ToolResult.Content
+		}
+	}
+	if !strings.Contains(result, "人工确认") {
+		t.Fatalf("ask 档理由应回填给模型: %s", result)
+	}
+	if ft.executed {
+		t.Fatal("未审批的命令不该执行")
+	}
+}
+
+// fakeTool 是一个假工具（记录是否被执行）。
+type fakeTool struct {
+	name     string
+	executed bool
+}
+
+func (f *fakeTool) Name() string        { return f.name }
+func (f *fakeTool) Description() string { return "假工具" }
+func (f *fakeTool) Parameters() any     { return map[string]any{} }
+func (f *fakeTool) Execute(ctx context.Context, args json.RawMessage) (any, error) {
+	f.executed = true
+	return map[string]any{"ok": true}, nil
+}
+
+// scriptPlanner 按预设序列返回动作。
+type scriptPlanner struct {
+	acts []planner.Action
+	i    int
+}
+
+func (p *scriptPlanner) NextAction(context.Context, []llm.Message, []llm.Tool) (planner.Action, error) {
+	if p.i >= len(p.acts) {
+		return planner.Action{Content: "结束"}, nil
+	}
+	a := p.acts[p.i]
+	p.i++
+	return a, nil
+}

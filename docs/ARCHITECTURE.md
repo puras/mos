@@ -220,7 +220,47 @@ reg.Register(builtin.NewShell(sb))
 - **开了 shell 就给默认系统引导词**：工具在清单里 ≠ 模型会主动用它。引导词说清三件事——有什么能力、工作目录在哪、为什么要用（"改 → 跑 → 看输出 → 再改"，别靠猜）。`MOS_SYSTEM_PROMPT` 可覆盖。
 - **配套练手项目 `examples/chat/lab/`**：独立的 go module，故意留一个逻辑 bug，让 agent 修好并跑测试。**嵌套 module 被根 module 忽略**——仓库自己的 `go build ./...` / `go test ./...` 始终是绿的。
 
-### 3.8 模型调用的重试（S2b）
+### 3.8 参数级决策点（S5f-2a）
+
+**框架只提供决策点，规则归宿主。** 什么算"危险"由宿主决定，框架不替宿主决定——PI 把判定交给扩展（`tool_call` 事件 + `block`），DSH 干脆放在隔离层（沙箱档位 + 提权审批），两边的框架核心**都没有危险命令表**。
+
+```go
+// 宿主写规则（agent/policy 的参数级 API）
+hp := policy.NewParamPolicy("宿主规则",
+    func(ctx context.Context, call policy.Call) (policy.Verdict, string) {
+        if call.Tool == "shell" {
+            cmd, err := policy.Arg(call, "command")
+            if err != nil {
+                return policy.VerdictDeny, "参数解析失败：" + err.Error()  // fail-closed
+            }
+            if hasRecursiveDelete(cmd) {
+                return policy.VerdictAsk, "递归删除需要人工确认"
+            }
+        }
+        return policy.VerdictAllow, ""
+    })
+
+// 两个门都要装
+guards.Add(hp.Guard())                              // deny → 拒绝（单调，不可被洗白）
+hooks.On(hook.HookToolPreExecute, hp.Approval())   // ask  → 需人工确认
+```
+
+- **两个门各管一档**：守卫（Guard）单调、只判放/拒、不可被钩子洗白；pre-execute 钩子能表达"需人工确认"第三档。混用会丢掉其中一档的能力——只装守卫 → ask 档直接放行；只装钩子 → deny 档不再单调。
+- **理由回填给模型**："为什么被拒"比"被拒了"有用——模型要靠理由自我纠正。
+- **检查器拿到的是只读快照**（`policy.Call` 传值）：物理上改不动载荷，"载荷冻结"这条不变式不会被参数级检查器破坏。
+- **参数解析失败 = 拒绝**（fail-closed）：参数都读不懂，谈不上判定。
+- **ask 档当前 = 拒绝**：没有审批通道时由执行通道 fail-closed（S5g 落地后才是"挂起等审批"）。
+- **分层**：工具名级名单（`Policy` 的 Allow/Deny）管"能不能调这个工具"；参数级规则管"这次调用的参数危不危险"。示例里两者串在同一条守卫链上（先名字级、后参数级）。
+
+### 3.9 路径强制范围：诚实的接缝（S5f-2a 附带）
+
+`sandbox.Request.PathScope` 是路径范围要求（可读/可写根），语义是**要求即强制**：
+
+- `sandbox.Local` **做不到就明确拒绝**（`ErrPathScopeUnsupported`），不忽略后装作约束了——"假装有边界"比"没有边界"更危险（调用方会以为路径安全）；
+- 与文件 jail 是两件事：jail 管**工具**（read_file/write_file）的路径，`PathScope` 管**子进程**能碰到的路径——命令可以绕过工具直接 `cat /etc/passwd`，jail 管不着；
+- 真隔离（bwrap / Landlock / Seatbelt / 容器）需要另一个 `sandbox.Runner` 实现，属后续切片。
+
+### 3.10 模型调用的重试（S2b）
 
 **机制在框架，策略在宿主**——与 PI / DSH 同构：重试是模型调用层的事，不该散落到业务各处各写一遍；但"重试几次、退避多久、哪些错误值得重试"是产品决策，框架不发明默认策略。
 

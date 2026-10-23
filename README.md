@@ -21,8 +21,9 @@ MoS（取自 Sapient）是基于 Go 的智能体基础框架（Agent Base SDK）
 | S5e | 通道三阶段（守卫 preflight + 钩子三环节 + 屏障式有界并发 + 按序回填） | ✅ |
 | S5f-1 | `sandbox` 进程隔离（超时 + 进程组击杀 + 输出上限 + 资源限制 + 环境裁剪）+ `shell` 工具 | ✅ |
 | S2b | `llm` 层加固：类型化状态码（`StatusError`）+ 策略化重试（只重试瞬时错误 / 指数退避 + 抖动 / 取消终止 / 可观测） | ✅ |
+| S5f-2a | 参数级决策点（deny → 守卫 / ask → pre-execute 钩子，规则归宿主）+ 路径强制范围的诚实接缝 | ✅ |
+| S5f-2b | 路径强制隔离（bwrap / Landlock / Seatbelt / 容器后端）与宿主命令清单 | ⬜ |
 | S5g | 审批挂起（pre-execute 的 `ask` 决策 → 挂起 → 恢复） | ⬜ |
-| S5f-2 | policy 参数级 Checker + shell 命令分级（绝对危险 / 受限危险 / 普通） | ⬜ |
 | S5h | 写前观察（DSH 的 `fs-observation-policy`：写/edit 前必须先读 + 版本校验防丢失更新） | ⬜ |
 | S6 | 上下文工程（截断 + 压缩 + TaskState/Auditor） | ⬜ |
 | S7 | 装配层（`assistant.New` 一行装配 + 示例 CLI） | ⬜ |

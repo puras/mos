@@ -59,9 +59,37 @@ type Request struct {
 	Command string
 	// Timeout 是本次调用的超时；<=0 时由实现取默认值。
 	Timeout time.Duration
+	// PathScope 是本次执行的**路径范围要求**（nil = 不额外限制）。
+	//
+	// 语义是**强制**：实现必须真正约束进程能碰到的路径。无法强制的实现
+	// 必须返回错误（fail-closed），不能忽略后装作约束了——"假装有边界"
+	// 比"没有边界"更危险（调用方会以为路径安全）。
+	//
+	// 当前内置的 Local 只做进程级隔离（超时/资源/环境），**没有路径强制**：
+	// 传了 PathScope 它会明确报错（ErrPathScopeUnsupported）。真隔离需要
+	// bwrap / Landlock / Seatbelt / 容器后端（另一个 Runner 实现）。
+	PathScope *PathScope
 	// Note：工作目录**不由调用方指定**——那会给模型一个逃逸口（cd 到任意
 	// 目录）。工作目录是宿主的配置（Local.WorkDir）。
 }
+
+// PathScope 是路径范围要求：本次执行允许读/写的根。
+//
+// 与 filesystem 的文件 jail 是两件事：jail 管**工具**（read_file/write_file）
+// 的路径，PathScope 管**子进程**能碰到的路径——命令可以绕过工具直接
+// `cat /etc/passwd`，jail 管不着。
+type PathScope struct {
+	// ReadRoots 是允许读取的根。
+	ReadRoots []string
+	// WriteRoots 是允许写入的根。
+	WriteRoots []string
+}
+
+// ErrPathScopeUnsupported 表示该 Runner 无法强制路径范围。
+//
+// 宿主可以据此判断"需要换后端"（bwrap / Landlock / Seatbelt / 容器），
+// 而不是拿到一个**看起来被约束过、其实没有**的执行结果。
+var ErrPathScopeUnsupported = errors.New("sandbox: 该执行器不支持路径强制范围（当前只有进程级隔离：超时/资源/环境）")
 
 // Result 是一次命令执行的结果。
 type Result struct {
@@ -200,6 +228,10 @@ func (s *Local) Run(ctx context.Context, req Request) (Result, error) {
 	}
 	if strings.TrimSpace(req.Command) == "" {
 		return Result{}, errors.New("sandbox: 命令不能为空")
+	}
+	// 路径强制范围：Local 没有这个能力 → 明确拒绝，不假装约束了。
+	if req.PathScope != nil {
+		return Result{}, ErrPathScopeUnsupported
 	}
 
 	timeout := s.resolveTimeout(req.Timeout)

@@ -109,14 +109,21 @@ func main() {
 	}
 	deny := list(*denyFlag + "," + os.Getenv("MOS_DENY_TOOLS"))
 	cfg := policyConfig(policyPath, deny)
-	var guards *hook.GuardBus
+	guards := hook.NewGuardBus()
 	if cfg != nil {
 		p := policy.New(*cfg)
 		// 可见性过滤：被策略禁掉的工具**不出现在模型的工具清单里**（PI/DSH 的
 		// 可见性层语义）——不给模型一个它注定调不成的工具。
 		reg.SetVisibility(p.Visible)
-		guards = mustGuards(*cfg)
+		guards.Add(nameLevelGuard(*cfg))
 	}
+
+	// 参数级检查（宿主规则）：两个门都要装——
+	//   - 守卫门：deny 档直接拒绝（单调，不可被钩子洗白）；
+	//   - 钩子门：ask 档转成「需人工确认」（当前没有审批通道 → fail-closed 拒绝）。
+	hp := hostPolicy()
+	guards.Add(hp.Guard())
+	hooks := mustHooks(*trimFlag, hp)
 
 	// 系统引导词：自定义优先；开了 shell 而没自定义时给一份默认引导——
 	// 工具在清单里不等于模型会主动用它，得告诉它有这回事、怎么用。
@@ -130,7 +137,7 @@ func main() {
 	rt := &driver.RunContext{
 		Planner:      planner.NewReAct(model),
 		Tools:        reg,
-		Hooks:        mustHooks(*trimFlag),
+		Hooks:        hooks,
 		Guards:       guards,
 		Concurrency:  *concFlag,
 		SystemPrompt: sysPrompt,
@@ -294,28 +301,27 @@ func visibleNames(reg *tool.Registry) []string {
 
 // mustGuards 构建单调守卫链：安全策略（Policy）作为第一道关卡。
 //
-// cfg 为空时返回 nil——nil 总线的 Allow 直接放行，零开销降级，不装守卫的
-// 用户不付任何代价。拒绝是「结果」不是「故障」：工具不执行，拒绝理由经
-// tool/result 回填给模型，让它自行纠正。
+// 拒绝是「结果」不是「故障」：工具不执行，拒绝理由经 tool/result 回填给
+// 模型，让它自行纠正。
 //
 // 这里在 Policy 外包一层只为演示可见性（打印被拒的工具名与轮次）——裁决
 // 本身全部委托 Policy.Check，示例不自己重写规则。GuardBus 尚无观测通道，
 // 正经日志是 S5c 之后的事。
-func mustGuards(cfg policy.Config) *hook.GuardBus {
-	if len(cfg.Allow) == 0 && len(cfg.Deny) == 0 {
-		return nil
-	}
+//
+// nameLevelGuard 构建**工具名级**的守卫（Policy 的 Allow/Deny 名单）。
+//
+// 名字级策略管「能不能调这个工具」；参数级规则（hostPolicy）管「这次调用的
+// 参数危不危险」——同一套守卫链上，先名字级后参数级。
+func nameLevelGuard(cfg policy.Config) hook.Guard {
 	p := policy.New(cfg)
-	gb := hook.NewGuardBus()
-	gb.Add(func(ctx context.Context, ev *hook.HookEvent) error {
+	return func(ctx context.Context, ev *hook.HookEvent) error {
 		err := p.Check(ctx, ev)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[guard] 第 %d 轮：拒绝 %s——工具不会执行（%v）\n",
 				ev.Turn, ev.ToolCall.Name, err)
 		}
 		return err
-	})
-	return gb
+	}
 }
 
 // mustHooks 构建可改写环节的钩子链（HookBus）——与守卫是**两条不同的轨道**：
@@ -328,8 +334,14 @@ func mustGuards(cfg policy.Config) *hook.GuardBus {
 //
 // 载荷冻结是刻意的：钩子**改不了**工具名/参数/CallID，所以它无法绕过策略；
 // 要修正入参请在工具内部做（工具自己 normalize）。
-func mustHooks(trim int) *hook.HookBus {
+func mustHooks(trim int, pp *policy.ParamPolicy) *hook.HookBus {
 	hb := hook.NewHookBus()
+
+	// 参数级审批钩子**放最前**：ask 决策会短路后面的钩子——被拦下的调用
+	// 不该再打印「即将执行」（它不会真的执行）。
+	if pp != nil {
+		hb.On(hook.HookToolPreExecute, pp.Approval())
+	}
 
 	hb.On(hook.HookToolPreExecute, func(ctx context.Context, ev *hook.HookEvent, next hook.Next) (*hook.HookEvent, error) {
 		// 打 turn + callID：同一 turn 里的多次调用都只打「第 N 轮」分不清，
