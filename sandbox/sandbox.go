@@ -101,12 +101,18 @@ func (e *NotConfiguredError) Error() string {
 type Local struct {
 	// WorkDir 是命令执行目录（宿主配置，不交给模型指定）。
 	WorkDir string
-	// Timeout 是单次调用的超时，**既是缺省也是上限**。
-	//
-	// 模型可以在调用里要求更短的超时，但不能要求更长——上限由宿主定（模型请求
-	// 超过它会被夹到它，避免"模型要求跑一小时"绕过宿主限制）。
+	// Timeout 是单次调用的**缺省**超时：模型没有指定时用它。
 	// <=0 时用 DefaultTimeout。
 	Timeout time.Duration
+
+	// MaxTimeout 是每次调用可覆盖到的**上界**：模型可以在调用里要求更短
+	// （自己的事），也可以要求更长——但最长到它（DSH 的 maxTimeoutMs 对位）。
+	//
+	// 上界归宿主，因为超时是**资源预算**（卡死的命令占着 worker 槽、烧 CPU）。
+	// 若模型能无限加长，宿主设的预算就形同虚设。
+	//
+	// <=0 时退化为 Timeout（**不放宽**）——没显式配置上界就不给模型加钱的余地。
+	MaxTimeout time.Duration
 	// MaxOutput 是输出上限（字节）；<=0 用 DefaultMaxOutput。
 	MaxOutput int64
 	// CpuSeconds 是 CPU 时间上限（秒）；0 = 不限制。
@@ -137,14 +143,24 @@ func (s *Local) Run(ctx context.Context, req Request) (Result, error) {
 		return Result{}, errors.New("sandbox: 命令不能为空")
 	}
 
+	// 超时解析：缺省取宿主的 Timeout，上界取宿主的 MaxTimeout（DSH 的
+	// clampTimeout 同形：min(请求 ?? 缺省, 上界)）。
 	timeout := req.Timeout
-	if s.Timeout > 0 {
-		// 宿主的 Timeout 既是缺省也是上限：模型不能要求更久。
-		if timeout <= 0 || timeout > s.Timeout {
-			timeout = s.Timeout
+	if timeout <= 0 {
+		timeout = s.Timeout
+		if timeout <= 0 {
+			timeout = DefaultTimeout
 		}
-	} else if timeout <= 0 {
-		timeout = DefaultTimeout
+	}
+	max := s.MaxTimeout
+	if max <= 0 {
+		max = s.Timeout // 没配上界 → 不比缺省更宽
+		if max <= 0 {
+			max = DefaultTimeout
+		}
+	}
+	if timeout > max {
+		timeout = max
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

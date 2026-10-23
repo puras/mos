@@ -32,7 +32,7 @@ type Shell struct {
 type shellParams struct {
 	Command     string `json:"command" mos:"desc=要执行的 shell 命令"`
 	Description string `json:"description,omitempty" mos:"desc=这条命令要做什么（人类可读，便于审计）"`
-	Timeout     int    `json:"timeout,omitempty" mos:"desc=超时秒数；不传用宿主的配置（宿主定上限，模型不能要求更久）"`
+	Timeout     int    `json:"timeout,omitempty" mos:"desc=超时秒数；不传用宿主的缺省值，要求更久会被夹到宿主的上界"`
 }
 
 // NewShell 构造 shell 工具。
@@ -63,9 +63,12 @@ func (s *Shell) Execute(ctx context.Context, args json.RawMessage) (any, error) 
 	if s == nil || s.Runner == nil {
 		return nil, &sandbox.NotConfiguredError{}
 	}
+	if p.Timeout < 0 {
+		return nil, fmt.Errorf("timeout 必须为正数秒数")
+	}
 
-	// 模型没指定超时就不指定——由 Runner 用宿主的配置（Local.Timeout 既是缺省
-	// 也是上限）。工具不替宿主决定超时策略。
+	// 模型没指定超时就不指定——由 Runner 用宿主的配置（Timeout 缺省、
+	// MaxTimeout 上界）。工具不替宿主决定超时策略。
 	timeout := time.Duration(p.Timeout) * time.Second
 	res, err := s.Runner.Run(ctx, sandbox.Request{Command: p.Command, Timeout: timeout})
 	if err != nil {

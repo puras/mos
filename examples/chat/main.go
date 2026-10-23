@@ -52,7 +52,8 @@ func main() {
 	trimFlag := flag.Int("trim", 0, "结果裁剪上限（字节），0 = 不裁剪（post-execute 钩子演示）")
 	concFlag := flag.Int("concurrency", 4, "同批工具调用的并发上限（1 = 串行；仅对声明可并发的工具生效）")
 	allowShell := flag.Bool("allow-shell", false, "装配 shell 工具（隔离执行；默认不装配=模型看不到这个能力）")
-	shellTimeout := flag.Int("shell-timeout", 120, "shell 命令超时（秒，宿主定的缺省与上限）")
+	shellTimeout := flag.Int("shell-timeout", 120, "shell 命令缺省超时（秒）")
+	shellMaxTimeout := flag.Int("shell-max-timeout", 300, "shell 命令超时上界（秒，模型申请更久会被夹到这里）")
 	shellSpill := flag.String("shell-spill", "", "shell 输出落盘目录（截断时全文写这里；默认不落盘）")
 	flag.Parse()
 
@@ -88,9 +89,10 @@ func main() {
 	// 干净。装配后走 sandbox 隔离执行（超时 / 输出上限 / 资源限制 / 环境裁剪）。
 	if *allowShell {
 		sb := &sandbox.Local{
-			WorkDir:  jailRoot,
-			Timeout:  time.Duration(*shellTimeout) * time.Second,
-			SpillDir: *shellSpill,
+			WorkDir:    jailRoot,
+			Timeout:    time.Duration(*shellTimeout) * time.Second,    // 缺省
+			MaxTimeout: time.Duration(*shellMaxTimeout) * time.Second, // 上界
+			SpillDir:   *shellSpill,
 		}
 		if err := reg.Register(builtin.NewShell(sb)); err != nil {
 			check(fmt.Errorf("注册工具 %q: %w", "shell", err))
@@ -133,7 +135,8 @@ func main() {
 	fmt.Printf("  文件沙箱: %s（越界路径会被拒绝，工具不会执行）\n", jailRoot)
 	fmt.Printf("  并发上限: %d（仅对声明可并发的工具生效；read_file 可并发，write_file 独占）\n", *concFlag)
 	if *allowShell {
-		fmt.Printf("  shell: 已装配（隔离执行，超时 %ds；工作目录 %s）\n", *shellTimeout, jailRoot)
+		fmt.Printf("  shell: 已装配（隔离执行，超时缺省 %ds / 上界 %ds；工作目录 %s）\n",
+			*shellTimeout, *shellMaxTimeout, jailRoot)
 	} else {
 		fmt.Println("  shell: 未装配（模型看不到这个能力；加 -allow-shell 开启）")
 	}

@@ -25,7 +25,8 @@ go run .
 
 ```bash
 go run . -new -allow-shell                  # 开启 shell（默认不装配）
-go run . -new -allow-shell -shell-timeout 300   # 放宽超时（秒）
+go run . -new -allow-shell -shell-timeout 300   # 放宽缺省超时（秒）
+go run . -new -allow-shell -shell-max-timeout 600  # 放宽超时上界（秒，模型可申请到的天花板）
 go run . -new -allow-shell -shell-spill /tmp/mos  # 输出落盘目录
 ```
 
@@ -51,7 +52,7 @@ go run . -new -allow-shell -shell-spill /tmp/mos  # 输出落盘目录
 
 要点：
 
-- **超时的缺省与上限都由宿主定**（`-shell-timeout`，默认 120s，对齐 DSH）。模型可以在调用里要求**更短**，不能要求更长；
+- **超时的缺省与上界都由宿主定**（两个旋钮）：`-shell-timeout` 是缺省（默认 120s），`-shell-max-timeout` 是上界（默认 300s）。模型可以在调用里要求更短，**要求更长会被夹到上界**——超时是资源预算，预算的宽窄由宿主定，不由模型定；
 - **路径范围不受限**（诚实边界）：命令仍能访问运行用户权限内的任意路径——Go 标准库给不了强制隔离，需要 bwrap / Landlock / Seatbelt / 容器后端（`sandbox.Runner` 是留给它们的接缝）；
 - **输出截断有逃生通道**：完整输出落盘（`-shell-spill` 指定目录），回执给模型 `output_path`，它可以 `read_file` 读全文；
 - **非零退出码是事实不是故障**：输出照样回填给模型，它要靠输出自我纠正；

@@ -160,34 +160,66 @@ var (
 	_        = exec.Command
 )
 
-// 宿主的 Timeout 既是缺省也是上限：模型不能要求更久。
-func TestHostTimeoutIsDefaultAndCap(t *testing.T) {
-	sb := &Local{Timeout: 300 * time.Millisecond}
-	// 模型没指定 → 用宿主的
+// 缺省取宿主的 Timeout：模型不指定就用它。
+func TestHostTimeoutIsDefault(t *testing.T) {
+	sb := &Local{Timeout: 300 * time.Millisecond, MaxTimeout: 10 * time.Second}
 	start := time.Now()
-	res, err := sb.Run(context.Background(), Request{Command: "sleep 30"})
+	_, err := sb.Run(context.Background(), Request{Command: "sleep 30"})
 	if err == nil {
 		t.Fatal("应超时")
 	}
 	if d := time.Since(start); d > 2*time.Second {
-		t.Fatalf("应按宿主超时(300ms)终止, 实际 %v", d)
-	}
-	_ = res
-
-	// 模型要求更久 → 被夹到宿主的上限
-	start = time.Now()
-	_, err = sb.Run(context.Background(), Request{Command: "sleep 30", Timeout: 10 * time.Second})
-	if err == nil {
-		t.Fatal("应超时")
-	}
-	if d := time.Since(start); d > 2*time.Second {
-		t.Fatalf("模型要求的更长超时应被夹到宿主上限, 实际 %v", d)
+		t.Fatalf("应按宿主缺省(300ms)终止, 实际 %v", d)
 	}
 }
 
-// 模型要求更短 → 尊重模型的。
+// 上界独立于缺省：宿主给 300ms 缺省 + 2s 上界，模型要 10s → 按上界 2s 终止。
+// 这正是"两个旋钮"的意义：缺省保守，但允许模型在慢任务上申请更多（到上界）。
+func TestMaxTimeoutAllowsLongerThanDefault(t *testing.T) {
+	sb := &Local{Timeout: 300 * time.Millisecond, MaxTimeout: 2 * time.Second}
+	start := time.Now()
+	_, err := sb.Run(context.Background(), Request{Command: "sleep 30", Timeout: 10 * time.Second})
+	if err == nil {
+		t.Fatal("应超时")
+	}
+	d := time.Since(start)
+	if d < 1500*time.Millisecond {
+		t.Fatalf("应按上界(2s)而非缺省(300ms)终止, 实际 %v", d)
+	}
+	if d > 4*time.Second {
+		t.Fatalf("应按上界(2s)终止, 实际 %v", d)
+	}
+}
+
+// 没配上界 → 退化为缺省（不放宽）：模型不能要求更久。
+func TestMaxTimeoutDefaultsToTimeout(t *testing.T) {
+	sb := &Local{Timeout: 300 * time.Millisecond}
+	start := time.Now()
+	_, err := sb.Run(context.Background(), Request{Command: "sleep 30", Timeout: 10 * time.Second})
+	if err == nil {
+		t.Fatal("应超时")
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("没配上界时应按缺省终止, 实际 %v", d)
+	}
+}
+
+// 只配上界、没配缺省：缺省仍是框架缺省(30s)，上界单独生效。
+func TestMaxTimeoutWithoutDefault(t *testing.T) {
+	sb := &Local{MaxTimeout: 400 * time.Millisecond}
+	start := time.Now()
+	_, err := sb.Run(context.Background(), Request{Command: "sleep 30", Timeout: 10 * time.Second})
+	if err == nil {
+		t.Fatal("应超时")
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("应按上界(400ms)终止, 实际 %v", d)
+	}
+}
+
+// 模型要求更短 → 尊重模型的（收紧自己的额度永远允许）。
 func TestShorterModelTimeoutIsHonored(t *testing.T) {
-	sb := &Local{Timeout: 10 * time.Second}
+	sb := &Local{Timeout: 10 * time.Second, MaxTimeout: 30 * time.Second}
 	start := time.Now()
 	_, err := sb.Run(context.Background(), Request{Command: "sleep 30", Timeout: 200 * time.Millisecond})
 	if err == nil {
