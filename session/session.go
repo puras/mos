@@ -15,6 +15,11 @@
 //	assistant   模型输出（文本 + 可选工具调用；投影为 assistant 消息）
 //	tool/call   工具调用留痕（含被守卫拦截的调用；不投影，仅审计）
 //	tool/result 工具结果（投影为 tool 消息）
+//	approval/asked   问了人工（审批请求发出；不投影，仅审计）
+//	approval/decided 人工答了（与 asked 用同一个 id 配对；不投影，仅审计）
+//
+// 最后两种是 PRD 点名的例外（§可观测「approval/* 等事件全量落会话日志」、
+// G4「审批挂起-恢复 E2E」）：审批的审计链断在这里就不知道谁批的。
 package session
 
 import (

@@ -252,7 +252,27 @@ hooks.On(hook.HookToolPreExecute, hp.Approval())   // ask  → 需人工确认
 - **ask 档当前 = 拒绝**：没有审批通道时由执行通道 fail-closed（S5g 落地后才是"挂起等审批"）。
 - **分层**：工具名级名单（`Policy` 的 Allow/Deny）管"能不能调这个工具"；参数级规则管"这次调用的参数危不危险"。示例里两者串在同一条守卫链上（先名字级、后参数级）。
 
-### 3.9 路径强制范围：诚实的接缝（S5f-2a 附带）
+### 3.9 人工审批（S5g）
+
+**框架负责编排，问人由宿主注入。** 与 PI / DSH 同构：PI 的扩展用 `ctx.ui.confirm`，DSH 用 `approval/request` 事件上的 answerer 链——框架本身都不画界面。
+
+```go
+// 宿主注入"问人"的那一方（agent/approval 的 Answerer）
+rt.Answerer = terminalAnswerer{in: in, out: os.Stderr}   // 弹窗 / 终端 / 别的进程都行
+
+// 框架侧：签发 id → 记"问了" → 问人 → 归一化 → 记"答了"
+svc := approval.NewService(rt.Answerer, sessionAudit{sess: sess})
+```
+
+- **四档结果**（DSH 的词汇）：`approved` / `rejected` / `cancelled` / `unavailable`。`unavailable`（没人应答、通道坏了）一律 fail-closed。
+- **未装配即拒绝**（NFR-1）：没有 `Answerer` 时，pre-execute 的 `ask` 降级为拒绝（fail-closed）——不"先执行再问"。拒绝理由里带着"为什么要人工确认"。
+- **批准只对本次调用生效**（DSH 的 allowed-once）：不缓存批准。
+- **通道报错 ≠ 人拒绝**：报错归一到 `unavailable`（fail-closed），但原因要带出去——模型要分得清"人没答"和"通道崩了"。
+- **审计写失败就中止**：审计链断了就不知道谁批的（"日志即事实"）。
+- **审计落会话日志**：新增两个事件类型 `approval/asked` 与 `approval/decided`（同一个 id 配对）。这是 PRD 点名的例外（§可观测「approval/* 等事件全量落会话日志」、G4「审批挂起-恢复 E2E」），不走事件目录预算制。
+- **边界：S5g 是阻塞式**——驱动线程等一个人工决定（DSH 也是这样：工具调用 await 一个 promise）。**跨进程的挂起-恢复**（进程死了还能接着跑）属 `agent/checkpoint` 那一片；审批接口不关心决定怎么来，所以那一片落地时这里不用改。
+
+### 3.10 路径强制范围：诚实的接缝（S5f-2a 附带）
 
 `sandbox.Request.PathScope` 是路径范围要求（可读/可写根），语义是**要求即强制**：
 
@@ -260,7 +280,7 @@ hooks.On(hook.HookToolPreExecute, hp.Approval())   // ask  → 需人工确认
 - 与文件 jail 是两件事：jail 管**工具**（read_file/write_file）的路径，`PathScope` 管**子进程**能碰到的路径——命令可以绕过工具直接 `cat /etc/passwd`，jail 管不着；
 - 真隔离（bwrap / Landlock / Seatbelt / 容器）需要另一个 `sandbox.Runner` 实现，属后续切片。
 
-### 3.10 模型调用的重试（S2b）
+### 3.11 模型调用的重试（S2b）
 
 **机制在框架，策略在宿主**——与 PI / DSH 同构：重试是模型调用层的事，不该散落到业务各处各写一遍；但"重试几次、退避多久、哪些错误值得重试"是产品决策，框架不发明默认策略。
 

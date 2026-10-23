@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"strings"
@@ -189,5 +191,60 @@ func TestPolicyBannerNilConfig(t *testing.T) {
 	}
 	if strings.Contains(got, "拒绝 无") && strings.Contains(got, "放行 [") {
 		t.Fatalf("空列表不该显示成有值: %q", got)
+	}
+}
+
+// 端到端：宿主规则的 ask 档 → 终端问人 → 批准才执行。
+func TestHostPolicyAskReachesTerminalApproval(t *testing.T) {
+	run := func(answer string) (executed bool, result string) {
+		reg := tool.NewRegistry()
+		ft := &fakeTool{name: "shell"}
+		if err := reg.Register(ft); err != nil {
+			t.Fatalf("注册: %v", err)
+		}
+		hp := hostPolicy()
+		guards := hook.NewGuardBus()
+		guards.Add(hp.Guard())
+		hooks := hook.NewHookBus()
+		hooks.On(hook.HookToolPreExecute, hp.Approval())
+
+		var out bytes.Buffer
+		ans := terminalAnswerer{
+			in:  bufio.NewScanner(strings.NewReader(answer)),
+			out: &out,
+		}
+		sess := session.New("t", nil)
+		p := &scriptPlanner{acts: []planner.Action{{
+			ToolCalls: []llm.ToolCall{{
+				ID: "c1", Name: "shell", Args: `{"command":"rm -rf build"}`,
+			}},
+		}, {Content: "好"}}}
+		d := driver.New(&driver.RunContext{
+			Planner: p, Tools: reg, Guards: guards, Hooks: hooks, Answerer: ans,
+		}, react.New())
+
+		if _, err := d.Run(context.Background(), sess, "删掉 build"); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		for _, ev := range sess.Events() {
+			if ev.Kind == session.EventToolResult && ev.ToolResult != nil {
+				result = ev.ToolResult.Content
+			}
+		}
+		return ft.executed, result
+	}
+
+	// 批准 → 执行
+	executed, _ := run("y\n")
+	if !executed {
+		t.Fatal("批准后应执行")
+	}
+	// 拒绝 → 不执行，理由回填
+	executed, result := run("n\n")
+	if executed {
+		t.Fatal("拒绝后不该执行")
+	}
+	if !strings.Contains(result, "人工拒绝") {
+		t.Fatalf("拒绝理由应回填: %s", result)
 	}
 }

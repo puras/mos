@@ -28,6 +28,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/puras/mos/agent/approval"
 	"github.com/puras/mos/agent/driver"
 	"github.com/puras/mos/agent/driver/react"
 	"github.com/puras/mos/agent/hook"
@@ -57,6 +58,7 @@ func main() {
 	shellSpill := flag.String("shell-spill", "", "shell 输出落盘目录（截断时全文写这里；默认不落盘）")
 	retryAttempts := flag.Int("retry-attempts", 3, "模型调用总尝试次数（含首次）；1 = 不重试")
 	retryDelay := flag.Int("retry-delay", 1, "首次退避基数（秒），之后指数增长（带抖动）")
+	approvalFlag := flag.Bool("approval", true, "装配人工审批（需确认时在终端问 y/N；关掉则一律拒绝）")
 	flag.Parse()
 
 	loadDotEnv(".env")
@@ -134,6 +136,17 @@ func main() {
 		promptKind = "默认（shell 验证指引）"
 	}
 
+	// 输入读取器：主循环与人工审批共用（审批发生在驱动阻塞期间，同一
+	// goroutine，所以直接读下一行即可）。
+	in := bufio.NewScanner(os.Stdin)
+
+	// 人工审批（宿主侧"问人"的实现）：pre-execute 的「需人工确认」会在这里
+	// 弹提示。未装配时 ask 降级为拒绝（fail-closed）。
+	var answerer approval.Answerer
+	if *approvalFlag {
+		answerer = terminalAnswerer{in: in, out: os.Stderr}
+	}
+
 	rt := &driver.RunContext{
 		Planner:      planner.NewReAct(model),
 		Tools:        reg,
@@ -143,6 +156,7 @@ func main() {
 		SystemPrompt: sysPrompt,
 		Stream:       true,
 		OnChunk:      render,
+		Answerer:     answerer,
 	}
 	agent := driver.New(rt, react.New())
 
@@ -170,9 +184,13 @@ func main() {
 	//（它还挂着参数级的宿主规则）。
 	fmt.Print(policyBanner(cfg, policyPath))
 	fmt.Println("  参数级规则: 宿主规则已装配（敏感文件拒绝 / 递归删除需人工确认）")
+	if *approvalFlag {
+		fmt.Println("  人工审批: 已装配（需确认时在终端问 y/N；空回车 = 拒绝）")
+	} else {
+		fmt.Println("  人工审批: 未装配（需确认的调用一律拒绝，fail-closed）")
+	}
 	fmt.Println("输入 q 退出。")
 
-	in := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Print("\n你 > ")
 		if !in.Scan() {
