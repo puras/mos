@@ -10,6 +10,7 @@
 //	cd examples/chat
 //	cp .env.example .env   # 填入 API Key 与模型名
 //	go run .               # 默认恢复上次会话；-new 开新会话
+//	go run . -session <id> # 继续指定会话（-list-sessions 列出可选项）
 //
 // 退出：输入 q。
 package main
@@ -18,10 +19,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -47,6 +50,8 @@ import (
 
 func main() {
 	fresh := flag.Bool("new", false, "从全新会话开始（默认恢复上次会话）")
+	sessionFlag := flag.String("session", "", "继续指定会话（data/<id>.jsonl；不存在则新建）")
+	listSessions := flag.Bool("list-sessions", false, "列出可继续的会话 id 后退出")
 	denyFlag := flag.String("deny", "", "禁用指定工具（逗号分隔），演示策略拦截")
 	policyFlag := flag.String("policy", "", "策略配置文件（YAML），给出后忽略 -deny")
 	workdir := flag.String("workdir", ".", "文件工具的沙箱根目录（jail），越界路径会被拒绝")
@@ -64,7 +69,13 @@ func main() {
 	loadDotEnv(".env")
 
 	model := mustModel(*retryAttempts, *retryDelay)
-	jl, sess := mustSession(*fresh)
+	if *listSessions {
+		for _, id := range listSessionIDs("data") {
+			fmt.Println(id)
+		}
+		return
+	}
+	jl, sess := mustSession(*fresh, *sessionFlag)
 	defer jl.Close()
 
 	// 内置工具集：模型可调用的工具在此登记（未登记的工具不进 function calling 清单）
@@ -567,17 +578,45 @@ func logCall(model string, r llm.CallResult) {
 
 // mustSession 打开或恢复会话（JSONL 落 data/；中断的 turn 由 Restore 合成收尾）。
 // 返回后端与会话：后端由调用方负责 Close。
-func mustSession(fresh bool) (*session.JSONL, *session.Session) {
+//
+// 三种选择：
+//   - -new：新建时间戳会话（chat-<unix>），不接旧上下文；
+//   - -session <id>：**继续指定的那个**（不存在则新建同名空会话）；
+//   - 都不给：继续默认会话 chat（示例里的"恢复上次会话"）。
+func mustSession(fresh bool, wantID string) (*session.JSONL, *session.Session) {
 	jl, err := session.NewJSONL("data")
 	check(err)
 	id := "chat"
-	if fresh {
+	switch {
+	case fresh && wantID != "":
+		// 一个要全新、一个要指定——矛盾，不猜哪个赢。
+		check(errors.New("-new 与 -session 不能同时给：一个要全新会话，一个要指定会话"))
+	case fresh:
 		id = fmt.Sprintf("chat-%d", time.Now().Unix())
+	case wantID != "":
+		id = wantID
 	}
 	_ = jl.SaveHeader(id, session.Header{ID: id, CreatedAt: time.Now()})
 	sess, err := session.Restore(id, jl)
 	check(err)
 	return jl, sess
+}
+
+// listSessionIDs 列出 data/ 下可继续的会话 id（文件名去掉 .jsonl）。
+func listSessionIDs(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var ids []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		ids = append(ids, strings.TrimSuffix(e.Name(), ".jsonl"))
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func provider() string {

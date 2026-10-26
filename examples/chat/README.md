@@ -29,6 +29,19 @@ go run .
 
 `go run . -new` 开新会话；输入 `q` 退出。
 
+**继续某个指定的会话**（会话落在 `data/<id>.jsonl`，id 就是文件名去掉后缀）：
+
+```bash
+go run . -list-sessions        # 列出可继续的会话 id
+go run . -session chat-1792401117   # 继续指定的那个（不存在则新建同名空会话）
+go run .                        # 不给参数 = 继续默认会话 chat
+go run . -new                   # 全新会话（chat-<unix 时间戳>），不接旧上下文
+```
+
+`-new` 与 `-session` 互斥（一个要全新、一个要指定），同时给会直接报错退出。
+恢复出来的会话会带着历史继续：横幅里的"已有 N 条事件 / 累计 M tokens"就是恢复
+出来的上下文规模。
+
 ## 验证 shell 验证回路（S5f-1）
 
 ```bash

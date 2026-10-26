@@ -2,7 +2,9 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -42,5 +44,73 @@ func TestLoadPolicyRejectsUnknownField(t *testing.T) {
 func TestLoadPolicyMissingFile(t *testing.T) {
 	if _, err := loadPolicy(filepath.Join(t.TempDir(), "nope.yaml")); err == nil {
 		t.Fatal("文件缺失应报错")
+	}
+}
+
+// -session 要能**继续指定的那个**会话：id 落到 data/<id>.jsonl，恢复后
+// 带历史（事件数 > 0）；不存在的 id 则新建同名空会话。
+func TestMustSessionByID(t *testing.T) {
+	dir := t.TempDir()
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(old)
+
+	jl, sess := mustSession(false, "my-task")
+	if sess.ID != "my-task" {
+		t.Fatalf("session id = %q, want my-task", sess.ID)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "data", "my-task.jsonl")); err != nil {
+		t.Fatalf("会话文件应落盘: %v", err)
+	}
+	jl.Close()
+
+	// 再次打开同一 id：恢复（不新建）
+	_, sess2 := mustSession(false, "my-task")
+	if sess2.ID != "my-task" {
+		t.Fatalf("再次打开 id = %q", sess2.ID)
+	}
+}
+
+// -new 与 -session 互斥：一个要全新、一个要指定，不能猜。
+func TestMustSessionFreshAndIDConflict(t *testing.T) {
+	dir := t.TempDir()
+	old, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(old)
+
+	// mustSession 内部会 os.Exit（check），这里用子进程验证退出行为。
+	if os.Getenv("MOS_TEST_CONFLICT") == "1" {
+		mustSession(true, "x")
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestMustSessionFreshAndIDConflict")
+	cmd.Env = append(os.Environ(), "MOS_TEST_CONFLICT=1")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("应当以非零退出码结束, out=%s", out)
+	}
+	if !strings.Contains(string(out), "不能同时给") {
+		t.Fatalf("错误信息应说明互斥, out=%s", out)
+	}
+}
+
+func TestListSessionIDs(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"b.jsonl", "a.jsonl", "notjson.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(dir, "sub.jsonl"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ids := listSessionIDs(dir)
+	if len(ids) != 2 || ids[0] != "a" || ids[1] != "b" {
+		t.Fatalf("ids = %v, want [a b]", ids)
 	}
 }
