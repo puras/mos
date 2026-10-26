@@ -234,9 +234,13 @@ func main() {
 		// 区分开：输入（去缓存口径）/ 缓存读 / 缓存写 / 输出 / 共。
 		// 缓存命中单列，才看得出"这次省了多少"（Anthropic 的输入本就不含
 		// 缓存，OpenAI 的含——统一用去缓存口径才跨协议可比）。
-		fmt.Printf("  [tokens] 会话累计 输入 %d / 缓存读 %d / 缓存写 %d / 输出 %d / 共 %d（第 %d 轮）\n",
+		hit := ""
+		if u.Details.Input.CacheRead > 0 {
+			hit = fmt.Sprintf("，缓存命中 %.0f%%", u.CacheHitRatio()*100)
+		}
+		fmt.Printf("  [tokens] 会话累计 输入 %d / 缓存读 %d / 缓存写 %d / 输出 %d / 共 %d（%s第 %d 轮）\n",
 			u.FreshInput(), u.Details.Input.CacheRead, u.Details.Input.CacheWrite,
-			u.CompletionTokens, u.TotalTokens, sess.NextTurn()-1)
+			u.CompletionTokens, u.TotalTokens, hit, sess.NextTurn()-1)
 	}
 }
 
@@ -541,6 +545,10 @@ func logCall(model string, r llm.CallResult) {
 		if d := u.Details; d.Input.CacheRead > 0 || d.Input.CacheWrite > 0 || d.Output.Reasoning > 0 {
 			if d.Input.CacheRead > 0 || d.Input.CacheWrite > 0 {
 				fmt.Fprintf(&b, " cache=%d/%d", d.Input.CacheRead, d.Input.CacheWrite)
+			}
+			// 命中率是自算的：cache_read / (输入 + cache_read)
+			if d.Input.CacheRead > 0 {
+				fmt.Fprintf(&b, " hit=%.0f%%", u.CacheHitRatio()*100)
 			}
 			if d.Output.Reasoning > 0 {
 				fmt.Fprintf(&b, " reasoning=%d", d.Output.Reasoning)

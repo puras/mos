@@ -104,6 +104,22 @@ func (u Usage) FreshInput() int {
 	return u.PromptTokens
 }
 
+// CacheHitRatio 是**缓存命中率**（自算指标，提供商不直接给）：
+// cache_read / (新鲜输入 + cache_read)。
+//
+// 分母用去缓存口径的输入：Anthropic 的 input_tokens 本就不含缓存命中，
+// OpenAI/Gemini 的 prompt 含——不统一口径，同一个百分比在两个协议下含义
+// 不同。缓存写入（cache_write）不算命中，不进分母。
+//
+// 无输入时返回 0。
+func (u Usage) CacheHitRatio() float64 {
+	den := u.FreshInput() + u.Details.Input.CacheRead
+	if den <= 0 {
+		return 0
+	}
+	return float64(u.Details.Input.CacheRead) / float64(den)
+}
+
 // MarshalJSON 省略空的 details。
 //
 // **omitempty 对结构体无效**（encoding/json 只对基本类型/切片/映射判空），

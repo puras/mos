@@ -299,3 +299,28 @@ func TestUsageFreshInput(t *testing.T) {
 		t.Fatalf("无新鲜口径时应退回 PromptTokens, got %d", got)
 	}
 }
+
+// 缓存命中率是**自算**的：cache_read / (新鲜输入 + cache_read)。
+// 分母用去缓存口径的输入（跨协议同口径）；缓存写入不计入命中。
+func TestUsageCacheHitRatio(t *testing.T) {
+	cases := []struct {
+		name string
+		u    Usage
+		want float64
+	}{
+		{"全命中", Usage{FreshInputTokens: 0, Details: UsageDetails{Input: InputTokenDetails{CacheRead: 100}}}, 1},
+		{"一半", Usage{FreshInputTokens: 100, Details: UsageDetails{Input: InputTokenDetails{CacheRead: 100}}}, 0.5},
+		{"无缓存", Usage{FreshInputTokens: 100}, 0},
+		{"无输入", Usage{}, 0},
+		// 缓存写入不算命中：分母不含 cache_write
+		{"写入不计", Usage{FreshInputTokens: 100, Details: UsageDetails{Input: InputTokenDetails{CacheRead: 50, CacheWrite: 999}}}, 1.0 / 3.0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := c.u.CacheHitRatio()
+			if diff := got - c.want; diff > 1e-9 || diff < -1e-9 {
+				t.Fatalf("CacheHitRatio = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
