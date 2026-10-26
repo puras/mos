@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -21,9 +22,16 @@ type Persistence interface {
 }
 
 // Header 是日志文件首行的会话元信息。
+//
+// Title / Cwd 供宿主做会话索引（列表、按项目分组）用；ParentID / SeedSeq
+// 为 fork（从某条消息分叉）预留。不适用时省略（omitempty）。
 type Header struct {
 	ID        string    `json:"id"`
 	CreatedAt time.Time `json:"createdAt"`
+	Title     string    `json:"title,omitempty"`
+	Cwd       string    `json:"cwd,omitempty"`
+	ParentID  string    `json:"parentId,omitempty"`
+	SeedSeq   int64     `json:"seedSeq,omitempty"`
 }
 
 // JSONL 是轻量默认后端：每会话一个 .jsonl 文件，
@@ -45,6 +53,36 @@ func NewJSONL(dir string) (*JSONL, error) {
 
 func (j *JSONL) path(id string) string {
 	return filepath.Join(j.dir, id+".jsonl")
+}
+
+// Exists 报告会话日志文件是否存在。
+//
+// 宿主用它区分「会话不存在」（该返回 404）和「空会话」——Restore 对不存在
+// 的会话返回空会话而不报错，产品层需要自己先问一句。
+func (j *JSONL) Exists(id string) bool {
+	_, err := os.Stat(j.path(id))
+	return err == nil
+}
+
+// LoadHeader 读取日志首行的会话元信息（与 Load 的跳首行规则对称）。
+//
+// 文件不存在 / 空文件 / 首行损坏都返回错误，语义由调用方决定
+// （先 Exists 再 LoadHeader 是宿主的典型顺序）。
+func (j *JSONL) LoadHeader(id string) (Header, error) {
+	f, err := os.Open(j.path(id))
+	if err != nil {
+		return Header{}, err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	if !sc.Scan() {
+		return Header{}, fmt.Errorf("session: 日志 %s 首行缺失（空文件或只有半行）", id)
+	}
+	var h Header
+	if err := json.Unmarshal([]byte(sc.Text()), &h); err != nil {
+		return Header{}, fmt.Errorf("session: 日志 %s 首行损坏: %w", id, err)
+	}
+	return h, nil
 }
 
 // SaveHeader 写入日志首行元信息；文件已存在时不重复写。
