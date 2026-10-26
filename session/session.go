@@ -400,7 +400,7 @@ func projectSeq(events []Event) []SeqMessage {
 				Role:    llm.RoleUser,
 				Content: CompactionSummaryPrefix + "\n" + ev.Compaction.Summary,
 			}}
-			out = append(append([]SeqMessage{summary}, kept...))
+			out = append([]SeqMessage{summary}, kept...)
 		}
 	}
 	flush() // 日志尾部的孤儿调用（进程中断残留）
