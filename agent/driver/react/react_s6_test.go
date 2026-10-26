@@ -19,11 +19,12 @@ import (
 // stubCompactor 是可编程的压缩器桩：按预设返回切割方案与摘要，
 // 并记录收到的视图与消息（供断言）。
 type stubCompactor struct {
-	planOK   bool
-	cut      int
-	previous string
-	text     string
-	sumErr   error
+	planOK       bool
+	thresholdOff bool // true = 阈值门报告未超预算（模拟小上下文）
+	cut          int
+	previous     string
+	text         string
+	sumErr       error
 
 	gotView   []session.SeqMessage
 	gotTokens int
@@ -31,7 +32,13 @@ type stubCompactor struct {
 	gotPrev   string
 }
 
-func (c *stubCompactor) ShouldCompact(int) bool { return true }
+func (c *stubCompactor) ShouldCompact(contextTokens int) bool {
+	// 模拟 LLMCompactor 的公式：超过窗口-预留才触发；窗口未配置永不触发。
+	if c.thresholdOff {
+		return false
+	}
+	return true
+}
 
 func (c *stubCompactor) Plan(view []session.SeqMessage, contextTokens int) (agent.CutPlan, bool) {
 	c.gotView = view
@@ -157,6 +164,24 @@ func TestIterativeCompactionCarriesPreviousSummary(t *testing.T) {
 	for _, m := range comp.gotMsgs {
 		if strings.HasPrefix(m.Content, session.CompactionSummaryPrefix) {
 			t.Fatal("旧摘要不该进序列化输入")
+		}
+	}
+}
+
+// 阈值门：ShouldCompact 报告未超预算时，即使切割方案可用也不压缩
+// （PI 的 shouldCompact → findCutPoint 两道门，第一道不過第二道不跑）。
+func TestCompactionThresholdGate(t *testing.T) {
+	sess := session.New("t", nil)
+	prefillSessions(t, sess, 3)
+	comp := &stubCompactor{planOK: true, cut: 2, thresholdOff: true}
+	p := &scriptedPlanner{acts: []planner.Action{answer("ok")}}
+	rt := &driver.RunContext{Planner: p, Compactor: comp}
+	if _, err := driver.New(rt, New()).Run(context.Background(), sess, "q"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, ev := range sess.Events() {
+		if ev.Kind == session.EventCompaction {
+			t.Fatal("阈值门未过不该有压缩事件")
 		}
 	}
 }

@@ -274,15 +274,22 @@ func appendAssistant(sess *session.Session, turn int, action planner.Action) err
 // _compactBeforeNextAssistantResponse 对位：检查发生在工具结果追加之后、
 // 下一次模型响应之前）。
 //
-// 流程：估算上下文规模（最后一次真实用量 + 其后新增的估算）→ 超预算则
-// 定切割点（永不落在 tool 结果上）→ 模型生成结构化摘要 → 摘要作为
-// compaction 事件落日志。被遮蔽的事件留在日志里：审计走全量日志，
-// 模型投影从下一个决策起就是压缩后的视图。
+// 两道门（PI 同款时序）：
+//  1. 阈值门（ShouldCompact）：contextTokens > contextWindow - reserveTokens
+//     才继续；ContextWindow 未配置时永不触发（fail-closed）；
+//  2. 切割（Plan）：从投影视图定切割点（永不落在 tool 结果上）。
+//
+// 然后模型生成结构化摘要 → 摘要作为 compaction 事件落日志。被遮蔽的
+// 事件留在日志里：审计走全量日志，模型投影从下一个决策起就是压缩后
+// 的视图。
 func maybeCompact(ctx context.Context, rt *driver.RunContext, sess *session.Session, turn int) error {
 	if rt.Compactor == nil {
 		return nil
 	}
 	contextTokens := sess.ContextTokens() + session.EstimateTokens(rt.SystemPrompt)
+	if !rt.Compactor.ShouldCompact(contextTokens) {
+		return nil
+	}
 	view := sess.View()
 	plan, ok := rt.Compactor.Plan(view, contextTokens)
 	if !ok {
