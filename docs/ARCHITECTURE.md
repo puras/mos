@@ -275,13 +275,21 @@ svc := approval.NewService(rt.Answerer, sessionAudit{sess: sess})
 - **词法规则的教训**（2026-10 事故）：宿主规则曾键在"含字母 r 的 flag"上——`git status --short` 误触发，而逐个 `git rm` 漏过，被拒后模型拆解命令绕过拦截。规则必须键在**语义**（"这是删除命令"）而不是**字母形状**上；且词法规则终究只是业务规则，`find -delete`、脚本语言仍绕得过——**边界只能是隔离（S5f-2b）**。
 - **边界：S5g 是阻塞式**——驱动线程等一个人工决定（DSH 也是这样：工具调用 await 一个 promise）。**跨进程的挂起-恢复**（进程死了还能接着跑）属 `agent/checkpoint` 那一片；审批接口不关心决定怎么来，所以那一片落地时这里不用改。
 
-### 3.10 路径强制范围：诚实的接缝（S5f-2a 附带）
+### 3.10 路径强制隔离（S5f-2b：macOS Seatbelt ✅ / Linux Landlock ⬜）
 
-`sandbox.Request.PathScope` 是路径范围要求（可读/可写根），语义是**要求即强制**：
+**边界只能是对进程的内核约束**。词法规则与审批是"减事故面"——2026-10 的事故证明它们会被拆解命令绕过；而内核约束与命令怎么拼写无关（`git rm -r` 和逐个 `git rm` 删的是同一个禁区）、子进程继承、符号链接在 vnode 层解析（软链逃逸无效）。
 
-- `sandbox.Local` **做不到就明确拒绝**（`ErrPathScopeUnsupported`），不忽略后装作约束了——"假装有边界"比"没有边界"更危险（调用方会以为路径安全）；
-- 与文件 jail 是两件事：jail 管**工具**（read_file/write_file）的路径，`PathScope` 管**子进程**能碰到的路径——命令可以绕过工具直接 `cat /etc/passwd`，jail 管不着；
-- 真隔离（bwrap / Landlock / Seatbelt / 容器）需要另一个 `sandbox.Runner` 实现，属后续切片。
+**默认语义（fail-closed）**：
+
+- `Local.DefaultScope`：nil 时从 WorkDir 派生（读 = 写 = WorkDir）——**忘了配置 = 只有工作区**，不是全盘。"忘记声明"这个最常见的错误，后果必须是最小权限；
+- `Request.PathScope` 只能**收窄**（默认范围的子集）；放宽是宿主**装配期**的权力，运行期拒绝——放宽是宿主的政策，不是模型（调用方）的权力；
+- 写根含 `/` = **显式全开**：不套约束直接跑（容器场景的正当逃生门——"/" 是一次性容器的根）。危险写在配置里，审查看得见；框架不替宿主判断"你的机器是不是一次性的"。
+
+**macOS 后端（Seatbelt）**：SBPL profile 只收窄**写**——`(allow default)` → `(deny file-write*)` → 放行 `/dev/null` 与写根（DSH `profiles.ts` 同款，实战验证过的最小集）。读强制不做：`deny file-read*` 会碎掉动态链接器与系统缓存，成本远超收益，且事故威胁模型全在写侧；`ReadRoots` 参与收窄校验但此后端暂不强制（强制待 Landlock）。SBPL 按**内核解析后**的路径匹配，写根先过 `EvalSymlinks` 规范化（`/var` → `/private/var` 不规范化会让工作区写被自己拦住）。
+
+**fail-closed 纪律**：sandbox-exec 不可用 → `ErrPathScopeUnsupported`；非 darwin 平台尚无后端 → 非全开的调用明确报错。**绝不退化成"没隔离的假装隔离"**——"假装有边界"比"没有边界"更危险。
+
+**与文件 jail 的分工**：jail 管**工具**（read_file/write_file/edit_file）的路径；`PathScope` 管**子进程**能碰到的路径——命令可以绕过工具直接 `cat /etc/passwd`，jail 管不着。两层都要。
 
 ### 3.11 模型调用的重试（S2b）
 

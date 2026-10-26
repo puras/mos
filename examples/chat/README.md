@@ -9,6 +9,7 @@ S4b 里程碑示例——智能体经**驱动层循环**与模型对话，模型
 - **重试也要看得见**：每次重试前在 stderr 打一行 `[llm] 第 N 次重试（…后）：<错误>`——静默重试是查不出问题的
 - 内置工具（`builtin.Default()`）登记后模型即可调用；当前可用 `current_time`；文件工具（`read_file`/`write_file`）经 `-workdir` 指定的 jail 根约束后一并登记
 - **shell 工具默认不装配**（`-allow-shell` 开启）：给 agent 一条验证回路——改完代码能自己跑一次 `go build` / `go test`，而不是靠反复重写去猜。命令经 `sandbox.Local` 执行（超时、进程组击杀、输出上限、资源限制、环境裁剪）
+- **路径强制**（macOS）：写限定在工作区内，越界写被**内核**拒绝（`Operation not permitted`）——与命令怎么拼无关，拆解命令绕不过。被隔离命令的缓存/临时目录由宿主指到工作区内（`GOCACHE`/`TMPDIR`）；非 macOS 平台此强制未落地，非全开调用会明确报错
 - 开了 shell 会附带一份**默认系统引导词**（教模型用命令验证）；`MOS_SYSTEM_PROMPT` 可覆盖
 - **人工审批**（`approval.go`）：pre-execute 的「需人工确认」会在终端问 `[审批] 是否允许执行 shell？[y/N]`——**空回车 = 拒绝**（默认答案必须是安全的那个）。未装配时（`-approval=false`）一律拒绝（fail-closed）。批准只对**本次调用**生效，不缓存
 - **宿主侧参数级规则**（`guard.go`）：按参数判定——敏感文件（`.env` / `id_rsa` / `*.pem`）不读不写（deny），**删除命令**（`rm` / `unlink` / `git rm`，无论带什么 flag）需人工确认（ask）。**规则键在语义上，不在字母形状上**（曾键在"含 r 的 flag"上：`git status --short` 误触发、逐个 `git rm` 漏过，被拒后模型拆解命令绕过了拦截）。诚实边界：`find -delete`、脚本语言仍绕得过——这只是业务规则，真正的边界是路径强制隔离（S5f-2b，未落地）

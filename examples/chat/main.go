@@ -196,7 +196,7 @@ func main() {
 	// 名字级策略（Allow/Deny 名单）装没装，看 cfg——守卫总线本身总是非 nil
 	//（它还挂着参数级的宿主规则）。
 	fmt.Print(policyBanner(cfg, policyPath))
-	fmt.Println("  参数级规则: 宿主规则已装配（敏感文件拒绝 / 递归删除需人工确认）")
+	fmt.Println("  参数级规则: 宿主规则已装配（敏感文件拒绝 / 删除命令需人工确认）")
 	if *approvalFlag {
 		fmt.Println("  人工审批: 已装配（需确认时在终端问 y/N；空回车 = 拒绝）")
 	} else {
