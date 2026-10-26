@@ -315,6 +315,24 @@ llm.WithRetry(model, llm.RetryPolicy{
 - **重试要看得见**：`OnScheduled` / `OnFinished` 回调——静默重试是查不出问题的。
 - 对标：PI `packages/ai/src/utils/retry.ts`、DSH `packages/llm/llm/src/retry-policy.ts`。
 
+### 3.12 写前观察（S5h：防丢失更新）
+
+**问题**：模型 read 之后文件被 shell/另一个会话/人改了，再 write/edit 就会盖掉它没见过的改动。
+
+**契约**（对齐 DSH 的 `fs-observation-policy`，落在 `tool/builtin` 的 `ObserveGate`——不是 Guard（管权限）也不是 Hook（管循环），是文件工具契约的一部分，与原子写同级）：
+
+| 调用 | 无观察记录 | 记录=存在 | 记录=不存在 |
+| --- | --- | --- | --- |
+| `read_file` | 记录（存在→版本；不存在→absent） | 刷新版本 | 刷新 |
+| `write_file` | createIfAbsent（已存在→拒"先读再覆盖"） | CAS（变了/没了→拒"自读取后已被修改/删除"） | 现在却存在→拒（它读后出现了） |
+| `edit_file` | **拒**："编辑前必须先 read_file" | CAS | 拒："文件不存在，创建用 write_file" |
+
+- **版本令牌** = `dev:ino:size:mtimeNs:ctimeNs`（身份+新鲜度；dev/ino 让"删了重建同名文件"也能被识别）。unix 取完整令牌，其他平台退化 `size:mtimeNs`（文档注明）。
+- **CAS 在写的时刻做**——读与写之间的任何改动都会被抓到，模型被迫重读，看到真实状态后再决定。shell 改了文件 → edit 被拒 → 模型重读，这正是 S5h 的核心价值。
+- **新建文件不需要先读**（createIfAbsent）——正常创建流程不受影响。
+- **能力由宿主决定**：`FileTools(fsys, gate)`，nil 门 = 旧行为（无条件变更）。
+- **并发与边界**：进程内写/改独占执行（execpath 屏障调度），校验窗口天然串行；**跨进程竞争不设防**（DSH 的 hard-link no-replace 暂未做）——文档写明。
+
 ## 4. 治理规则（防再膨胀）
 
 1. 新增一个包 = PRD 有一条 FR 指名要它；否则留在 `main_bak1015` 不动。
