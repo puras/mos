@@ -221,10 +221,12 @@ func (s *Session) View() []SeqMessage {
 
 // ContextTokens 估算当前投影视图的上下文大小（压缩触发用）。
 //
-// 对齐 PI 的两段式：优先用**最后一次模型调用的真实用量**（totalTokens，
-// 或分项之和 input+output+cacheRead+cacheWrite——PI 的
-// calculateContextTokens 同款），再加上其后新增事件的 chars/4 估算；
-// 完全没有用量记录时全部走估算。这是量级正确的启发式，不是分词。
+// 对齐 PI 的两段式：**基座是真实值**——最后一次模型调用的返回用量
+// （totalTokens，或分项之和：新鲜输入+缓存读+缓存写+输出，PI 的
+// calculateContextTokens 同款）；它之后的新增事件还没有权威数字（要等
+// 下一次调用返回才知道），按 chars/4 估算。完全没有用量记录时
+// （网关不给 usage）全量估算。这是量级正确的启发式，不是分词；
+// 对中文偏低估（触发偏晚），确切性依赖 llm 层未来的分词器。
 func (s *Session) ContextTokens() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -255,6 +257,8 @@ func (s *Session) ContextTokens() int {
 }
 
 // estimateEventTokens 估算单条事件进入上下文的 token 量（chars/4）。
+// tool/call 审计事件不计：它不进投影，工具调用已随 assistant 事件的
+// ToolCalls 计过——重复计会让触发偏早。
 func estimateEventTokens(ev *Event) int {
 	n := len(ev.Text) + len(ev.Reasoning)
 	if ev.ToolResult != nil {
@@ -262,9 +266,6 @@ func estimateEventTokens(ev *Event) int {
 	}
 	for _, c := range ev.ToolCalls {
 		n += len(c.Name) + len(c.Args)
-	}
-	if ev.ToolCall != nil {
-		n += len(ev.ToolCall.Name) + len(ev.ToolCall.Args)
 	}
 	if ev.Compaction != nil {
 		n += len(ev.Compaction.Summary)

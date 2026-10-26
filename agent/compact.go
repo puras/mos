@@ -46,8 +46,10 @@ type LLMCompactor struct {
 
 // CompactorConfig 是 LLMCompactor 的配置（零值字段取 PI 的默认值）。
 type CompactorConfig struct {
-	// ContextWindow 是模型的上下文窗口（token）。<=0 时**永不自动触发**——
-	// 不知道预算就无法负责任地压缩（fail-closed），手动路径仍可用。
+	// ContextWindow 是模型的上下文窗口（token）。<=0 时取默认值
+	// DefaultContextWindow（128K）：现代模型普遍 ≥128K，宁早勿溢出；
+	// 知道确切窗口时显式配置（小窗口模型必须配，否则会在溢出后才触发）。
+	// 要完全关闭压缩，不装配 Compactor（nil），而不是把窗口设为 0。
 	ContextWindow int
 	// ReserveTokens 是为模型响应预留的空间（默认 16384，PI 同款）：
 	// 超过 contextWindow-reserveTokens 即触发压缩。
@@ -67,7 +69,13 @@ const (
 	DefaultMaxToolResultChars = 2000
 )
 
+// DefaultContextWindow 是上下文窗口的默认值（128K）：现代模型普遍 ≥128K，
+// 在窗口−预留处触发宁早勿溢出；确切窗口更小的模型必须显式配置，
+// 更大的配了也只在更晚才压（不损失正确性，只省了不必要的压缩）。
+const DefaultContextWindow = 128 * 1024
+
 // NewLLMCompactor 创建默认压缩器。model 为 nil 时 Summarize 报错（fail-closed）。
+// ContextWindow <=0 时取 DefaultContextWindow（128K）。
 func NewLLMCompactor(model llm.ChatModel, cfg CompactorConfig) *LLMCompactor {
 	if cfg.ReserveTokens <= 0 {
 		cfg.ReserveTokens = DefaultReserveTokens
@@ -78,13 +86,16 @@ func NewLLMCompactor(model llm.ChatModel, cfg CompactorConfig) *LLMCompactor {
 	if cfg.MaxToolResultChars <= 0 {
 		cfg.MaxToolResultChars = DefaultMaxToolResultChars
 	}
+	if cfg.ContextWindow <= 0 {
+		cfg.ContextWindow = DefaultContextWindow
+	}
 	return &LLMCompactor{model: model, cfg: cfg}
 }
 
 // ShouldCompact 实现 Compactor：contextTokens > contextWindow - reserveTokens
-// （PI 的 shouldCompact）。ContextWindow 未配置时恒 false（无法负责任地触发）。
+// （PI 的 shouldCompact）。
 func (c *LLMCompactor) ShouldCompact(contextTokens int) bool {
-	if c == nil || c.cfg.ContextWindow <= 0 {
+	if c == nil {
 		return false
 	}
 	return contextTokens > c.cfg.ContextWindow-c.cfg.ReserveTokens

@@ -13,7 +13,7 @@ S4b 里程碑示例——智能体经**驱动层循环**与模型对话，模型
 - 开了 shell 会附带一份**默认系统引导词**（教模型用命令验证）；`MOS_SYSTEM_PROMPT` 可覆盖
 - **写前观察**（S5h）：`write_file` 覆盖没读过的文件、或读后文件已被修改（shell/人改的）→ **拒绝并要求重读**——防丢失更新。新建文件不需要先读
 - **上下文工程**（S6，对齐 PI）：
-  - **压缩**（`-context-window`，需指定模型窗口；0 = 关）：超过窗口-预留时，从投影定切割点（永不切断工具调用对），**模型生成结构化摘要**（Goal/Progress/Key Decisions/Next Steps）作为 compaction 事件落会话日志；投影从此遮蔽旧历史，被遮蔽内容留在日志可审计。`-reserve-tokens`（默认 16384）/ `-keep-recent-tokens`（默认 20000）调预算
+  - **压缩**（`-context-window`，默认 128K；<=0 关）：超过窗口-预留时，从投影定切割点（永不切断工具调用对），**模型生成结构化摘要**（Goal/Progress/Key Decisions/Next Steps）作为 compaction 事件落会话日志；投影从此遮蔽旧历史，被遮蔽内容留在日志可审计。**确切窗口更小的模型必须显式配置**（否则会在溢出后才触发）。`-reserve-tokens`（默认 16384）/ `-keep-recent-tokens`（默认 20000）调预算
   - **结果截断**（`-trim` 字节，0 = 关）：工具结果过大时就地瘦身（read_file 留头、shell 留尾、其余两头各半，说明带保留区间），全文落 `.mos-trunc/`（在工作区内，`read_file` 可回读）
 - **人工审批**（`approval.go`）：pre-execute 的「需人工确认」会在终端问 `[审批] 是否允许执行 shell？[y/N]`——**空回车 = 拒绝**（默认答案必须是安全的那个）。未装配时（`-approval=false`）一律拒绝（fail-closed）。批准只对**本次调用**生效，不缓存
 - **宿主侧参数级规则**（`guard.go`）：按参数判定——敏感文件（`.env` / `id_rsa` / `*.pem`）不读不写（deny），**删除命令**（`rm` / `unlink` / `git rm`，无论带什么 flag）需人工确认（ask）。**规则键在语义上，不在字母形状上**（曾键在"含 r 的 flag"上：`git status --short` 误触发、逐个 `git rm` 漏过，被拒后模型拆解命令绕过了拦截）。诚实边界：`find -delete`、脚本语言仍绕得过——这只是业务规则，真正的边界是路径强制隔离（S5f-2b，未落地）

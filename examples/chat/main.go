@@ -31,11 +31,13 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/puras/mos/agent"
 	"github.com/puras/mos/agent/approval"
 	"github.com/puras/mos/agent/driver"
 	"github.com/puras/mos/agent/driver/react"
 	"github.com/puras/mos/agent/hook"
 	"github.com/puras/mos/agent/policy"
+	"github.com/puras/mos/agent/prompt"
 	"github.com/puras/mos/filesystem"
 	"github.com/puras/mos/llm"
 	"github.com/puras/mos/llm/anthropic"
@@ -55,7 +57,10 @@ func main() {
 	denyFlag := flag.String("deny", "", "禁用指定工具（逗号分隔），演示策略拦截")
 	policyFlag := flag.String("policy", "", "策略配置文件（YAML），给出后忽略 -deny")
 	workdir := flag.String("workdir", ".", "文件工具的沙箱根目录（jail），越界路径会被拒绝")
-	trimFlag := flag.Int("trim", 0, "结果裁剪上限（字节），0 = 不裁剪（post-execute 钩子演示）")
+	trimFlag := flag.Int("trim", 0, "结果截断上限（字节），0 = 不截断（框架截断器，截断全文落盘可回读）")
+	contextWindow := flag.Int("context-window", 131072, "模型上下文窗口（token，默认 128K，超过窗口-预留即触发压缩）；<=0 关闭自动压缩（溢出风险自担）")
+	reserveTokens := flag.Int("reserve-tokens", 16384, "为模型响应预留的空间（token），超过窗口-预留即触发压缩")
+	keepRecentTokens := flag.Int("keep-recent-tokens", 20000, "压缩后保留的近期上下文预算（token）")
 	concFlag := flag.Int("concurrency", 4, "同批工具调用的并发上限（1 = 串行；仅对声明可并发的工具生效）")
 	allowShell := flag.Bool("allow-shell", false, "装配 shell 工具（隔离执行；默认不装配=模型看不到这个能力）")
 	shellTimeout := flag.Int("shell-timeout", 120, "shell 命令缺省超时（秒）")
@@ -151,16 +156,13 @@ func main() {
 	//   - 钩子门：ask 档转成「需人工确认」（当前没有审批通道 → fail-closed 拒绝）。
 	hp := hostPolicy()
 	guards.Add(hp.Guard())
-	hooks := mustHooks(*trimFlag, hp)
+	hooks := mustHooks(hp)
 
-	// 系统引导词：自定义优先；开了 shell 而没自定义时给一份默认引导——
-	// 工具在清单里不等于模型会主动用它，得告诉它有这回事、怎么用。
-	sysPrompt := os.Getenv("MOS_SYSTEM_PROMPT")
-	promptKind := "自定义（MOS_SYSTEM_PROMPT）"
-	if sysPrompt == "" && *allowShell {
-		sysPrompt = shellSystemPrompt(jailRoot)
-		promptKind = "默认（shell 验证指引）"
-	}
+	// 系统提示词：分节装配（agent/prompt）——默认节 + 工具自带指引 + 部署事实，
+	// 三类贡献方一处汇合；MOS_SYSTEM_PROMPT 仍可整段替换（Complete 语义：
+	// 宿主最懂就全听宿主的）。组装一次、静态不变，利于服务商 prompt cache。
+	sysPrompt, promptKind, err := buildSystemPrompt(reg, jailRoot, *allowShell)
+	check(err)
 
 	// 输入读取器：主循环与人工审批共用（审批发生在驱动阻塞期间，同一
 	// goroutine，所以直接读下一行即可）。
@@ -173,6 +175,29 @@ func main() {
 		answerer = terminalAnswerer{in: in, out: os.Stderr}
 	}
 
+	// 上下文工程（S6，对齐 PI）：
+	//   - 截断：工具结果过大时就地瘦身（行/字节双限），全文落工作区内
+	//     （read_file 可回读）；
+	//   - 压缩：超过 token 预算（窗口 − 预留）时，模型生成结构化摘要
+	//     落会话日志，投影从此遮蔽旧历史。窗口默认 128K；确切窗口更小的
+	//     模型必须用 -context-window 显式配置，否则会在溢出后才触发。
+	if *trimFlag > 0 {
+		spillDir := filepath.Join(jailRoot, ".mos-trunc")
+		trunc := agent.NewDefaultTruncator(agent.TruncatorConfig{
+			MaxBytes: *trimFlag,
+			Dir:      spillDir, // 在 jail 可读根内，逃生通道才真的可达
+		})
+		hooks.On(hook.HookToolPostExecute, agent.TruncateHook(trunc))
+	}
+	var compactor agent.Compactor
+	if *contextWindow > 0 {
+		compactor = agent.NewLLMCompactor(model, agent.CompactorConfig{
+			ContextWindow:    *contextWindow,
+			ReserveTokens:    *reserveTokens,
+			KeepRecentTokens: *keepRecentTokens,
+		})
+	}
+
 	rt := &driver.RunContext{
 		Planner:      planner.NewReAct(model),
 		Tools:        reg,
@@ -183,6 +208,7 @@ func main() {
 		Stream:       true,
 		OnChunk:      render,
 		Answerer:     answerer,
+		Compactor:    compactor,
 	}
 	agent := driver.New(rt, react.New())
 
@@ -205,6 +231,17 @@ func main() {
 	}
 	if sysPrompt != "" {
 		fmt.Printf("  系统引导: %s\n", promptKind)
+		// 把最终送进模型的系统提示词原文打出来：装配结果是否合意、金样例之外
+		// 的真实组合（宿主节 + 工具指引）一眼可验，也方便贴 issue 对照。
+		fmt.Println("  ───── 系统提示词 ─────")
+		for line := range strings.SplitSeq(sysPrompt, "\n") {
+			if line == "" {
+				fmt.Println()
+			} else {
+				fmt.Printf("  %s\n", line)
+			}
+		}
+		fmt.Println("  ─────────────────────")
 	}
 	// 名字级策略（Allow/Deny 名单）装没装，看 cfg——守卫总线本身总是非 nil
 	//（它还挂着参数级的宿主规则）。
@@ -214,6 +251,17 @@ func main() {
 		fmt.Println("  人工审批: 已装配（需确认时在终端问 y/N；空回车 = 拒绝）")
 	} else {
 		fmt.Println("  人工审批: 未装配（需确认的调用一律拒绝，fail-closed）")
+	}
+	if compactor != nil {
+		fmt.Printf("  上下文压缩: 已装配（窗口 %d / 预留 %d / 保留 %d tokens；超阈值时模型生成结构化摘要落日志）\n",
+			*contextWindow, *reserveTokens, *keepRecentTokens)
+	} else {
+		fmt.Println("  上下文压缩: 未装配（-context-window > 0 开启）")
+	}
+	if *trimFlag > 0 {
+		fmt.Printf("  结果截断: %d 字节（全文落 %s，read_file 可回读）\n", *trimFlag, filepath.Join(jailRoot, ".mos-trunc"))
+	} else {
+		fmt.Println("  结果截断: 未开启（-trim > 0 开启）")
 	}
 	fmt.Println("输入 q 退出。")
 
@@ -329,19 +377,43 @@ func mustModel(retryAttempts, retryDelay int) llm.ChatModel {
 	return m
 }
 
-// shellSystemPrompt 是开启 shell 时的默认系统引导词。
+// buildSystemPrompt 装配系统提示词（agent/prompt 分节 Builder）：
+//   - prompt.Default()  框架默认节（身份 + 简洁约定）；
+//   - reg.Guidelines()  工具自带的跨调用指引（文案归工具包，tool.Guideline 接口）；
+//   - shellRuntimeGuide 部署事实（工作目录、验证回路）——只有宿主知道的事。
 //
-// 工具在清单里 ≠ 模型会主动用它：得说清三件事——有什么能力、工作目录在哪、
-// 为什么要用（验证回路）。没有这段，模型多半仍然只写代码不验证。
-func shellSystemPrompt(workdir string) string {
-	return fmt.Sprintf(`你可以通过 shell 工具执行命令来验证改动（go build / go test / git diff 等）。
+// MOS_SYSTEM_PROMPT 仍整段替换（对齐 Complete 语义：宿主最懂就全听宿主的）。
+func buildSystemPrompt(reg *tool.Registry, jailRoot string, allowShell bool) (string, string, error) {
+	if custom := os.Getenv("MOS_SYSTEM_PROMPT"); custom != "" {
+		return custom, "自定义（MOS_SYSTEM_PROMPT，整段替换）", nil
+	}
+	pb := prompt.Default()
+	if err := pb.AddToolGuidelines(reg.Guidelines()); err != nil {
+		return "", "", fmt.Errorf("装配工具指引: %w", err)
+	}
+	kind := "分节装配（默认 + 工具指引"
+	if allowShell {
+		err := pb.Add(prompt.Section{
+			Name:  "runtime:shell",
+			Order: prompt.OrderRuntime,
+			Text:  shellRuntimeGuide(jailRoot),
+		})
+		if err != nil {
+			return "", "", fmt.Errorf("装配 shell 部署事实: %w", err)
+		}
+		kind += " + shell 部署事实"
+	}
+	return pb.Render(), kind + "）", nil
+}
 
-- 工作目录固定为 %s，命令在那里执行（不要 cd 到别处）。
-- 命令是隔离执行的：有时限（超会被杀）、输出有上限（超了会截断并给全文路径）、
-  环境变量是白名单（不是全部主机的环境）。
-- 正确做法是「改代码 → 跑命令 → 看真实输出 → 再改」，不要靠猜代码对不对。
-- 命令失败不是故障：退出码非零、输出原样回给你，照着输出改就是。
-- 练手项目在 lab/ 子目录（独立的 go module）：修好那里的测试并跑通。`, workdir)
+// shellRuntimeGuide 是 shell 的部署事实节（runtime 位置）：只有宿主知道的事——
+// 工作目录在哪、为什么要跑命令（验证回路）、练手项目在哪。工具自身的行为约定
+// （退出码标记、截断逃生通道）归 builtin.Shell 的 tool.Guideline，不在这里重复。
+func shellRuntimeGuide(workdir string) string {
+	return fmt.Sprintf(`shell 在隔离环境执行：工作目录固定为 %s，不要 cd 到别处；`+
+		`命令有时限（超会被杀）、输出有上限（超了会截断并给全文路径）、环境变量是白名单。
+
+正确做法是「改代码 → 跑命令 → 看真实输出 → 再改」，不要靠猜代码对不对。`, workdir)
 }
 
 // visibleNames 列出**模型真正看到**的工具（可见性过滤之后）。
@@ -408,16 +480,16 @@ func nameLevelGuard(cfg policy.Config) hook.Guard {
 }
 
 // mustHooks 构建可改写环节的钩子链（HookBus）——与守卫是**两条不同的轨道**：
-// 守卫单调裁决（拒绝/放行），钩子可改写（裁剪结果、环绕派发、裁决调用）。
+// 守卫单调裁决（拒绝/放行），钩子可改写（环绕派发、裁决调用；结果截断由
+// 框架的 TruncateHook 在 main 里另装）。
 //
-// 这里演示三件事：
+// 这里演示两件事：
 //  1. pre-execute：只观测即将执行的调用（不改载荷——载荷对钩子冻结）；
-//  2. tool/execute：环绕派发，打印耗时（真实执行发生在钩子之间）；
-//  3. post-execute：把过长的结果裁剪（钩子最典型的用途）。
+//  2. tool/execute：环绕派发，打印耗时（真实执行发生在钩子之间）。
 //
 // 载荷冻结是刻意的：钩子**改不了**工具名/参数/CallID，所以它无法绕过策略；
 // 要修正入参请在工具内部做（工具自己 normalize）。
-func mustHooks(trim int, pp *policy.ParamPolicy) *hook.HookBus {
+func mustHooks(pp *policy.ParamPolicy) *hook.HookBus {
 	hb := hook.NewHookBus()
 
 	// 参数级审批钩子**放最前**：ask 决策会短路后面的钩子——被拦下的调用
@@ -440,16 +512,6 @@ func mustHooks(trim int, pp *policy.ParamPolicy) *hook.HookBus {
 		return out, err
 	})
 
-	if trim > 0 {
-		hb.On(hook.HookToolPostExecute, func(ctx context.Context, ev *hook.HookEvent, next hook.Next) (*hook.HookEvent, error) {
-			out, err := next(ctx, ev)
-			if len(out.ResultText) > trim {
-				orig := len(out.ResultText)
-				out.ResultText = out.ResultText[:trim] + fmt.Sprintf("…（已裁剪，原 %d 字节）", orig)
-			}
-			return out, err
-		})
-	}
 	return hb
 }
 

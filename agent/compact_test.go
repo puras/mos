@@ -55,10 +55,13 @@ func TestShouldCompact(t *testing.T) {
 	if !c.ShouldCompact(100000 - 16384 + 1) {
 		t.Fatal("超预算应触发")
 	}
-	// 未配置窗口 = 永不自动触发（fail-closed）
-	noWindow := NewLLMCompactor(&fakeModel{}, CompactorConfig{})
-	if noWindow.ShouldCompact(1 << 30) {
-		t.Fatal("无窗口不该触发")
+	// 未配置窗口 = 默认 128K（宁早勿溢出；更小的模型必须显式配置）
+	def := NewLLMCompactor(&fakeModel{}, CompactorConfig{})
+	if def.cfg.ContextWindow != DefaultContextWindow || DefaultContextWindow != 128*1024 {
+		t.Fatalf("默认窗口应为 128K: %d", def.cfg.ContextWindow)
+	}
+	if !def.ShouldCompact(128*1024-16384+1) || def.ShouldCompact(1000) {
+		t.Fatal("默认窗口的阈值不对")
 	}
 }
 

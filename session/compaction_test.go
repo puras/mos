@@ -93,11 +93,13 @@ func TestSessionContextTokens(t *testing.T) {
 	_, _ = s.Append(Event{Kind: EventTurnStart})
 	_, _ = s.Append(Event{Kind: EventUser, Text: strings.Repeat("a", 400)})
 	_, _ = s.Append(Event{Kind: EventAssistant, Text: "ok", Usage: &llm.Usage{TotalTokens: 500}})
-	// 用量之后追加 200 字符 → 估算 50 tokens
+	// 用量之后追加 200 字符的输入 + 一条 tool/call 审计事件（后者不进投影，
+	// 不该被计入——工具调用已随 assistant 的 ToolCalls 计过）
 	_, _ = s.Append(Event{Kind: EventUser, Text: strings.Repeat("b", 200)})
+	_, _ = s.Append(Event{Kind: EventToolCall, ToolCall: &llm.ToolCall{Name: "x", Args: `{"a":"bbbbbbbbbb"}`}})
 
 	if got := s.ContextTokens(); got != 550 {
-		t.Fatalf("ContextTokens = %d, want 500 + 50", got)
+		t.Fatalf("ContextTokens = %d, want 550（tool/call 审计事件不计）", got)
 	}
 
 	// 分项求和兜底（total 缺失时）：fresh + cacheRead + cacheWrite + completion

@@ -345,7 +345,7 @@ llm.WithRetry(model, llm.RetryPolicy{
 **截断**（`agent.ResultTruncator` → `TruncateHook` 挂 `tool/post-execute`）：行/字节双限（默认 2000 行 / **50KB**，PI 的 `DEFAULT_MAX_LINES/DEFAULT_MAX_BYTES` 同款），按工具定向保留——`read_file` 留头、`shell` 留尾、其余两头各半（PI 的 `truncateHead/Tail` 同构）；只保留整行，字节预算在行级保不住时落到 UTF-8 安全的字节截断（对位 PI 的 `truncateMiddle`）。截断说明带**保留区间**（"保留第 1–10 行（共 100 行）"，PI 续读提示同款信息）与全文落盘路径（逃生通道：宿主指定目录，必须在文件 jail 可读根内；落盘失败诚实降级）。
 
 **压缩**（`agent.LLMCompactor`，PI compaction 的移植）：
-- **触发**：`contextTokens > contextWindow - reserveTokens`（默认预留 16384）。token 估算两段式：优先用最后一次模型调用的**真实用量**（total，或分项之和），其后新增事件按 chars/4 估算（PI 的 `calculateContextTokens` + `estimateTokens` 同款）；ContextWindow 未配置 = 永不自动触发（fail-closed）。
+- **触发**：`contextTokens > contextWindow - reserveTokens`（默认预留 16384）。token 估算两段式：**基座是真实值**——最后一次模型调用的返回用量（total，或分项之和），其后新增事件按 chars/4 估算（要等下一次调用返回才有权威数字）；完全没有用量记录时（网关不给 usage）全量估算（PI 的 `calculateContextTokens` + `estimateTokens` 同款）。ContextWindow 未配置时取默认 **128K**（`DefaultContextWindow`）：现代模型普遍 ≥128K，宁早勿溢出；确切窗口更小的模型必须显式配置。
 - **时机**：每次决策前（PI 同款：工具结果追加之后、下一次模型响应之前）。
 - **切割**（PI 的 `findCutPoint`）：从尾部按估算累计到 `keepRecentTokens`（默认 20000）；切割点取超预算处**之后最近的合法切割点**——合法 = user/assistant 消息，**绝不是 tool 结果**（保留段不能以孤儿回执开头，投影对服务商非法）。无可摘要段时不压缩。
 - **摘要**：被压缩历史序列化为纯文本（`[User]: / [Assistant]: / [Assistant tool calls]: / [Tool result]:`；工具结果截到 2000 字符、思维链省略——摘要请求不应大于被总结的上下文），包进 `<conversation>`，附 `<previous-summary>`（迭代压缩）并换用"更新既有摘要"提示词；系统提示明令禁止续写对话；模型试图调用工具即报错。全部提示词逐字移植自 PI。
