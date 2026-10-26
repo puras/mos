@@ -428,3 +428,39 @@ func TestTotalUsageDistinguishesCache(t *testing.T) {
 		t.Fatalf("Reasoning = %d, want 2", u.Details.Output.Reasoning)
 	}
 }
+
+// 不变式：**分项之和 = 总计**，两个协议口径都要成立——
+//   - OpenAI：prompt 含缓存 → total = prompt + completion；
+//     拆开就是 新鲜输入 + 缓存读 + 输出。
+//   - Anthropic：input 不含缓存 → total = input + 缓存写 + 缓存读 + 输出。
+//
+// 显示是"输入/缓存读/缓存写/输出/共"，若分项和 ≠ 共，用户看到的账就平不了。
+func TestTotalUsagePartsSumToTotal(t *testing.T) {
+	cases := []struct {
+		name string
+		ev   llm.Usage
+	}{
+		{"OpenAI 口径", llm.Usage{
+			// prompt=1086（含 186 缓存命中）→ fresh=900
+			PromptTokens: 1086, FreshInputTokens: 900, CompletionTokens: 84, TotalTokens: 1170,
+			Details: llm.UsageDetails{Input: llm.InputTokenDetails{CacheRead: 186}},
+		}},
+		{"Anthropic 口径", llm.Usage{
+			// input=900（不含缓存）→ 缓存写 3 + 缓存读 186 + 输出 84
+			PromptTokens: 900, FreshInputTokens: 900, CompletionTokens: 84, TotalTokens: 1173,
+			Details: llm.UsageDetails{Input: llm.InputTokenDetails{CacheRead: 186, CacheWrite: 3}},
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			sess := New("t", nil)
+			mustAppend(t, sess, Event{Kind: EventAssistant, Turn: 1, Usage: &c.ev})
+			u := sess.TotalUsage()
+			sum := u.FreshInput() + u.Details.Input.CacheRead +
+				u.Details.Input.CacheWrite + u.CompletionTokens
+			if sum != u.TotalTokens {
+				t.Fatalf("分项和 %d ≠ 总计 %d（%+v）", sum, u.TotalTokens, u)
+			}
+		})
+	}
+}

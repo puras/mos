@@ -245,13 +245,15 @@ func main() {
 		// 区分开：输入（去缓存口径）/ 缓存读 / 缓存写 / 输出 / 共。
 		// 缓存命中单列，才看得出"这次省了多少"（Anthropic 的输入本就不含
 		// 缓存，OpenAI 的含——统一用去缓存口径才跨协议可比）。
-		hit := ""
+		// 括号里用"，"分隔：可选的"缓存命中 xx%" + 轮次
+		parts := []string{}
 		if u.Details.Input.CacheRead > 0 {
-			hit = fmt.Sprintf("，缓存命中 %.0f%%", u.CacheHitRatio()*100)
+			parts = append(parts, fmt.Sprintf("缓存命中 %.0f%%", u.CacheHitRatio()*100))
 		}
-		fmt.Printf("  [tokens] 会话累计 输入 %d / 缓存读 %d / 缓存写 %d / 输出 %d / 共 %d（%s第 %d 轮）\n",
+		parts = append(parts, fmt.Sprintf("第 %d 轮", sess.NextTurn()-1))
+		fmt.Printf("  [tokens] 会话累计 输入 %d / 缓存读 %d / 缓存写 %d / 输出 %d / 共 %d（%s）\n",
 			u.FreshInput(), u.Details.Input.CacheRead, u.Details.Input.CacheWrite,
-			u.CompletionTokens, u.TotalTokens, hit, sess.NextTurn()-1)
+			u.CompletionTokens, u.TotalTokens, strings.Join(parts, "，"))
 	}
 }
 

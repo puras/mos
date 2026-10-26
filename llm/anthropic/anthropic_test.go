@@ -603,3 +603,38 @@ func TestChatStreamUsageMergesBothEvents(t *testing.T) {
 		t.Fatalf("FinishReason = %q", resp.FinishReason)
 	}
 }
+
+// Anthropic 口径的自洽性：input 不含缓存 → total = 输入 + 缓存写 + 缓存读 + 输出。
+// 适配器合并 message_start/message_delta 后必须仍然成立。
+func TestChatStreamUsagePartsSumToTotal(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"message_start","message":{"role":"assistant","usage":{"input_tokens":900,"cache_creation_input_tokens":3,"cache_read_input_tokens":186,"output_tokens":0}}}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`,
+		`data: {"type":"content_block_stop","index":0}`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":900,"output_tokens":84}}`,
+		`data: {"type":"message_stop"}`,
+	}, "\n")
+
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse)
+	})
+	defer srv.Close()
+
+	resp, err := p.ChatStream(context.Background(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+	}, func(c llm.StreamChunk) error { return nil })
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	u := resp.Usage
+	sum := u.FreshInput() + u.Details.Input.CacheRead +
+		u.Details.Input.CacheWrite + u.CompletionTokens
+	if sum != u.TotalTokens {
+		t.Fatalf("分项和 %d ≠ 总计 %d（%+v）", sum, u.TotalTokens, u)
+	}
+	if u.TotalTokens != 1173 {
+		t.Fatalf("TotalTokens = %d, want 1173（900+3+186+84）", u.TotalTokens)
+	}
+}
