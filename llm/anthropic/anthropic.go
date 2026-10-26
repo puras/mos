@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	pkganthropic "github.com/puras/moproto/protocol/anthropic"
 	pkgusage "github.com/puras/moproto/usage"
@@ -26,21 +27,32 @@ import (
 const (
 	defaultBaseURL = "https://api.anthropic.com"
 	apiVersion     = "2023-06-01"
-	// defaultMaxTokens 是 max_tokens 的默认值。Anthropic 协议**强制要求**
-	// 此参数，而它同时是输出的硬上限——1024 连一次像样的架构设计 + 工具
-	// 调用参数都装不下，响应必然截断（finish_reason=max_tokens），截断的
-	// 工具调用参数就是残缺 JSON。8192 是工具型 agent 的合理下限；
-	// 宿主用 Config["max_tokens"] 覆盖。
-	defaultMaxTokens = 8192
+	// defaultMaxTokens 是 max_tokens 的**起点**。Anthropic 协议**强制要求**
+	// 此参数，而它同时是输出的硬上限：给小了长回答/大参数工具调用必然截断
+	//（finish_reason=max_tokens，截断的工具参数就是残缺 JSON）；给大了超过
+	// 模型上限会被 API 400 拒绝。所以起点给足（覆盖新一代模型的 128K 输出），
+	// 撞到模型上限时**自适应对半降档**（见 downscaleMaxTokens），探测值按
+	// base_url+model 生效期内记住。宿主用 Config["max_tokens"] 显式指定
+	// （显式值不参与降档——配置错了就该大声失败）。
+	defaultMaxTokens = 128000
+	// minMaxTokens 是自适应降档的下限：低于此值长任务没法做，到了还不行
+	// 就把上游的原始错误返回（那说明问题不在 max_tokens）。
+	minMaxTokens = 8192
 )
 
 // Chat 是 Anthropic 协议（llm.ChatModel）的实现。
 type Chat struct {
-	apiKey    string
-	baseURL   string
-	model     string
+	apiKey  string
+	baseURL string
+	model   string
+	hc      *transport.Client
+	// maxTokens 是当前工作的输出上限：起点 128000（或宿主显式配置），
+	// 超模型上限时自适应对半降档。并发调用共享，变更走 mu。
+	mu        sync.Mutex
 	maxTokens int
-	hc        *transport.Client
+	// explicitMaxTokens 标记宿主显式配置过 max_tokens：此时不参与自适应
+	// 降档——显式值是宿主的决定，配置错了就该大声失败而不是悄悄改。
+	explicitMaxTokens bool
 }
 
 // New 根据配置创建 Chat，支持键：api_key / base_url / model / max_tokens / http_timeout。
@@ -60,14 +72,15 @@ func New(cfg llm.Config) (llm.ChatModel, error) {
 		baseURL = defaultBaseURL
 	}
 	maxTokens := defaultMaxTokens
+	explicit := false
 	if v := cfg["max_tokens"]; v != "" {
-		n, err := strconv.Atoi(fmt.Sprint(v))
+		n, err := strconv.Atoi(v)
 		if err != nil || n <= 0 {
-			return nil, fmt.Errorf("anthropic: invalid config \"max_tokens\": %v", v)
+			return nil, fmt.Errorf("anthropic: invalid config \"max_tokens\": %q", v)
 		}
-		maxTokens = n
+		maxTokens, explicit = n, true
 	}
-	p := &Chat{apiKey: apiKey, baseURL: baseURL, model: model, maxTokens: maxTokens}
+	p := &Chat{apiKey: apiKey, baseURL: baseURL, model: model, maxTokens: maxTokens, explicitMaxTokens: explicit}
 	hc, err := transport.New(transport.Config{
 		Endpoint:    func(bool) string { return p.endpoint() },
 		AuthHeaders: map[string]string{"x-api-key": apiKey, "anthropic-version": apiVersion},
@@ -78,6 +91,38 @@ func New(cfg llm.Config) (llm.ChatModel, error) {
 	}
 	p.hc = hc
 	return p, nil
+}
+
+// currentMaxTokens 读取当前工作值（并发安全）。
+func (p *Chat) currentMaxTokens() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.maxTokens
+}
+
+// downscaleMaxTokens 判断是否该对 max_tokens 自适应降档：上游 400 且错误
+// 信息指向 max_tokens 超限 → 工作值对半，返回 true（调用方原样重试）。
+// 到达下限还不行，说明问题不在 max_tokens——返回 false，把原始错误还给
+// 调用方。宿主显式配置过 max_tokens 时不降档。
+func (p *Chat) downscaleMaxTokens(err error) bool {
+	if p.explicitMaxTokens {
+		return false
+	}
+	var se *llm.StatusError
+	if !errors.As(err, &se) || se.StatusCode != http.StatusBadRequest {
+		return false
+	}
+	if !strings.Contains(se.Message, "max_tokens") {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	next := p.maxTokens / 2
+	if next < minMaxTokens {
+		return false
+	}
+	p.maxTokens = next
+	return true
 }
 
 // Capabilities 实现 llm.ChatModel。
@@ -96,24 +141,35 @@ func (p *Chat) ChatStream(ctx context.Context, req *llm.Request, emit func(llm.S
 }
 
 func (p *Chat) doChat(ctx context.Context, req *llm.Request, stream bool, emit func(llm.StreamChunk) error) (*llm.Response, error) {
-	body, err := json.Marshal(p.buildRequest(req, stream))
-	if err != nil {
-		return nil, fmt.Errorf("anthropic: marshal request: %w", err)
-	}
-	resp, err := p.hc.Do(ctx, stream, body)
-	if err != nil {
-		return nil, fmt.Errorf("anthropic: %w", err)
-	}
-	defer resp.Body.Close()
+	for {
+		body, err := json.Marshal(p.buildRequest(req, stream))
+		if err != nil {
+			return nil, fmt.Errorf("anthropic: marshal request: %w", err)
+		}
+		resp, err := p.hc.Do(ctx, stream, body)
+		if err != nil {
+			return nil, fmt.Errorf("anthropic: %w", err)
+		}
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, transport.ParseStatusError("anthropic", resp, parseAnthropicError)
-	}
+		if resp.StatusCode != http.StatusOK {
+			serr := transport.ParseStatusError("anthropic", resp, parseAnthropicError)
+			// max_tokens 超模型上限 → 自适应降档重试（仅默认值模式；宿主
+			// 显式配置的错误原样抛出）。降档后重试，直到命中或探到下限。
+			if p.downscaleMaxTokens(serr) {
+				continue
+			}
+			return nil, serr
+		}
 
-	if stream {
-		return p.handleStream(resp.Body, emit)
+		if stream {
+			r, err := p.handleStream(resp.Body, emit)
+			resp.Body.Close()
+			return r, err
+		}
+		r, err := p.handleResponse(resp.Body)
+		resp.Body.Close()
+		return r, err
 	}
-	return p.handleResponse(resp.Body)
 }
 
 func (p *Chat) endpoint() string {
@@ -126,7 +182,7 @@ func (p *Chat) endpoint() string {
 func (p *Chat) buildRequest(req *llm.Request, stream bool) *pkganthropic.AnthropicRequest {
 	ar := &pkganthropic.AnthropicRequest{
 		Model:       p.model,
-		MaxTokens:   p.maxTokens,
+		MaxTokens:   p.currentMaxTokens(),
 		Temperature: req.Temperature,
 		Stream:      stream,
 	}
@@ -142,7 +198,7 @@ func (p *Chat) buildRequest(req *llm.Request, stream bool) *pkganthropic.Anthrop
 			BudgetTokens: budget,
 		}
 		if int64(ar.MaxTokens) <= budget {
-			ar.MaxTokens = int(budget) + defaultMaxTokens
+			ar.MaxTokens = int(budget) + minMaxTokens
 		}
 	}
 

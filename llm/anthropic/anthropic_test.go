@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/puras/mos/llm"
@@ -277,12 +278,12 @@ func TestChatThinkingRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
-	// high → budget 16384；默认 max_tokens 8192 <= budget，应提升为 16384+8192。
+	// high → budget 16384；起点 128000 > budget，无需提升。
 	if !strings.Contains(gotBody, `"thinking":{"type":"enabled","budget_tokens":16384}`) {
 		t.Fatalf("request body missing thinking config:\n%s", gotBody)
 	}
-	if !strings.Contains(gotBody, `"max_tokens":24576`) {
-		t.Fatalf("max_tokens should be raised above budget:\n%s", gotBody)
+	if !strings.Contains(gotBody, `"max_tokens":128000`) {
+		t.Fatalf("max_tokens should stay above budget:\n%s", gotBody)
 	}
 
 	// 显式 max_tokens 已高于 budget 时保持不动。
@@ -419,8 +420,62 @@ func TestMaxTokensFromConfig(t *testing.T) {
 	if _, err := p.Chat(context.Background(), &llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}}}); err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
-	// 未配置 → 默认 8192（工具型 agent 的合理下限）
-	if !strings.Contains(gotBody, `"max_tokens":8192`) {
-		t.Fatalf("默认 max_tokens 应为 8192:\n%s", gotBody)
+	// 未配置 → 起点 128000（撞到模型上限会自适应降档，见 TestMaxTokensAdaptiveDowngrade）
+	if !strings.Contains(gotBody, `"max_tokens":128000`) {
+		t.Fatalf("默认 max_tokens 应为 128000:\n%s", gotBody)
+	}
+}
+
+// 自适应降档：起点 128000 超模型上限 → 400（信息含 max_tokens）→ 对半重试
+// → 命中后按工作值继续；宿主显式配置时不降档（配置错了就大声失败）。
+func TestMaxTokensAdaptiveDowngrade(t *testing.T) {
+	var calls int32
+	var secondBody string
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		n := atomic.AddInt32(&calls, 1)
+		if n == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens: 128000 > 64000, which is the maximum allowed number of output tokens"}}`)
+			return
+		}
+		secondBody = string(b)
+		_, _ = io.WriteString(w, `{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	})
+	defer srv.Close()
+
+	resp, err := p.Chat(context.Background(), &llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}}})
+	if err != nil {
+		t.Fatalf("降档后应成功: %v", err)
+	}
+	if resp == nil || resp.Message.Content != "ok" {
+		t.Fatalf("resp = %+v", resp)
+	}
+	if !strings.Contains(secondBody, `"max_tokens":64000`) {
+		t.Fatalf("重试应对半降到 64000:\n%s", secondBody)
+	}
+
+	// 探测值被记住：后续请求直接用 64000，不再撞 400
+	calls0 := atomic.LoadInt32(&calls)
+	if _, err := p.Chat(context.Background(), &llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: "again"}}}); err != nil {
+		t.Fatalf("后续请求: %v", err)
+	}
+	if atomic.LoadInt32(&calls) != calls0+1 {
+		t.Fatal("记住探测值后不应再撞 400")
+	}
+
+	// 显式配置：同样超限，但不降档——错误原样抛出
+	srv2Handler := func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens: 4096 > 2048"}}`)
+	}
+	srv2 := httptest.NewServer(http.HandlerFunc(srv2Handler))
+	defer srv2.Close()
+	p2g, err := New(llm.Config{"api_key": "k", "model": "m", "base_url": srv2.URL, "max_tokens": "4096"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := p2g.Chat(context.Background(), &llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}}}); err == nil {
+		t.Fatal("显式配置超限应原样报错")
 	}
 }
