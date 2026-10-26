@@ -20,8 +20,8 @@
 // 行为与未注入完全一致——不装扩展点的用户不付任何代价。
 //
 // 目录预算制：HookKind 是有预算的枚举，新增一种前先删一种。归档实现里的
-// `request`（预留、无消费者）已删；doomloop（重复调用检测）属 S6，届时随
-// turn-stopping 一并落地。
+// `request`（预留、无消费者）与 `turn-stopping`（S6 未用到终止钩子）均已删——
+// 没有消费者的环节不是扩展点，是债务；首个消费者出现时再加回。
 //
 // 三个 tool/* 环节的职责（S5e 接线）：
 //   - tool/pre-execute  裁决一次调用（允许/拒绝/请求确认/终止本轮），不改载荷；
@@ -42,7 +42,8 @@ import (
 type HookKind string
 
 const (
-	// HookPreStep 改写模型输入（压缩 / RAG / 注入）——S6 消费。
+	// HookPreStep 改写模型输入（RAG / 注入 / 预算监控）——S6 接线：驱动在
+	// 每次决策前跑一遍 pre-step 瀑布（压缩由框架先做，宿主钩子改写其结果）。
 	HookPreStep HookKind = "pre-step"
 	// HookToolPreExecute 裁决一次工具调用（允许 / 拒绝 / 请求审批 / 终止本轮）——S5e 消费。
 	// 载荷（工具名 / 参数 / CallID）对钩子**不可变**：钩子只做决策，不改调用。
@@ -53,8 +54,6 @@ const (
 	// HookToolPostExecute 改写结果文本（裁剪 / 脱敏）——S5e 消费。
 	// 可把成功改成失败（发现问题就报错），不可把失败洗成成功。
 	HookToolPostExecute HookKind = "tool/post-execute"
-	// HookTurnStopping 终止判定（串行，无 next）——S6 消费。
-	HookTurnStopping HookKind = "turn-stopping"
 )
 
 // DecisionKind 是 pre-execute 环节的裁决种类（对齐 DSH 的 PreToolDecision）。

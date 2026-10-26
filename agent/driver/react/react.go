@@ -15,9 +15,11 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/puras/mos/agent"
 	"github.com/puras/mos/agent/approval"
 	"github.com/puras/mos/agent/driver"
 	"github.com/puras/mos/agent/execpath"
+	"github.com/puras/mos/agent/hook"
 	"github.com/puras/mos/llm"
 	"github.com/puras/mos/planner"
 	"github.com/puras/mos/session"
@@ -28,15 +30,12 @@ var ErrToolsUnsupported = errors.New("react: 模型请求工具调用，但 RunC
 
 // ErrMaxDecisionRounds 表示单轮内决策次数耗尽仍未产出最终作答。
 //
-// 上限可配（RunContext.MaxDecisionRounds，默认 128）。这是**保险丝**而非
-// 正常路径：空转应由连续相同调用的提醒（advisory）打断，而不是烧到上限。
+// 仅当宿主显式设置了 MaxDecisionRounds（>0）才可能发生；<=0 = 不限
+// （S6 起的默认：上下文增长由压缩接管）。这是**保险丝**而非正常路径：
+// 空转应由连续相同调用的提醒（advisory）打断，而不是烧到上限。
 var ErrMaxDecisionRounds = errors.New("react: 单轮决策次数超出上限（工具可能在空转）")
 
 const (
-	// defaultMaxDecisionRounds 是单 turn 内允许的最大决策次数（含最终作答）。
-	// S6 的 compaction 落地后计划放开为不限（对齐 PI/DSH），旋钮保留。
-	defaultMaxDecisionRounds = 128
-
 	// repeatRemindAt 与 repeatRemindEvery 控制连续相同调用的提醒节奏：
 	// 第 3 次起提醒，之后每 3 次再提一次（advisory，不 veto——DSH 的
 	// repeat-tool-reminder 同一哲学：空转靠提醒模型改变策略，不靠硬杀）。
@@ -68,19 +67,16 @@ func (d *Driver) Run(ctx context.Context, rt *driver.RunContext, sess *session.S
 		defs = rt.Tools.List()
 	}
 
-	maxRounds := rt.MaxDecisionRounds
-	if maxRounds <= 0 {
-		maxRounds = defaultMaxDecisionRounds
-	}
+	maxRounds := rt.MaxDecisionRounds // <=0 = 不限（压缩接管上下文增长）
 
-	// 连续相同调用检测（S6 DoomLoopGuard 的最小版，advisory）：同一
+	// 连续相同调用检测（DoomLoopGuard 最小版，advisory）：同一
 	// (tool, args) 连续出现达阈值时，在该次 tool/result 末尾附加提醒，
 	// 让模型改变策略或向用户说明。不拦、不改——只提醒。
 	var lastCallKey string
 	var repeats int
 
-	for round := 0; round < maxRounds; round++ {
-		action, err := decide(ctx, rt, sess, defs)
+	for round := 0; maxRounds <= 0 || round < maxRounds; round++ {
+		action, err := decide(ctx, rt, sess, turn, defs)
 		if err != nil {
 			return "", d.abort(sess, turn, err)
 		}
@@ -277,8 +273,36 @@ func appendAssistant(sess *session.Session, turn int, action planner.Action) err
 // decide 按 rt.Stream 选择流式或非流式决策路径，把工具定义一并交给决策器
 // （模型据此得知有哪些工具可用）。流式增量经 rt.OnChunk 实时透出，
 // 推理增量以 reasoning=true 标记。
-func decide(ctx context.Context, rt *driver.RunContext, sess *session.Session, defs []llm.Tool) (planner.Action, error) {
+//
+// 决策前的两步上下文工程（S6，顺序固定）：
+//
+//  1. 压缩（框架行为）：装配了 Compactor 且历史超预算时，旧消息让位给
+//     TaskState 快照——状态从事件日志派生，事实只认审计门信任的工具；
+//  2. pre-step 瀑布（宿主钩子）：对压缩后的输入做 RAG / 注入等改写。
+//
+// 压缩刻意不做进钩子：它要读会话日志派生状态，而钩子总线在装配期注册、
+// 会话到运行期才确定——框架自己的行为不必假道扩展点。两条都是零开销降级
+// （Compactor / Hooks 为 nil 时与未注入完全一致）。
+func decide(ctx context.Context, rt *driver.RunContext, sess *session.Session, turn int, defs []llm.Tool) (planner.Action, error) {
 	history := rt.History(sess)
+	if rt.Compactor != nil {
+		state := session.DeriveTaskState(sess.Events(), agent.TrustedOf(rt.Auditor))
+		if after, ok := rt.Compactor.Compact(history, state); ok {
+			history = after
+		}
+	}
+	if rt.Hooks != nil {
+		ev, err := rt.Hooks.Waterfall(ctx, &hook.HookEvent{
+			Kind: hook.HookPreStep, Messages: history, Turn: turn,
+		})
+		if err != nil {
+			return planner.Action{}, fmt.Errorf("react: pre-step 钩子: %w", err)
+		}
+		if ev == nil {
+			return planner.Action{}, fmt.Errorf("react: pre-step 钩子: %w", hook.ErrNilHookEvent)
+		}
+		history = ev.Messages
+	}
 	sp, streaming := rt.Planner.(planner.StreamingPlanner)
 	if !rt.Stream || !streaming {
 		return rt.Planner.NextAction(ctx, history, defs)

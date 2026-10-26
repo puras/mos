@@ -38,7 +38,7 @@
 | `agent/policy` | 工具名级策略：fail-closed 黑白名单 + YAML 装配 | 移植裁剪 | S5c ✅ |
 | `filesystem` | 文件 jail：宿主声明可读/可写根 + Lexical/Realpath 双层校验 | 移植裁剪 | S5d ✅ |
 | `sandbox` | 进程隔离：超时 + 进程组击杀 + 输出上限 + 资源限制 + 环境裁剪 | 移植裁剪 | S5f-1 ✅ |
-| `agent`（上下文件） | 截断、压缩、Auditor | 重写瘦身 | S6 |
+| `agent`（上下文件） | 截断、压缩、Auditor | 重写瘦身 | S6 ✅ |
 | `assistant` | 一行装配 + 示例 CLI | 重写 | S7 |
 
 > S3 边界：`tool/builtin` 只带 `current_time`（无安全副作用）。涉及文件与命令执行的
@@ -60,7 +60,7 @@
 - **分项之和 = 总计（按协议各自的口径）**：OpenAI 的 prompt **含**缓存命中 → `total = prompt + completion`；Anthropic 的 input **不含**缓存 → `total = input + 缓存写 + 缓存读 + 输出`。MoS 的显示统一拆成"新鲜输入 / 缓存读 / 缓存写 / 输出 / 共"，两种协议下**分项之和都等于总计**（session 与适配器都有不变式测试守着）。
 - **用量口径统一在 `FreshInputTokens`**：`Usage.PromptTokens` 是**协议原始值**（OpenAI/Gemini 含缓存命中、Anthropic 不含），跨协议不可比；`FreshInputTokens` 是**去缓存后的计费输入**（各协议同口径，moproto 已在 `Base.FreshInputTokens` 算好）。会话累计与示例显示都用它，并把**缓存读/缓存写单列**——缓存命中是"省下来的"部分，混在"输入"里就看不出成本结构。**缓存命中率是自算指标**（`Usage.CacheHitRatio()` = cache_read / (新鲜输入 + cache_read)）：提供商不直接给，分母必须用去缓存口径的输入（否则两个协议下同一个百分比含义不同），缓存写入不计入命中。
 - **流完整性检查（按协议结束标记，不按结束原因）**：适配器判定"流是否完整"看**协议的结束标记**——Anthropic 的 `message_stop`、OpenAI 的 `[DONE]`；结束**原因**（`stop_reason` / `finish_reason`）只是附加信息。两者都没有 = 流被掐断 → `ErrStreamTruncated`（半截文本 + 残缺工具参数不能当正常响应）。**为什么不能只看结束原因**：实测自建的 anthropic 兼容网关只发 `message_stop`、不发 `message_delta`（无 `stop_reason`、无最终 usage）——只看结束原因会把该网关的**所有**正常流误判成截断。Gemini 协议无独立结束标记（只有 `finishReason`），故检查更严，宿主可用 `Config["require_finish"]="false"` 关闭；驱动层的截断 fail-closed 也只认**明确的** `length`/`max_tokens`（结束原因未知 ≠ 截断，否则该类部署的工具调用会被全拒）；
-- **内层上限（保险丝，可配）**：单 turn 决策上限 `RunContext.MaxDecisionRounds`（<=0 取默认 **128**）。它只防"循环烧穿"，不是正常路径——空转由**连续相同调用提醒**打断（同一 (tool, args) 连续 3 次起，在 tool/result 末尾附提醒让模型改变策略；advisory 不 veto，DSH `repeat-tool-reminder` 同一哲学）。PI/DSH 均无硬上限（靠 compaction + 软提醒 + 用户中断）；MoS 的 compaction（S6）落地前刻意不给"不限"，落地后计划默认放开为不限、旋钮保留给无人值守场景。
+- **内层上限（保险丝，可配）**：单 turn 决策上限 `RunContext.MaxDecisionRounds`（<=0 = **不限**——S6 压缩落地后的默认，对齐 PI/DSH；旋钮保留给无人值守场景）。它只防"循环烧穿"，不是正常路径——空转由**连续相同调用提醒**打断（同一 (tool, args) 连续 3 次起，在 tool/result 末尾附提醒让模型改变策略；advisory 不 veto，DSH `repeat-tool-reminder` 同一哲学）。设了上限而耗尽时以 `react.ErrMaxDecisionRounds` 诚实报错。
 
 ### 3.2 执行通道契约（S5a 骨架，S5e 补齐）
 
@@ -104,7 +104,7 @@ ExecuteBatch(ctx, reg, calls, opts) []Outcome   // 结果与 calls 严格同序
 - **编排顺序（不变式 5）**：工具执行时先 `GuardBus.Allow` 再进 `HookBus.Waterfall`；守卫不持有钩子总线，二者互不引用——「钩子绕过守卫」在结构上不成立（`TestGuardVerdictNotBypassableByHooks` 锁定该性质）。
 - **载荷冻结（S5e 补强）**：钩子**不能**改写工具名 / 参数 / CallID（改写即违约，调用被拒）。于是「守卫看到的是改写前的载荷」与「守卫判定的就是最终载荷」**同时成立**——不需要复检，守卫只跑一次。这是 PI 与 DSH 独立收敛的共识：载荷不可由钩子改写，守卫判定才恒有效。
 - **零开销降级（不变式 6）**：两条总线均可为 nil；nil 上的注册返回 no-op 移除函数，调用直接透传（Hook 原样返回载荷，Guard 一律放行）。未装扩展点的用户不付任何代价。
-- **目录预算制（治理规则 2）**：`HookKind` 有预算，新增一种前先删一种。当前目录：`pre-step`、`tool/pre-execute`、`tool/execute`、`tool/post-execute`、`turn-stopping`——每个都注明了消费它的切片。归档实现里的 `request`（预留、无消费者）已删；`doomloop`（重复调用检测）属 S6，届时随 `turn-stopping` 落地。
+- **目录预算制（治理规则 2）**：`HookKind` 有预算，新增一种前先删一种。当前目录：`pre-step`（S6 接线：驱动在每次决策前跑瀑布）、`tool/pre-execute`、`tool/execute`、`tool/post-execute`——每个都注明了消费它的切片。归档实现里的 `request`（预留、无消费者）与 `turn-stopping`（S6 未消费到）均已删——没有消费者的环节不是扩展点，是债务；首个消费者出现时再加回。
 - **健壮性**：钩子返回 `(nil, nil)` 显式报 `ErrNilHookEvent` 而不是把 nil 传下去崩在下游——坏插件不许带崩整条链；注册与执行并发安全（执行前快照钩子链）。
 - **接线点（S5e 全部接上）**：守卫由 `execpath.ExecuteBatch` 的 preflight 调 `GuardBus.Allow`，拒绝项不执行并以 `IsError` 回填；钩子总线 `HookBus` 的三个 `tool/*` 环节全部接线——`tool/pre-execute` 裁决调用、`tool/execute` 环绕派发、`tool/post-execute` 改写结果文本。驱动把 `RunContext.Guards` / `RunContext.Hooks` / `RunContext.Concurrency` 与轮次一并传入。
 - **决策词汇（S5e）**：pre-execute 钩子返回 `Decision`：允许（默认）/ 拒绝 / 请求确认（无审批通道时 fail-closed 拒绝，S5g 落地审批后改为挂起）/ 终止本轮（该调用拒绝 + 同批后续跳过 + 本轮以 `terminated` 收尾）。链上第一个非 allow 决策生效，下游钩子不再执行。
@@ -336,6 +336,26 @@ llm.WithRetry(model, llm.RetryPolicy{
 - **新建文件不需要先读**（createIfAbsent）——正常创建流程不受影响。
 - **能力由宿主决定**：`FileTools(fsys, gate)`，nil 门 = 旧行为（无条件变更）。
 - **并发与边界**：进程内写/改独占执行（execpath 屏障调度），校验窗口天然串行；**跨进程竞争不设防**（DSH 的 hard-link no-replace 暂未做）——文档写明。
+
+### 3.13 上下文工程（S6：截断 + 压缩 + TaskState/Auditor）
+
+包 `agent`（截断 / 压缩 / 审计门三件套）+ `session.TaskState`（外置可信状态）。上下文是稀缺资源（不变式 4），三件套各管一段：
+
+**TaskState 不存储、从事件日志派生**（`session.DeriveTaskState`）——"日志即事实"（不变式 2）的自然延伸：Goal = 首条用户输入；Facts = 审计门信任工具的**无错** `tool/result`（证据即回填原文，(tool, evidence) 去重）；Status 派生三档（pending / running / completed；blocked 留给 M3，不猜）。Restore 后免费恢复，Persistence 无需感知它的存在。Pending / Blocked 字段是 M3 Manager 角色的预留位。
+
+**审计门**（`agent.Auditor`）：只有环境自证的只读工具（`current_time`、`read_file`）的输出可进 TaskState；变更类（shell、write_file）的输出是"未核实声明"，要进状态需用只读工具二次取证，或宿主 `Trust` 显式扩名单（决策在宿主，机制在框架）。nil 审计门 = 全不信任（fail-closed）——模型自述永远不进状态（不变式 3）。
+
+**截断**（`agent.ResultTruncator` → `TruncateHook` 挂 `tool/post-execute`）：行/字节双限制（默认 2000 行 / 64KB），按工具定向保留——`read_file` 留头（结构在前）、`shell` 留尾（报错在后）、其余两头各半；截断说明带"少了多少"。逃生通道：全文落盘（宿主指定目录，**必须在文件 jail 可读根内**——jail 外的路径是模型兑现不了的承诺），落盘失败诚实降级为"只报截断"。日志落的是截断后的回填——日志记的就是模型实际看到的。
+
+**压缩**（`agent.Compactor`，每个决策轮前重算）：历史超 `KeepRecent`（默认 12）时，旧消息让位给一份摘要 + 最近原样保留。两条不变式：
+- **切割点不切断 ToolCall-Result 对**：保留区首条若是孤儿 tool 结果（调用方被切），切割点前移到成对为止；前移到头（无可丢弃区）就放弃压缩——不拿摘要冒充历史；
+- **摘要 = TaskState 快照，而非 LLM 重新总结**（不变式 4）：已验证事实的投影，不是模型的转述。
+
+压缩是派生行为，无需持久化任何"压缩状态"；`OnCompact` 回调供宿主观测（静默压缩是查不出问题的）。
+
+**决策路径顺序固定**：`History` 投影 → 压缩（框架行为，要读日志派生状态，不经钩子）→ `pre-step` 瀑布（宿主钩子：RAG / 注入等）→ 决策器。两者均零开销降级（Compactor / Hooks 为 nil 时与未注入完全一致）。
+
+**轮次上限放开**：压缩接管上下文增长后，`MaxDecisionRounds <= 0` = 不限（默认，对齐 PI/DSH）；保险丝旋钮保留给无人值守场景。
 
 ## 4. 治理规则（防再膨胀）
 

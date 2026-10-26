@@ -12,6 +12,10 @@ S4b 里程碑示例——智能体经**驱动层循环**与模型对话，模型
 - **路径强制**（macOS）：写限定在工作区内，越界写被**内核**拒绝（`Operation not permitted`）——与命令怎么拼无关，拆解命令绕不过。被隔离命令的缓存/临时目录由宿主指到工作区内（`GOCACHE`/`TMPDIR`）；非 macOS 平台此强制未落地，非全开调用会明确报错
 - 开了 shell 会附带一份**默认系统引导词**（教模型用命令验证）；`MOS_SYSTEM_PROMPT` 可覆盖
 - **写前观察**（S5h）：`write_file` 覆盖没读过的文件、或读后文件已被修改（shell/人改的）→ **拒绝并要求重读**——防丢失更新。新建文件不需要先读
+- **上下文工程**（S6）：
+  - **压缩**（`-keep-recent`，默认 12，0 = 关）：历史超预算时旧消息让位给一份**任务进度摘要**——它是从事件日志派生的 TaskState 快照（已验证事实），不是 LLM 的再总结；切割点不切断 ToolCall-Result 对。压缩发生时在 stderr 打 `[compact]` 一行（摘要 + 丢弃/保留条数）
+  - **结果截断**（`-trim` 字节，0 = 关）：工具结果过大时就地瘦身（read_file 留头、shell 留尾、其余两头各半），全文落 `.mos-trunc/`（在工作区内，`read_file` 可回读）
+  - **审计门**：哪些工具的输出配进摘要由白名单定（`current_time`/`read_file`）；`-trust` 可把自认为输出可作证据的工具加进去
 - **人工审批**（`approval.go`）：pre-execute 的「需人工确认」会在终端问 `[审批] 是否允许执行 shell？[y/N]`——**空回车 = 拒绝**（默认答案必须是安全的那个）。未装配时（`-approval=false`）一律拒绝（fail-closed）。批准只对**本次调用**生效，不缓存
 - **宿主侧参数级规则**（`guard.go`）：按参数判定——敏感文件（`.env` / `id_rsa` / `*.pem`）不读不写（deny），**删除命令**（`rm` / `unlink` / `git rm`，无论带什么 flag）需人工确认（ask）。**规则键在语义上，不在字母形状上**（曾键在"含 r 的 flag"上：`git status --short` 误触发、逐个 `git rm` 漏过，被拒后模型拆解命令绕过了拦截）。诚实边界：`find -delete`、脚本语言仍绕得过——这只是业务规则，真正的边界是路径强制隔离（S5f-2b，未落地）
 - `lab/` 是配套的**练手项目**（独立的 go module，故意留了个逻辑 bug）：让 agent 修好它并跑测试——仓库自己的 `go test ./...` 不受它影响（嵌套 module 被根 module 忽略）
@@ -157,4 +161,5 @@ grep tool/result data/chat-*.jsonl | tail -1
 | 文件沙箱（Lexical + Realpath 双层校验） | `filesystem`、`tool/builtin` |
 | 钩子三环节（裁决 / 环绕 / 结果改写）+ 屏障式并发 | `agent/hook`、`agent/execpath` |
 | 进程沙箱（超时 / 进程组 / 输出上限 / 资源限制 / 环境裁剪） | `sandbox`、`tool/builtin` |
+| 上下文工程（截断 / 压缩 / 审计门 / TaskState 派生） | `agent`、`session` |
 | 会话事件日志 / 消息投影 / 持久化 / Restore | `session` |

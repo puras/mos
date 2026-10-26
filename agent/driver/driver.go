@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/puras/mos/agent"
 	"github.com/puras/mos/agent/approval"
 	"github.com/puras/mos/agent/hook"
 	"github.com/puras/mos/llm"
@@ -52,12 +53,13 @@ type RunContext struct {
 	// 一律独占，所以默认行为仍是串行。并发只影响完成顺序，回填顺序永远是
 	// 模型的调用序。
 	Concurrency int
-	// MaxDecisionRounds 是单轮内决策次数上限（含最终作答）。<=0 用默认 128。
+	// MaxDecisionRounds 是单轮内决策次数上限（含最终作答）。<=0 = 不限
+	// （S6 起**默认不限**：上下文增长已由压缩接管，对齐 PI/DSH；保险丝
+	// 旋钮保留给无人值守场景按需设置）。
 	//
 	// 这是**保险丝**而非正常路径：合法长任务通常 10-40 轮；空转由连续相同
-	// 调用的提醒打断（advisory）。刻意不提供“不限”：S6 的 compaction 落地前，
-	// 无上限的循环会线性撑大上下文；落地后计划默认放开为不限（对齐 PI/DSH），
-	// 此旋钮保留给无人值守场景按需设置。
+	// 调用的提醒（advisory）打断。设了上限而耗尽时，本轮以
+	// react.ErrMaxDecisionRounds 报错收尾，不假装完成。
 	MaxDecisionRounds int
 	// Answerer 是人工审批的应答方（可选，nil = 未装配）。
 	//
@@ -65,6 +67,14 @@ type RunContext struct {
 	// 从另一个进程收决定都行。nil 时，pre-execute 的「需人工确认」降级为
 	// 拒绝（fail-closed）。
 	Answerer approval.Answerer
+	// Compactor 是上下文压缩器（可选，nil = 不压缩）。每次决策前，历史超
+	// 过预算时旧消息让位给 TaskState 快照（已验证事实的投影，不是 LLM 的
+	// 再总结）；切割点不切断 ToolCall-Result 对。
+	Compactor agent.Compactor
+	// Auditor 是审计门（可选，nil = 全不信任——没有事实进 TaskState，
+	// fail-closed）。它裁定哪些工具的输出是环境自证：压缩摘要里的事实、
+	// 以及宿主经 session.DeriveTaskState 做的任何审计，都以它为准。
+	Auditor agent.Auditor
 	// SystemPrompt 是静态系统引导词（可选，作为历史首条消息注入）。
 	SystemPrompt string
 	// Stream 为 true 时优先走决策器的流式接口（若实现），
