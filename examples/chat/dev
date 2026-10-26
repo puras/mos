@@ -1,0 +1,5 @@
+#!/bin/sh
+# MoS chat 开发启动：继续固定会话 + 开 shell 验证回路。
+# 额外参数原样透传（重复的 flag 以后给的为准，如 ./dev -new 可另开新会话）。
+cd "$(dirname "$0")" || exit 1
+exec go run . -session chat-1793025134 -allow-shell "$@"
