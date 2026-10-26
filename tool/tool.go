@@ -43,6 +43,24 @@ type ConcurrencySafe interface {
 	ConcurrencySafe(args json.RawMessage) bool
 }
 
+// Guideline 是可选接口：工具声明「跨调用行为约定」，由装配层注入系统提示词
+// （对齐 DSH 的 tool:* 段——跨调用约定属于提示词，不属于某次调用的 schema）。
+//
+// 分工：**单次调用**怎么传参归 Description（模型构造这条调用时才需要）；
+// **跨调用**的约定（结果标记怎么读、先读后写之类的前置条件）归 Guideline——
+// 判断标准：模型忘掉它会在下一次调用犯错的，才是 Guideline。
+// 文案跟着工具走（工具最懂自己的结果格式），位置由 agent/prompt 统一分配。
+// 返回空串 = 本工具不贡献指引。
+type Guideline interface {
+	Guideline() string
+}
+
+// GuidelineText 是工具指引的搬运值（Registry.Guidelines 的元素类型）。
+type GuidelineText struct {
+	Tool string // 工具名
+	Text string // 指引文本
+}
+
 // Registry 是线程安全的工具注册表。
 type Registry struct {
 	mu    sync.RWMutex
@@ -130,6 +148,26 @@ func (r *Registry) List() []llm.Tool {
 			Description: t.Description(),
 			Parameters:  r.schemas[name],
 		})
+	}
+	return out
+}
+
+// Guidelines 返回已注册工具的跨调用指引（按注册序，稳定；利于 prompt cache）。
+// 未实现 Guideline 的工具、返回空串的指引、被可见性过滤掉的工具都不贡献——
+// 模型看不见的工具，其指引同样不进提示词（与 List() 同一可见性语义）。
+func (r *Registry) Guidelines() []GuidelineText {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []GuidelineText
+	for _, name := range r.order {
+		if r.visible != nil && !r.visible(name) {
+			continue
+		}
+		if gl, ok := r.tools[name].(Guideline); ok {
+			if text := gl.Guideline(); text != "" {
+				out = append(out, GuidelineText{Tool: name, Text: text})
+			}
+		}
 	}
 	return out
 }

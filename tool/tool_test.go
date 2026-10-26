@@ -42,6 +42,19 @@ func (nilTool) Execute(context.Context, json.RawMessage) (any, error) {
 	return nil, nil
 }
 
+// guided 实现 tool.Guideline 的测试工具。
+type guided struct {
+	name, text string
+}
+
+func (g guided) Name() string        { return g.name }
+func (g guided) Description() string { return "带指引的测试工具" }
+func (g guided) Parameters() any     { return &struct{}{} }
+func (g guided) Guideline() string   { return g.text }
+func (g guided) Execute(context.Context, json.RawMessage) (any, error) {
+	return nil, nil
+}
+
 func TestRegistryRegisterAndCall(t *testing.T) {
 	r := NewRegistry()
 	if err := r.Register(calc{}); err != nil {
@@ -113,6 +126,28 @@ func TestRegistryList(t *testing.T) {
 	}
 	if props["a"].(map[string]any)["description"] != "加数" {
 		t.Fatalf("mos desc 未进 schema: %+v", props["a"])
+	}
+}
+
+// Guidelines 只收实现 Guideline 的工具：按注册序、受可见性过滤、
+// 空指引不贡献（与 List() 同一可见性语义）。
+func TestRegistryGuidelines(t *testing.T) {
+	r := NewRegistry()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+	}
+	must(r.Register(guided{name: "alpha", text: "甲的指引"}))
+	must(r.Register(calc{}))                              // 不实现 Guideline
+	must(r.Register(guided{name: "beta", text: ""}))      // 空指引不贡献
+	must(r.Register(guided{name: "gamma", text: "丙的指引"})) // 会被隐藏
+	r.SetVisibility(func(name string) bool { return name != "gamma" })
+
+	got := r.Guidelines()
+	if len(got) != 1 || got[0].Tool != "alpha" || got[0].Text != "甲的指引" {
+		t.Fatalf("Guidelines = %+v, want 仅 alpha 的指引", got)
 	}
 }
 

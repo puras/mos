@@ -57,8 +57,8 @@ type readFileParams struct {
 func (ReadFile) Name() string { return "read_file" }
 
 func (ReadFile) Description() string {
-	// 描述是模型唯一的使用指南（MoS 暂未提供“工具自带的系统提示贡献”通道），
-	// 所以把分段读的正解写在这里：先试一次读完，不够再**并行**补齐。
+	// 跨调用约定（先读后写）走 tool.Guideline 通道（WriteFile.Guideline），
+	// 这里只讲单次调用怎么用：分段读的正解是先试一次读完，不够再**并行**补齐。
 	return "读取文件内容（受工作目录沙箱限制）。按行寻址：offset 是起始行号（从 1 起），" +
 		"limit 是读取行数（默认 2000，另有 50KB 总量上限，先到先算）。" +
 		"文件较大时优先调大 limit 一次读完；" +
@@ -237,6 +237,17 @@ func (WriteFile) Description() string {
 }
 
 func (WriteFile) Parameters() any { return &writeFileParams{} }
+
+// Guideline 实现 tool.Guideline：写前观察门（ObserveGate）开启时，把前置条件
+// 讲在系统提示词里，而不是让模型撞了拒绝才学会——每次拒绝都是一轮浪费的往返。
+// 门未开启时返回空串（不贡献）：没强制不了的事就别承诺。
+func (w *WriteFile) Guideline() string {
+	if w.Gate == nil {
+		return ""
+	}
+	return "覆盖已有文件前必须先 read_file：本会话没读过的文件不允许覆盖（写前观察门会拒绝），" +
+		"读过之后若文件又被改过，需重读后再写。新建文件不需要先读。"
+}
 
 // Execute 实现 tool.Tool.Execute。
 func (w *WriteFile) Execute(ctx context.Context, args json.RawMessage) (any, error) {

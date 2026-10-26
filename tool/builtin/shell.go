@@ -58,6 +58,15 @@ func (Shell) Description() string {
 
 func (Shell) Parameters() any { return &shellParams{} }
 
+// Guideline 实现 tool.Guideline：跨调用约定进系统提示词（DSH 的 tool:bash 段对位）。
+// 这些约定属于**整个会话**的行为（怎么读每次的结果），不是某次调用的参数——
+// 放这里而不是 Description，是为了和 DSH 同构：提示词管跨调用，schema 管单次。
+func (Shell) Guideline() string {
+	return "shell 回执末尾的 [exit code: N] 是命令的真实结局：非零退出码是正常结果，" +
+		"照着输出修就是，不要拼 `; echo \"exit=$?\"` 之类的 hack 把失败掩进输出。" +
+		"回执带 output_path 时说明输出被截断，用 read_file 读它拿全文。"
+}
+
 // Execute 实现 tool.Tool.Execute。
 func (s *Shell) Execute(ctx context.Context, args json.RawMessage) (any, error) {
 	p, err := tool.Parse[shellParams](args)

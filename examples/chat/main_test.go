@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/puras/mos/tool"
+	"github.com/puras/mos/tool/builtin"
 )
 
 // 应用层的策略文件加载：读文件 + 严格解析。框架不碰这两件事，所以覆盖在这里。
@@ -112,5 +115,58 @@ func TestListSessionIDs(t *testing.T) {
 	ids := listSessionIDs(dir)
 	if len(ids) != 2 || ids[0] != "a" || ids[1] != "b" {
 		t.Fatalf("ids = %v, want [a b]", ids)
+	}
+}
+
+// 系统提示词装配的金样例：默认节 + 工具指引 + 部署事实的拼装结果一旦变化
+// 必然可见（提示词是模型行为的一部分，改一个字都该过目）。
+func TestBuildSystemPromptGolden(t *testing.T) {
+	reg := tool.NewRegistry()
+	for _, tl := range builtin.Default() {
+		if err := reg.Register(tl); err != nil {
+			t.Fatalf("注册 %s: %v", tl.Name(), err)
+		}
+	}
+
+	// 不开 shell：默认节 + 工具指引（内置默认工具集都不带指引）
+	got, kind, err := buildSystemPrompt(reg, "/ws", false)
+	if err != nil {
+		t.Fatalf("buildSystemPrompt: %v", err)
+	}
+	want := strings.Join([]string{
+		"你是运行在 MoS 智能体框架里的助手，通过调用工具完成用户交代的任务。",
+		"- 回答简洁直接。\n- 涉及文件时写明路径。",
+	}, "\n\n")
+	if got != want {
+		t.Fatalf("Render =\n%s\nwant\n%s", got, want)
+	}
+	if kind != "分节装配（默认 + 工具指引）" {
+		t.Fatalf("kind = %q", kind)
+	}
+
+	// 开 shell：多出工具指引与部署事实两节，顺序固定（identity → 指引 → runtime）
+	if err := reg.Register(builtin.NewShell(nil)); err != nil {
+		t.Fatalf("注册 shell: %v", err)
+	}
+	got, kind, err = buildSystemPrompt(reg, "/ws", true)
+	if err != nil {
+		t.Fatalf("buildSystemPrompt(shell): %v", err)
+	}
+	if !strings.Contains(kind, "shell 部署事实") {
+		t.Fatalf("kind = %q", kind)
+	}
+	for _, fragment := range []string{
+		"你是运行在 MoS 智能体框架里的助手",
+		"- 回答简洁直接。",
+		"[exit code: N]", // shell 工具自带指引（tool:shell）
+		"工作目录固定为 /ws",    // 部署事实（runtime:shell）
+	} {
+		if !strings.Contains(got, fragment) {
+			t.Fatalf("缺少片段 %q：\n%s", fragment, got)
+		}
+	}
+	// 指引在部署事实之前（OrderToolBase < OrderRuntime）
+	if strings.Index(got, "[exit code: N]") > strings.Index(got, "工作目录固定为") {
+		t.Fatalf("工具指引应先于部署事实：\n%s", got)
 	}
 }
