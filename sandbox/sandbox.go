@@ -181,6 +181,17 @@ type Local struct {
 	NoNet bool
 	// EnvAllow 是环境变量白名单；空用内置白名单。
 	EnvAllow []string
+	// DefaultScope 是默认路径范围（S5f-2b）。nil 时从 WorkDir 派生：
+	// 读 = 写 = WorkDir——**忘了配置 = 只有工作区**，不是全盘（fail-closed 默认）。
+	// Request.PathScope 只能**收窄**（必须是默认范围的子集）；想更宽在装配期
+	// 显式声明（如写根含 "/"——容器场景的正当用法，危险写在脸上）。
+	// 强制后端：darwin 用 Seatbelt；此字段在无后端的平台上使受约束的调用
+	// 直接报错（ErrPathScopeUnsupported），绝不退化成没隔离的假装隔离。
+	DefaultScope *PathScope
+	// Env 是给被隔离命令的**显式环境变量**（宿主注入，覆盖白名单透传的同名项）。
+	// 典型用途：GOCACHE / TMPDIR 指到工作区内——命令要写缓存时，别让它
+	// 因为写不进宿主的缓存目录而失败。
+	Env map[string]string
 	// SpillDir 是输出落盘目录（可选，空 = 只截断不落盘）。
 	// 输出超限时完整输出写入这里（内存只留前 MaxOutput 字节）。
 	// 宿主显式指定：默认的 os.TempDir() 在文件 jail 的可写根之外
@@ -229,9 +240,17 @@ func (s *Local) Run(ctx context.Context, req Request) (Result, error) {
 	if strings.TrimSpace(req.Command) == "" {
 		return Result{}, errors.New("sandbox: 命令不能为空")
 	}
-	// 路径强制范围：Local 没有这个能力 → 明确拒绝，不假装约束了。
-	if req.PathScope != nil {
-		return Result{}, ErrPathScopeUnsupported
+	// 路径强制（S5f-2b）：默认范围 = Local.DefaultScope（nil 则从 WorkDir
+	// 派生）；Request.PathScope 只能收窄。写全开（宿主显式声明写根 "/"）时
+	// 不做样子直接跑；否则套平台后端，后端不可用就报错（fail-closed）。
+	base := []string{"/bin/sh", "-c", s.buildCommand(req.Command)}
+	eff, err := s.effectiveScope(req.PathScope)
+	if err != nil {
+		return Result{}, err
+	}
+	argv, err := wrapPathScope(eff, base)
+	if err != nil {
+		return Result{}, err
 	}
 
 	timeout := s.resolveTimeout(req.Timeout)
@@ -246,7 +265,7 @@ func (s *Local) Run(ctx context.Context, req Request) (Result, error) {
 		}
 	}
 
-	cmd := exec.Command("/bin/sh", "-c", s.buildCommand(req.Command))
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = dir
 	cmd.Env = s.environment()
 	// 进程组：子进程单独成组，超时终止时整组击杀，避免孤儿继续跑
@@ -320,6 +339,8 @@ func (s *Local) buildCommand(command string) string {
 }
 
 // environment 裁剪环境变量：只保留白名单项，避免把主机敏感配置泄给模型执行的命令。
+// Local.Env 里的显式值最后合并（覆盖同名透传项）——宿主注入的少量变量
+// （如 GOCACHE 指向工作区内）优先于从主机透传的值。
 func (s *Local) environment() []string {
 	allow := s.EnvAllow
 	if len(allow) == 0 {
@@ -336,6 +357,9 @@ func (s *Local) environment() []string {
 			"HTTP_PROXY=", "HTTPS_PROXY=", "ALL_PROXY=", "http_proxy=", "https_proxy=", "all_proxy=",
 			"NO_PROXY=*", "no_proxy=*",
 		)
+	}
+	for k, v := range s.Env {
+		env = append(env, k+"="+v)
 	}
 	return env
 }

@@ -98,6 +98,19 @@ func main() {
 			MaxTimeout: time.Duration(*shellMaxTimeout) * time.Second, // 上界
 			SpillDir:   *shellSpill,
 		}
+		// 路径强制（S5f-2b）：默认范围 = 工作区（macOS 上真实生效，写外面会被
+		// 内核拒绝）。被隔离的命令要写缓存/临时目录，宿主把它们指到工作区内：
+		// go test 要写 GOCACHE 与临时目录，写不到宿主的缓存目录就不所谓"验证"了。
+		for _, d := range []string{filepath.Join(jailRoot, ".gocache"), filepath.Join(jailRoot, ".tmp")} {
+			if err := os.MkdirAll(d, 0o755); err != nil {
+				check(fmt.Errorf("创建沙箱缓存目录 %q: %w", d, err))
+			}
+		}
+		sb.Env = map[string]string{
+			"GOCACHE": filepath.Join(jailRoot, ".gocache"),
+			"TMPDIR":  filepath.Join(jailRoot, ".tmp"),
+			"GOENV":   "off", // 别让它写宿主的 go 配置
+		}
 		if err := reg.Register(builtin.NewShell(sb)); err != nil {
 			check(fmt.Errorf("注册工具 %q: %w", "shell", err))
 		}
@@ -172,7 +185,7 @@ func main() {
 		fmt.Println("  重试: 未开启（1 次尝试，失败即报错）")
 	}
 	if *allowShell {
-		fmt.Printf("  shell: 已装配（隔离执行，超时缺省 %ds / 上界 %ds；工作目录 %s）\n",
+		fmt.Printf("  shell: 已装配（隔离执行 + 路径强制：写限定在工作区，越界写被内核拒绝；超时缺省 %ds / 上界 %ds；工作目录 %s）\n",
 			*shellTimeout, *shellMaxTimeout, jailRoot)
 	} else {
 		fmt.Println("  shell: 未装配（模型看不到这个能力；加 -allow-shell 开启）")

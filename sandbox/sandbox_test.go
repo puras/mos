@@ -2,9 +2,9 @@ package sandbox
 
 import (
 	"context"
-	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -331,18 +331,62 @@ func TestDynamicBudgetConcurrentUpdateIsRaceFree(t *testing.T) {
 	wg.Wait()
 }
 
-// 路径强制范围是**要求即强制**：Local 做不到就明确拒绝，不假装约束了。
-func TestLocalRefusesPathScope(t *testing.T) {
-	s := &Local{WorkDir: t.TempDir()}
-	_, err := s.Run(context.Background(), Request{
-		Command:   "ls",
-		PathScope: &PathScope{ReadRoots: []string{"/tmp"}, WriteRoots: []string{"/tmp"}},
+// 路径强制（S5f-2b）：默认范围 = WorkDir（fail-closed）；Request 只能收窄；
+// 显式声明全开 = 放弃强制（直接跑，不做样子）。
+func TestLocalPathScope(t *testing.T) {
+	work := t.TempDir()
+	s := &Local{WorkDir: work}
+
+	// 默认范围（WorkDir）下：写外面必须失败（OS 层拒绝），且错误可见
+	res, err := s.Run(context.Background(), Request{
+		Command: "touch " + filepath.Join(t.TempDir(), "x") + "; echo touched=$?",
 	})
-	if !errors.Is(err, ErrPathScopeUnsupported) {
-		t.Fatalf("应返回 ErrPathScopeUnsupported, got %v", err)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
 	}
-	// 不带 PathScope 的调用照常执行（不因为这个能力缺失就整体不可用）
-	if _, err := s.Run(context.Background(), Request{Command: "echo hi"}); err != nil {
-		t.Fatalf("普通调用应正常: %v", err)
+	if strings.Contains(res.Output, "touched=0") {
+		t.Fatalf("写工作区外应被 OS 层拒绝: out=%s", res.Output)
+	}
+	if !strings.Contains(res.Output, "Operation not permitted") {
+		t.Fatalf("应是内核级拒绝: out=%s", res.Output)
+	}
+
+	// 写工作区内：成功
+	res, err = s.Run(context.Background(), Request{Command: "touch ./inside && echo ok"})
+	if err != nil || res.ExitCode != 0 || !strings.Contains(res.Output, "ok") {
+		t.Fatalf("写工作区内应成功: err=%v exit=%d out=%s", err, res.ExitCode, res.Output)
+	}
+
+	// Request 收窄（子集）：合法——把写收窄到一个子目录
+	sub := filepath.Join(work, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	res, err = s.Run(context.Background(), Request{
+		Command:   "touch " + filepath.Join(work, "escape") + " 2>&1; echo rc=$?",
+		PathScope: &PathScope{ReadRoots: []string{work}, WriteRoots: []string{sub}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if strings.Contains(res.Output, "rc=0") {
+		t.Fatalf("收窄后写子目录外应失败: %s", res.Output)
+	}
+
+	// Request 放宽（超出默认）：拒绝——放宽是宿主装配期的权力
+	_, err = s.Run(context.Background(), Request{
+		Command:   "ls",
+		PathScope: &PathScope{ReadRoots: []string{"/"}, WriteRoots: []string{"/"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "不能比默认更宽") {
+		t.Fatalf("放宽应被拒: %v", err)
+	}
+
+	// 宿主显式声明全开 → 放弃强制，直接跑（不做样子）
+	wide := &Local{WorkDir: work, DefaultScope: &PathScope{ReadRoots: []string{"/"}, WriteRoots: []string{"/"}}}
+	if _, err := wide.Run(context.Background(), Request{
+		Command: "touch " + filepath.Join(t.TempDir(), "x") + " && echo ok",
+	}); err != nil {
+		t.Fatalf("显式全开应直接执行: %v", err)
 	}
 }
