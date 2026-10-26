@@ -194,16 +194,28 @@ func (s *Session) NextTurn() int {
 // TotalUsage 折叠日志中所有 assistant 事件的模型调用用量（派生值，不存储：
 // Restore 重放后自动重建，Persistence 无需感知聚合逻辑）。
 // 仅累计三个主计数；Usage.Details 明细不折叠。
+// TotalUsage 汇总整个会话的 token 用量。
+//
+// 三个主计数直接相加；**明细也累计**（缓存读/写、推理 token）——不然缓存命
+// 掩在“输入”里看不出来（Anthropic 的输入本就不含缓存，OpenAI 的含）。
+// FreshInputTokens 取各项之和（去缓存口径，跨协议可比）。
 func (s *Session) TotalUsage() llm.Usage {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var total llm.Usage
 	for _, ev := range s.events {
-		if ev.Usage != nil {
-			total.PromptTokens += ev.Usage.PromptTokens
-			total.CompletionTokens += ev.Usage.CompletionTokens
-			total.TotalTokens += ev.Usage.TotalTokens
+		if ev.Usage == nil {
+			continue
 		}
+		total.PromptTokens += ev.Usage.PromptTokens
+		total.FreshInputTokens += ev.Usage.FreshInputTokens
+		total.CompletionTokens += ev.Usage.CompletionTokens
+		total.TotalTokens += ev.Usage.TotalTokens
+		total.Details.Input.CacheRead += ev.Usage.Details.Input.CacheRead
+		total.Details.Input.CacheWrite += ev.Usage.Details.Input.CacheWrite
+		total.Details.Input.Audio += ev.Usage.Details.Input.Audio
+		total.Details.Output.Reasoning += ev.Usage.Details.Output.Reasoning
+		total.Details.Output.Audio += ev.Usage.Details.Output.Audio
 	}
 	return total
 }

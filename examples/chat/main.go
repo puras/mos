@@ -231,8 +231,12 @@ func main() {
 		}
 		flushLine() // 模型回复未必以换行结尾，先收尾再打统计，避免两行黏在一起
 		u := sess.TotalUsage()
-		fmt.Printf("  [tokens] 会话累计 输入 %d / 输出 %d / 共 %d（第 %d 轮）\n",
-			u.PromptTokens, u.CompletionTokens, u.TotalTokens, sess.NextTurn()-1)
+		// 区分开：输入（去缓存口径）/ 缓存读 / 缓存写 / 输出 / 共。
+		// 缓存命中单列，才看得出"这次省了多少"（Anthropic 的输入本就不含
+		// 缓存，OpenAI 的含——统一用去缓存口径才跨协议可比）。
+		fmt.Printf("  [tokens] 会话累计 输入 %d / 缓存读 %d / 缓存写 %d / 输出 %d / 共 %d（第 %d 轮）\n",
+			u.FreshInput(), u.Details.Input.CacheRead, u.Details.Input.CacheWrite,
+			u.CompletionTokens, u.TotalTokens, sess.NextTurn()-1)
 	}
 }
 
@@ -530,8 +534,9 @@ func logCall(model string, r llm.CallResult) {
 			finish = "-"
 		}
 		u := r.Resp.Usage
+		// tokens 三元组 = 输入(去缓存) / 输出 / 共；缓存读另列（命中才是省下来的部分）
 		fmt.Fprintf(&b, " finish=%s tokens=%d/%d/%d",
-			finish, u.PromptTokens, u.CompletionTokens, u.TotalTokens)
+			finish, u.FreshInput(), u.CompletionTokens, u.TotalTokens)
 		// 缓存命中与推理 token：非零才打印，避免噪声
 		if d := u.Details; d.Input.CacheRead > 0 || d.Input.CacheWrite > 0 || d.Output.Reasoning > 0 {
 			if d.Input.CacheRead > 0 || d.Input.CacheWrite > 0 {

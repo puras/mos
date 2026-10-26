@@ -77,12 +77,31 @@ type Tool struct {
 }
 
 // Usage 表示一次请求的 token 用量。
+//
+// **口径提醒**：PromptTokens 是**协议原始值**——OpenAI/Gemini 的 prompt 含
+// 缓存命中，Anthropic 的 input_tokens 不含。跨协议比较请用 FreshInputTokens
+// （去缓存后的计费输入，各协议同口径）。
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
+	// PromptTokens 是协议原始的输入 token（含不含缓存随协议而定，见上）。
+	PromptTokens int `json:"prompt_tokens"`
+	// FreshInputTokens 是**去缓存命中后**的输入 token（计费口径，跨协议可比）。
+	// 0 且 PromptTokens > 0 表示该提供商未提供此口径——此时按 PromptTokens 用。
+	FreshInputTokens int `json:"fresh_input_tokens,omitempty"`
+	// CompletionTokens 是输出 token 数。
 	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	// TotalTokens 是本次调用的总 token（Anthropic 口径含缓存；OpenAI/Gemini
+	// 透传上游值）。
+	TotalTokens int `json:"total_tokens"`
 	// Details 是提供商返回的细分明细（缓存命中/写入、推理 token 等），缺失时为零值。
 	Details UsageDetails `json:"details,omitempty"`
+}
+
+// FreshInput 返回去缓存后的输入 token（未提供该口径时退回 PromptTokens）。
+func (u Usage) FreshInput() int {
+	if u.FreshInputTokens > 0 {
+		return u.FreshInputTokens
+	}
+	return u.PromptTokens
 }
 
 // MarshalJSON 省略空的 details。

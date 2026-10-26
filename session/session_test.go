@@ -391,3 +391,40 @@ func TestJSONLDoesNotEscapeHTML(t *testing.T) {
 		t.Fatalf("&& 应原样出现: %s", string(raw))
 	}
 }
+
+// 会话累计要**区分** 输入 / 缓存读 / 缓存写 / 输出——缓存命中单列才看得出
+// "这次省了多少"（Anthropic 的输入本就不含缓存，OpenAI 的含）。
+func TestTotalUsageDistinguishesCache(t *testing.T) {
+	sess := New("t", nil)
+	mustAppend(t, sess, Event{Kind: EventAssistant, Turn: 1, Usage: &llm.Usage{
+		PromptTokens: 100, FreshInputTokens: 20, CompletionTokens: 5, TotalTokens: 105,
+		Details: llm.UsageDetails{
+			Input:  llm.InputTokenDetails{CacheRead: 80, CacheWrite: 3},
+			Output: llm.OutputTokenDetails{Reasoning: 2},
+		},
+	}})
+	mustAppend(t, sess, Event{Kind: EventAssistant, Turn: 1, Usage: &llm.Usage{
+		PromptTokens: 50, FreshInputTokens: 50, CompletionTokens: 7, TotalTokens: 57,
+		Details: llm.UsageDetails{Input: llm.InputTokenDetails{CacheRead: 0}},
+	}})
+
+	u := sess.TotalUsage()
+	if u.FreshInputTokens != 70 {
+		t.Fatalf("FreshInputTokens = %d, want 70", u.FreshInputTokens)
+	}
+	if u.Details.Input.CacheRead != 80 {
+		t.Fatalf("CacheRead = %d, want 80", u.Details.Input.CacheRead)
+	}
+	if u.Details.Input.CacheWrite != 3 {
+		t.Fatalf("CacheWrite = %d, want 3", u.Details.Input.CacheWrite)
+	}
+	if u.CompletionTokens != 12 {
+		t.Fatalf("CompletionTokens = %d, want 12", u.CompletionTokens)
+	}
+	if u.TotalTokens != 162 {
+		t.Fatalf("TotalTokens = %d, want 162", u.TotalTokens)
+	}
+	if u.Details.Output.Reasoning != 2 {
+		t.Fatalf("Reasoning = %d, want 2", u.Details.Output.Reasoning)
+	}
+}

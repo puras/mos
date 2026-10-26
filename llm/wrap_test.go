@@ -289,3 +289,13 @@ func TestUsageOmitsEmptyDetails(t *testing.T) {
 		t.Fatalf("空的 output 不该出现: %s", string(b))
 	}
 }
+
+// FreshInput：去缓存口径的输入；提供商未提供该口径时退回 PromptTokens。
+func TestUsageFreshInput(t *testing.T) {
+	if got := (Usage{PromptTokens: 100, FreshInputTokens: 20}).FreshInput(); got != 20 {
+		t.Fatalf("FreshInput = %d, want 20", got)
+	}
+	if got := (Usage{PromptTokens: 100}).FreshInput(); got != 100 {
+		t.Fatalf("无新鲜口径时应退回 PromptTokens, got %d", got)
+	}
+}

@@ -19,6 +19,9 @@ func UsageFrom(u *pkgusage.Usage) llm.Usage {
 		return out
 	}
 	out.PromptTokens = int(u.InputTokens)
+	// 去缓存后的计费输入（跨协议同口径；OpenAI/Gemini 的 prompt 含缓存，
+	// Anthropic 不含——比较时用这个）。
+	out.FreshInputTokens = int(u.FreshInputTokens)
 	out.CompletionTokens = int(u.OutputTokens)
 	out.TotalTokens = int(u.TotalTokens)
 	if u.Cache != nil {
