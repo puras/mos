@@ -150,3 +150,16 @@ func TestTruncateRunes(t *testing.T) {
 		t.Fatalf("firstLine = %q", got)
 	}
 }
+
+// Goal 取最后一条 user：TaskState 描述进行中的任务，已收尾的旧主题不该
+// 永久霸占目标位（否则每次压缩注入的摘要都把模型钉死在第一个问题上）。
+func TestDeriveTaskStateGoalTracksLatestUser(t *testing.T) {
+	events := []Event{
+		userEv(1, "当前系统提示词是啥？"),             // t1：早已 completed 的旧主题
+		userEv(2, "做一个 mos-web 要不要先做 TUI？"), // 当前主题
+	}
+	st := DeriveTaskState(events, func(string) bool { return false })
+	if st.Goal != "做一个 mos-web 要不要先做 TUI？" {
+		t.Fatalf("Goal = %q, want 当前主题（旧目标不该霸占目标位）", st.Goal)
+	}
+}

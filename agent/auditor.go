@@ -3,15 +3,20 @@
 // 上下文是稀缺资源（架构不变式 4），三件套各管一段：
 //
 //   - Truncator（截断）：单次工具结果过大时就地瘦身，给模型的回填文本
-//     不许撑爆上下文；完整输出可落盘留逃生通道。
-//   - Compactor（压缩）：历史超过预算时，旧消息让位给 TaskState 快照——
-//     摘要是已验证事实的投影，不是 LLM 的再次总结；切割点不切断
-//     ToolCall-Result 对（投影合法性不变式）。
+//     不许撑爆上下文；完整输出可落盘留逃生通道。规则对齐 PI 的
+//     tools/truncate.ts（行/字节双限、整行保留、head/tail/both）。
+//   - Compactor（压缩）：超过 token 预算（contextWindow - reserveTokens）
+//     时，从投影视图定切割点（永不落在 tool 结果上），由**模型**生成
+//     结构化摘要（Goal/Progress/Key Decisions/Next Steps，PI 同款）；
+//     摘要作为 compaction 事件落会话日志，投影从此遮蔽旧历史——被遮蔽
+//     的内容不删，重放确定性地复现压缩后视图（PI CompactionEntry /
+//     DSH marker 消息同哲学）。
 //   - Auditor（审计门）：哪些工具的输出配得上"事实"二字，由它裁定——
 //     只有环境自证的只读工具可入 TaskState，模型自述一律不算数
-//     （审计不变式）。
+//     （审计不变式；PI/DSH 均无此件，属 MoS PRD 的 M2.1/M2.2 基线，
+//     由 M3 多智能体与宿主消费）。
 //
-// 三者都是纯机制：白名单、阈值、保留条数是宿主的策略，经装配注入。
+// 三者都是纯机制：白名单、窗口与预算、落盘目录是宿主的策略，经装配注入。
 package agent
 
 // Auditor 是审计门（Audit Gate）：裁定某工具的输出能否作为已验证事实
@@ -69,13 +74,4 @@ func (d *DefaultAuditor) Trusted(toolName string) bool {
 		return defaultTrusted[toolName]
 	}
 	return d.Allow[toolName]
-}
-
-// TrustedOf 取审计门的信任判定函数；nil 审计门 = 全不信任（fail-closed：
-// 没装配审计门就没有任何事实进状态，而不是什么都信）。
-func TrustedOf(a Auditor) func(string) bool {
-	if a == nil {
-		return func(string) bool { return false }
-	}
-	return a.Trusted
 }

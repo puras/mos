@@ -25,7 +25,8 @@ MoS（取自 Sapient）是基于 Go 的智能体基础框架（Agent Base SDK）
 | S5f-2b | 路径强制隔离：默认范围=工作区（fail-closed）、只能收窄、全开=显式逃生门；macOS Seatbelt ✅ / Linux Landlock ⬜ | 🔶 |
 | S5g | 人工审批（`agent/approval`：四档结果 + 问人由宿主注入 + `approval/asked`/`decided` 审计落会话日志） | ✅ |
 | S5h | 写前观察（`ObserveGate`：不许覆盖没读过的文件 + 版本 CAS 防丢失更新；能力由宿主决定） | ✅ |
-| S6 | 上下文工程（截断 + 压缩 + TaskState/Auditor：快照从事件日志派生、摘要 = 已验证事实而非 LLM 再总结；决策轮次默认放开为不限） | ✅ |
+| S5i | 系统提示词装配 `agent/prompt`：分节 Builder（Add 严格 / Set 覆写 / Complete 整段替换 / Clone 派生）+ 工具自带指引通道（`tool.Guideline`，文案归工具包、顺序归中心常量）+ chat 示例接线 | ✅ |
+| S6 | 上下文工程（截断 + 压缩，逐项对齐 PI/DSH：token 预算触发、模型生成结构化摘要、摘要落日志投影遮蔽、切割点不切断工具对；TaskState/Auditor 基础设施；轮次默认不限） | ✅ |
 | S7 | 装配层（`assistant.New` 一行装配 + 示例 CLI） | ⬜ |
 
 S1–S7 完成即覆盖 PRD G1–G6 的最小闭环；此后按 PRD §5/§7 逐个回填后续里程碑（M2.8 挂起恢复 → M2.9/M2.10 → M3 多智能体 → M4 生产化）。
@@ -40,7 +41,7 @@ S1–S7 完成即覆盖 PRD G1–G6 的最小闭环；此后按 PRD §5/§7 逐�
 
 - [examples/chat](examples/chat/) — 直连 LLM 多轮对话 Demo：流式输出、多协议切换、会话日志持久化与重启恢复（`cp .env.example .env` 后 `go run .`）
   - `-allow-shell` 开启**验证回路**：agent 能改代码后自己跑 `go build` / `go test` 看真实输出再改（配套 `lab/` 练手项目：修好一个故意留 bug 的测试）
-  - `-keep-recent` / `-trim` / `-trust` 演示**上下文工程**：压缩（旧消息让位给已验证事实快照）、结果截断（全文落盘可回读）、审计门白名单扩展
+  - `-context-window` 开启**上下文压缩**（PI 同款：超过窗口-预留时模型生成结构化摘要落日志，投影遮蔽旧历史；`-reserve-tokens`/`-keep-recent-tokens` 调预算）、`-trim` 结果截断（全文落盘可回读）
 
 ## 构建
 

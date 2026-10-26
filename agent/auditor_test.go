@@ -45,11 +45,8 @@ func TestNilAuditorTrustedNothing(t *testing.T) {
 	if a.Trusted("read_file") {
 		t.Fatalf("nil 审计器全不信任")
 	}
-	if TrustedOf(nil)("read_file") {
-		t.Fatalf("TrustedOf(nil) 应全不信任（fail-closed）")
-	}
-	f := TrustedOf(NewDefaultAuditor())
+	f := NewDefaultAuditor().Trusted
 	if !f("read_file") {
-		t.Fatalf("TrustedOf 应委托审计器")
+		t.Fatalf("默认审计器应信任只读工具")
 	}
 }

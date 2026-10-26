@@ -15,6 +15,10 @@
 //	assistant   模型输出（文本 + 可选工具调用；投影为 assistant 消息）
 //	tool/call   工具调用留痕（含被守卫拦截的调用；不投影，仅审计）
 //	tool/result 工具结果（投影为 tool 消息）
+//	compaction  压缩落点（S6）：旧历史由摘要遮蔽——摘要进投影，被遮蔽的
+//	            事件留在日志里不删，重放确定性地复现压缩后视图（对齐 PI 的
+//	            CompactionEntry 与 DSH 的 marker 消息）。消费者=投影+审计，
+//	            非预留。
 //	approval/asked   问了人工（审批请求发出；不投影，仅审计）
 //	approval/decided 人工答了（与 asked 用同一个 id 配对；不投影，仅审计）
 //
@@ -23,6 +27,7 @@
 package session
 
 import (
+	"fmt"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -40,6 +45,9 @@ const (
 	EventAssistant  EventKind = "assistant"
 	EventToolCall   EventKind = "tool/call"
 	EventToolResult EventKind = "tool/result"
+	// EventCompaction 是压缩落点：从此处起，FirstKeptSeq 之前的历史被
+	// Summary 遮蔽（投影只发摘要 + 保留段），事件本身留在日志可审计。
+	EventCompaction EventKind = "compaction"
 	// EventApprovalAsked 是「问了人工」：审批请求发出时记一条。
 	EventApprovalAsked EventKind = "approval/asked"
 	// EventApprovalDecided 是「人工答了」：审批有结果时记一条（与 asked 用
@@ -73,6 +81,23 @@ type ToolResult struct {
 	IsError bool   `json:"isError,omitempty"`
 }
 
+// Compaction 是压缩事件载荷：旧历史被 Summary 遮蔽，FirstKeptSeq 之后的
+// 事件照常投影。对齐 PI 的 CompactionEntry（summary + firstKeptEntryId +
+// tokensBefore + usage）：摘要调用的用量记在事件的 Usage 上，会话总量
+// 一并折叠（PI："session totals include summarization work"）。
+type Compaction struct {
+	// Summary 是模型生成的结构化摘要文本（进投影，user 角色）。
+	Summary string `json:"summary"`
+	// FirstKeptSeq 是保留段首条事件的序号：投影丢弃此前的可投影消息。
+	FirstKeptSeq int64 `json:"firstKeptSeq"`
+	// TokensBefore 是压缩前的上下文 token 估算（审计用）。
+	TokensBefore int `json:"tokensBefore,omitempty"`
+}
+
+// CompactionSummaryPrefix 是投影注入摘要消息时的标记前缀；压缩器靠它
+// 识别旧摘要（迭代压缩时作为 previous-summary 传给模型，PI 同款）。
+const CompactionSummaryPrefix = "[历史摘要]"
+
 // Event 是日志中的一条记录。Seq 由 Session.Append 统一分配，全局递增从 1 开始。
 // 载荷字段按 Kind 取用：Text（user/assistant）、Reasoning（assistant，思维链）、
 // ToolCalls（assistant）、Usage（assistant，模型调用遥测）、ToolCall（tool/call）、
@@ -91,6 +116,8 @@ type Event struct {
 	Reason     string         `json:"reason,omitempty"`
 	// Approval 是审批事件载荷（approval/asked 与 approval/decided）。
 	Approval *Approval `json:"approval,omitempty"`
+	// Compaction 是压缩事件载荷（见 EventCompaction 与 Compaction 类型）。
+	Compaction *Compaction `json:"compaction,omitempty"`
 	// Error 是 turn/end 的失败详情：分类之外的诊断信息（出错原因、终止理由）。
 	//
 	// 只进日志、不进模型投影（project() 不投影 turn/end）——日志是审计凭据，
@@ -177,6 +204,74 @@ func (s *Session) Messages() []llm.Message {
 	return project(s.events)
 }
 
+// SeqMessage 是投影中的一条消息及其来源事件序号：压缩切割需要知道“从
+// 哪条事件起保留”，而 Messages 的返回值不带序号——给切割器用的视图带。
+type SeqMessage struct {
+	Seq     int64
+	Message llm.Message
+}
+
+// View 返回当前投影视图（消息 + 事件序号）：压缩器用它定切割点，
+// 切割下标处的 Seq 就是压缩事件的 FirstKeptSeq。
+func (s *Session) View() []SeqMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return projectSeq(s.events)
+}
+
+// ContextTokens 估算当前投影视图的上下文大小（压缩触发用）。
+//
+// 对齐 PI 的两段式：优先用**最后一次模型调用的真实用量**（totalTokens，
+// 或分项之和 input+output+cacheRead+cacheWrite——PI 的
+// calculateContextTokens 同款），再加上其后新增事件的 chars/4 估算；
+// 完全没有用量记录时全部走估算。这是量级正确的启发式，不是分词。
+func (s *Session) ContextTokens() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	base, baseIdx := 0, -1
+	for i := len(s.events) - 1; i >= 0; i-- {
+		u := s.events[i].Usage
+		if u == nil {
+			continue
+		}
+		// PI 的 calculateContextTokens：原生 total 优先，分项和兑底
+		//（MoS 口径：新鲜输入 + 缓存读 + 缓存写 + 输出 = 上下文里的全部）。
+		if u.TotalTokens > 0 {
+			base = u.TotalTokens
+		} else {
+			base = u.FreshInputTokens + u.Details.Input.CacheRead + u.Details.Input.CacheWrite + u.CompletionTokens
+		}
+		baseIdx = i
+		break
+	}
+	if baseIdx < 0 {
+		base = 0
+		baseIdx = -1
+	}
+	for _, ev := range s.events[baseIdx+1:] {
+		base += estimateEventTokens(&ev)
+	}
+	return base
+}
+
+// estimateEventTokens 估算单条事件进入上下文的 token 量（chars/4）。
+func estimateEventTokens(ev *Event) int {
+	n := len(ev.Text) + len(ev.Reasoning)
+	if ev.ToolResult != nil {
+		n += len(ev.ToolResult.Content)
+	}
+	for _, c := range ev.ToolCalls {
+		n += len(c.Name) + len(c.Args)
+	}
+	if ev.ToolCall != nil {
+		n += len(ev.ToolCall.Name) + len(ev.ToolCall.Args)
+	}
+	if ev.Compaction != nil {
+		n += len(ev.Compaction.Summary)
+	}
+	return (n + 3) / 4
+}
+
 // NextTurn 返回下一轮的轮次序号（派生：日志中已出现的最大 Turn + 1）。
 // 驱动用它开新一轮，无需自维护计数器（Restore 后自然接续）。
 func (s *Session) NextTurn() int {
@@ -207,6 +302,8 @@ func (s *Session) TotalUsage() llm.Usage {
 		if ev.Usage == nil {
 			continue
 		}
+		// assistant 与 compaction 事件都携带用量：摘要调用的消耗同样计入
+		// 会话总量（PI："session totals include summarization work"）。
 		total.PromptTokens += ev.Usage.PromptTokens
 		total.FreshInputTokens += ev.Usage.FreshInputTokens
 		total.CompletionTokens += ev.Usage.CompletionTokens
@@ -220,24 +317,97 @@ func (s *Session) TotalUsage() llm.Usage {
 	return total
 }
 
+// project 把事件序列投影为对话消息（带序号版 projectSeq 的去序包装）。
 func project(events []Event) []llm.Message {
-	out := make([]llm.Message, 0, len(events))
-	for _, ev := range events {
+	seqs := projectSeq(events)
+	out := make([]llm.Message, 0, len(seqs))
+	for _, sm := range seqs {
+		out = append(out, sm.Message)
+	}
+	return out
+}
+
+// projectSeq 把事件序列投影为带序号的对话消息：turn/* 与 tool/call 不投影
+// （审计专用），user/assistant/tool-result 按序映射；compaction 执行遮蔽。
+//
+// 投影合法性自愈：assistant 声明的工具调用若在日志里找不到配对的
+// tool/result（进程在执行期间被硬杀的残留——result 永远没落盘），投影时
+// 补一条合成失败回执，保证「assistant 的 ToolCalls 与随后的 tool/result
+// 按 CallID 成对」对外永远成立，否则服务商直接拒收历史。日志本身不动：
+// 留洞就是发生过的事实（append-only）， healed 的是派生态。
+// 合成回执按声明序补在首个非 tool/result 事件之前（协议要求 tool 消息
+// 紧跟在带调用的 assistant 消息之后），序号继承声明它的 assistant 事件——
+// 压缩遮蔽时它与调用方同生共死，成对不变式不被遮蔽破坏。
+func projectSeq(events []Event) []SeqMessage {
+	out := make([]SeqMessage, 0, len(events))
+	// pending 是已投影、尚未见到回执的调用（按声明序）；answered 去重已回填的 CallID。
+	var pending []llm.ToolCall
+	answered := map[string]bool{}
+	lastAssistantSeq := int64(0)
+	// flush 把仍无回执的调用补上合成失败结果，清空本批配对状态。
+	// 触发点：遇到任何非 tool/result 事件、以及日志结尾。
+	flush := func() {
+		for _, c := range pending {
+			if !answered[c.ID] {
+				out = append(out, SeqMessage{Seq: lastAssistantSeq, Message: llm.Message{
+					Role:       llm.RoleTool,
+					Content:    fmt.Sprintf("（%s 调用在执行期间被中断，没有结果；如仍需要请重新调用）", c.Name),
+					ToolCallID: c.ID,
+				}})
+			}
+		}
+		pending = pending[:0]
+		answered = make(map[string]bool)
+	}
+	for i := range events {
+		ev := &events[i]
 		switch ev.Kind {
 		case EventUser:
-			out = append(out, llm.Message{Role: llm.RoleUser, Content: ev.Text})
+			flush()
+			out = append(out, SeqMessage{Seq: ev.Seq, Message: llm.Message{Role: llm.RoleUser, Content: ev.Text}})
 		case EventAssistant:
-			out = append(out, llm.Message{
+			flush()
+			lastAssistantSeq = ev.Seq
+			out = append(out, SeqMessage{Seq: ev.Seq, Message: llm.Message{
 				Role:             llm.RoleAssistant,
 				Content:          ev.Text,
 				ReasoningContent: ev.Reasoning, // 思维链回传：thinking 模式多轮必需
 				ToolCalls:        ev.ToolCalls,
-			})
+			}})
+			pending = append(pending, ev.ToolCalls...)
 		case EventToolResult:
 			if r := ev.ToolResult; r != nil {
-				out = append(out, llm.Message{Role: llm.RoleTool, Content: r.Content, ToolCallID: r.CallID})
+				out = append(out, SeqMessage{Seq: ev.Seq, Message: llm.Message{Role: llm.RoleTool, Content: r.Content, ToolCallID: r.CallID}})
+				answered[r.CallID] = true
 			}
+		case EventCompaction:
+			if ev.Compaction == nil || ev.Compaction.Summary == "" {
+				continue
+			}
+			flush()
+			// 遮蔽：丢掉 FirstKeptSeq 之前的消息，注入摘要（对齐 PI 的
+			// rebuild——LLM 看到 [system, summary, kept...]，摘要在前）；旧摘要
+			// 若也在被遮蔽之列就一并消失：新摘要在生成时已把旧摘要折叠进去
+			//（迭代压缩走 previous-summary 提示词，PI 同款）。
+			kept := out[:0:0]
+			for _, sm := range out {
+				if sm.Seq >= ev.Compaction.FirstKeptSeq {
+					kept = append(kept, sm)
+				}
+			}
+			summary := SeqMessage{Seq: ev.Seq, Message: llm.Message{
+				Role:    llm.RoleUser,
+				Content: CompactionSummaryPrefix + "\n" + ev.Compaction.Summary,
+			}}
+			out = append(append([]SeqMessage{summary}, kept...))
 		}
 	}
+	flush() // 日志尾部的孤儿调用（进程中断残留）
 	return out
+}
+
+// EstimateTokens 用 chars/4 启发式估算文本的 token 数（PI 同款：保守、
+// 高估；对中文偏低，但压缩触发与切割只需要量级正确的估算，不需要分词器）。
+func EstimateTokens(s string) int {
+	return (len(s) + 3) / 4
 }

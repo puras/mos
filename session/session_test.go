@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -462,5 +463,50 @@ func TestTotalUsagePartsSumToTotal(t *testing.T) {
 				t.Fatalf("分项和 %d ≠ 总计 %d（%+v）", sum, u.TotalTokens, u)
 			}
 		})
+	}
+}
+
+// 投影合法性自愈：进程在工具执行期间被硬杀，日志里留下没有回执的 tool/call
+// （append-only 不改写）。投影时补合成失败回执，保证「assistant 的 ToolCalls
+// 与随后的 tool/result 按 CallID 成对」对外永远成立——否则服务商直接拒收。
+func TestProjectHealsUnpairedToolCalls(t *testing.T) {
+	s := New("heal", nil)
+	mustAppend(t, s, Event{Kind: EventTurnStart, Turn: 1})
+	mustAppend(t, s, Event{Kind: EventUser, Text: "跑下测试"})
+	// 两个调用只有一个回了结果（另一个执行到一半进程被杀）——线上事故的形状
+	mustAppend(t, s, Event{Kind: EventAssistant, ToolCalls: []llm.ToolCall{
+		{ID: "c1", Name: "shell", Args: `{}`},
+		{ID: "c2", Name: "shell", Args: `{}`},
+	}})
+	mustAppend(t, s, Event{Kind: EventToolResult, ToolResult: &ToolResult{CallID: "c1", Content: "ok"}})
+	// 中部孤儿：洞后面还有新 turn（重启续聊的形状）
+	mustAppend(t, s, Event{Kind: EventTurnEnd, Turn: 1, Reason: "interrupted"})
+	mustAppend(t, s, Event{Kind: EventTurnStart, Turn: 2})
+	mustAppend(t, s, Event{Kind: EventUser, Text: "继续"})
+	// 尾部孤儿：这轮的调用同样没等到回执
+	mustAppend(t, s, Event{Kind: EventAssistant, ToolCalls: []llm.ToolCall{
+		{ID: "c3", Name: "shell", Args: `{}`},
+	}})
+
+	msgs := s.Messages()
+	var got []string
+	for _, m := range msgs {
+		got = append(got, string(m.Role)+":"+m.ToolCallID)
+	}
+	want := []string{
+		"user:", "assistant:", "tool:c1",
+		"tool:c2", // 合成回执补在 user 之前（协议要求紧跟 assistant）
+		"user:", "assistant:",
+		"tool:c3", // 尾部孤儿同样补上
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("投影 = %v\nwant %v", got, want)
+	}
+	// 合成回执要能被模型读懂：带工具名与中断语义；真实回执不被改写
+	if !strings.Contains(msgs[3].Content, "shell") || !strings.Contains(msgs[3].Content, "中断") {
+		t.Fatalf("合成回执内容应说明中断: %q", msgs[3].Content)
+	}
+	if msgs[2].Content != "ok" {
+		t.Fatalf("真实回执不应被改写: %q", msgs[2].Content)
 	}
 }

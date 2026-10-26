@@ -59,7 +59,10 @@ type Fact struct {
 // 日志是唯一事实来源，TaskState 随时可重算，Restore 后免费恢复，
 // Persistence 无需感知它的存在。派生规则：
 //
-//   - Goal   = 首条 user 事件的文本；
+//   - Goal   = 最后一条 user 事件的文本（TaskState 描述的是**进行中的**
+//     任务：多主题会话里旧主题早已收尾，不应永久霸占目标位——否则每次
+//     压缩注入的摘要都把模型钉死在第一个问题上；单任务会话下两种取法
+//     等价）；
 //   - Facts  = trusted 工具的无错 tool/result（证据即日志里的回填内容），
 //     按 (tool, evidence) 去重、按日志顺序排列；
 //   - Status = 见 TaskStatus 注释。
@@ -79,9 +82,11 @@ func DeriveTaskState(events []Event, trusted func(toolName string) bool) *TaskSt
 				byCall[ev.ToolCall.ID] = ev.ToolCall.Name
 			}
 		case EventUser:
-			if st.Goal == "" {
-				st.Goal = ev.Text
-			}
+			// 取最后一条而非首条：快照描述进行中的任务，旧主题收尾后让位
+			// （多主题 chat 会话里，"首条 Goal"会把压缩后的模型钉死在
+			// 第一个问题上——事故：会话首问"系统提示词是啥"早 completed，
+			// 新问题却被摘要带偏到重新取证提示词装配）。
+			st.Goal = ev.Text
 		case EventToolResult:
 			r := ev.ToolResult
 			if r == nil || r.IsError {

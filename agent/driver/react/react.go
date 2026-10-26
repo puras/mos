@@ -14,8 +14,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
-	"github.com/puras/mos/agent"
 	"github.com/puras/mos/agent/approval"
 	"github.com/puras/mos/agent/driver"
 	"github.com/puras/mos/agent/execpath"
@@ -270,27 +270,73 @@ func appendAssistant(sess *session.Session, turn int, action planner.Action) err
 	return err
 }
 
+// maybeCompact 在决策前检查 token 预算，超限时执行一轮压缩（PI 的
+// _compactBeforeNextAssistantResponse 对位：检查发生在工具结果追加之后、
+// 下一次模型响应之前）。
+//
+// 流程：估算上下文规模（最后一次真实用量 + 其后新增的估算）→ 超预算则
+// 定切割点（永不落在 tool 结果上）→ 模型生成结构化摘要 → 摘要作为
+// compaction 事件落日志。被遮蔽的事件留在日志里：审计走全量日志，
+// 模型投影从下一个决策起就是压缩后的视图。
+func maybeCompact(ctx context.Context, rt *driver.RunContext, sess *session.Session, turn int) error {
+	if rt.Compactor == nil {
+		return nil
+	}
+	contextTokens := sess.ContextTokens() + session.EstimateTokens(rt.SystemPrompt)
+	view := sess.View()
+	plan, ok := rt.Compactor.Plan(view, contextTokens)
+	if !ok {
+		return nil
+	}
+	// 旧摘要不进序列化输入（它作为 previous-summary 单独传给模型）。
+	msgs := make([]llm.Message, 0, plan.Cut)
+	for _, sm := range view[:plan.Cut] {
+		if plan.Previous != "" && sm.Message.Role == llm.RoleUser &&
+			strings.HasPrefix(sm.Message.Content, session.CompactionSummaryPrefix) {
+			continue
+		}
+		msgs = append(msgs, sm.Message)
+	}
+	text, usage, err := rt.Compactor.Summarize(ctx, msgs, plan.Previous)
+	if err != nil {
+		return fmt.Errorf("react: 上下文压缩失败: %w", err)
+	}
+	ev := session.Event{
+		Kind: session.EventCompaction, Turn: turn,
+		Compaction: &session.Compaction{
+			Summary:      text,
+			FirstKeptSeq: view[plan.Cut].Seq,
+			TokensBefore: contextTokens,
+		},
+	}
+	if usage.TotalTokens > 0 {
+		u := usage
+		ev.Usage = &u
+	}
+	if _, err := sess.Append(ev); err != nil {
+		return err
+	}
+	return nil
+}
+
 // decide 按 rt.Stream 选择流式或非流式决策路径，把工具定义一并交给决策器
 // （模型据此得知有哪些工具可用）。流式增量经 rt.OnChunk 实时透出，
 // 推理增量以 reasoning=true 标记。
 //
-// 决策前的两步上下文工程（S6，顺序固定）：
+// 决策前的两步（顺序固定）：
 //
-//  1. 压缩（框架行为）：装配了 Compactor 且历史超预算时，旧消息让位给
-//     TaskState 快照——状态从事件日志派生，事实只认审计门信任的工具；
-//  2. pre-step 瀑布（宿主钩子）：对压缩后的输入做 RAG / 注入等改写。
+//  1. 压缩（S6，装配了 Compactor 且超过 token 预算时）：定切割点 →
+//     模型生成结构化摘要 → 摘要作为 compaction 事件落日志；投影从此
+//     遮蔽旧历史（PI 同款：检查发生在工具结果追加之后、下一次响应之前）。
+//  2. pre-step 瀑布（宿主钩子）：对当前视图做 RAG / 注入等改写。
 //
-// 压缩刻意不做进钩子：它要读会话日志派生状态，而钩子总线在装配期注册、
-// 会话到运行期才确定——框架自己的行为不必假道扩展点。两条都是零开销降级
-// （Compactor / Hooks 为 nil 时与未注入完全一致）。
+// 压缩失败以错误终止本轮：静默超预算只会在下一次调用时溢出，那种报错
+// 更难懂。两者均零开销降级（Compactor / Hooks 为 nil 时与未注入一致）。
 func decide(ctx context.Context, rt *driver.RunContext, sess *session.Session, turn int, defs []llm.Tool) (planner.Action, error) {
-	history := rt.History(sess)
-	if rt.Compactor != nil {
-		state := session.DeriveTaskState(sess.Events(), agent.TrustedOf(rt.Auditor))
-		if after, ok := rt.Compactor.Compact(history, state); ok {
-			history = after
-		}
+	if err := maybeCompact(ctx, rt, sess, turn); err != nil {
+		return planner.Action{}, err
 	}
+	history := rt.History(sess)
 	if rt.Hooks != nil {
 		ev, err := rt.Hooks.Waterfall(ctx, &hook.HookEvent{
 			Kind: hook.HookPreStep, Messages: history, Turn: turn,

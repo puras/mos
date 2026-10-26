@@ -71,6 +71,10 @@ type defaultTruncator struct {
 }
 
 // Truncate 实现 ResultTruncator。
+//
+// 行级优先（只保留整行，PI 的 truncateHead/Tail 同规则），字节预算在行级
+// 保不住时才落到字节截断（UTF-8 边界安全）。截断说明带保留区间与总量，
+// 模型知道丢了哪一段（PI 续读提示 "Showing lines X-Y of Z" 的同款信息）。
 func (d *defaultTruncator) Truncate(toolName, content string) (string, bool) {
 	overBytes := len(content) > d.cfg.MaxBytes
 	overLines := 1+strings.Count(content, "\n") > d.cfg.MaxLines
@@ -78,24 +82,33 @@ func (d *defaultTruncator) Truncate(toolName, content string) (string, bool) {
 		return content, false
 	}
 
-	out := clipLines(toolName, content, d.cfg.MaxLines)
+	clip := clipLines(toolName, content, d.cfg.MaxLines)
+	out := clip.text
 	if len(out) > d.cfg.MaxBytes {
 		out = clipBytes(out, d.cfg.MaxBytes)
 	}
 
 	// 逃生通道：全文落盘，模型按需回读；写不了就诚实地只报截断。
-	out += "\n" + d.note(toolName, content)
+	out += "\n" + d.note(toolName, clip, content)
 	return out, true
 }
 
-// note 生成截断说明：少给了什么、全文在哪（或为什么没落盘）。
-func (d *defaultTruncator) note(toolName, content string) string {
+// note 生成截断说明：保留了哪段、丢了多少、全文在哪（或为什么没落盘）。
+func (d *defaultTruncator) note(toolName string, clip lineClip, content string) string {
 	var b strings.Builder
-	b.WriteString("[工具输出已截断：完整 ")
+	b.WriteString("[工具输出已截断：")
+	if clip.totalLines > 1 {
+		b.WriteString("保留第 ")
+		b.WriteString(strconv.Itoa(clip.from))
+		b.WriteString("–")
+		b.WriteString(strconv.Itoa(clip.to))
+		b.WriteString(" 行（共 ")
+		b.WriteString(strconv.Itoa(clip.totalLines))
+		b.WriteString(" 行）")
+	}
+	b.WriteString("；完整 ")
 	b.WriteString(strconv.Itoa(len(content)))
-	b.WriteString(" 字节 / ")
-	b.WriteString(strconv.Itoa(1 + strings.Count(content, "\n")))
-	b.WriteString(" 行。")
+	b.WriteString(" 字节。")
 	if d.cfg.Dir != "" {
 		if path := d.spill(toolName, content); path != "" {
 			b.WriteString("全文已保存至 ")
@@ -124,57 +137,66 @@ func (d *defaultTruncator) spill(toolName, content string) string {
 	return name
 }
 
-// clipLines 按工具的保留策略留行数预算内的内容：头部 / 尾部 / 两头各半。
-func clipLines(toolName, s string, keep int) string {
-	lines := 1 + strings.Count(s, "\n")
-	if lines <= keep {
-		return s
-	}
-	switch {
-	case headTools[toolName]:
-		return keepHead(s, keep)
-	case tailTools[toolName]:
-		return keepTail(s, keep)
-	default:
-		return keepBoth(s, keep)
-	}
+// lineClip 是行级裁剪的结果：文本 + 保留区间（说明用）。
+type lineClip struct {
+	text                 string
+	from, to, totalLines int
 }
 
-// keepHead 保留开头 keep 行，中段以省略标记代替。
-func keepHead(s string, keep int) string {
+// clipLines 按工具的保留策略留行数预算内的内容：头部 / 尾部 / 两头各半。
+// 只保留整行（PI 同规则），并记录保留区间。
+func clipLines(toolName, s string, keep int) lineClip {
+	total := 1 + strings.Count(s, "\n")
+	if total <= keep {
+		return lineClip{text: s, from: 1, to: total, totalLines: total}
+	}
+	var text string
+	var from, to int
+	switch {
+	case headTools[toolName]:
+		text, from, to = keepHead(s, keep)
+	case tailTools[toolName]:
+		text, from, to = keepTail(s, keep, total)
+	default:
+		text, from, to = keepBoth(s, keep)
+	}
+	return lineClip{text: text, from: from, to: to, totalLines: total}
+}
+
+// keepHead 保留开头 keep 行（第 1–N 行）。
+func keepHead(s string, keep int) (string, int, int) {
 	idx := nthNewline(s, keep)
 	if idx < 0 {
-		return s
+		return s, 1, 1 + strings.Count(s, "\n")
 	}
-	return s[:idx] + "\n... [中段省略 " + strconv.Itoa(1+strings.Count(s[idx:], "\n")) + " 行] ..."
+	return s[:idx], 1, keep
 }
 
 // keepTail 保留结尾 keep 行（报错在尾部的工具）。
-func keepTail(s string, keep int) string {
+func keepTail(s string, keep, total int) (string, int, int) {
 	idx := nthNewlineFromEnd(s, keep)
 	if idx < 0 {
-		return s
+		return s, 1, total
 	}
-	return "... [前面省略 " + strconv.Itoa(1+strings.Count(s[:idx+1], "\n")) + " 行] ...\n" + s[idx+1:]
+	return s[idx+1:], total - keep + 1, total
 }
 
 // keepBoth 两头各留一半（概要与结论都在，中间的体量让位）。
-func keepBoth(s string, keep int) string {
+func keepBoth(s string, keep int) (string, int, int) {
 	half := keep / 2
 	if half < 1 {
 		half = 1
 	}
 	headIdx := nthNewline(s, half)
 	if headIdx < 0 {
-		return s
+		return s, 1, 1 + strings.Count(s, "\n")
 	}
 	rest := s[headIdx:]
 	tailIdx := nthNewlineFromEnd(rest, half)
 	if tailIdx <= 0 {
-		return s
+		return s, 1, 1 + strings.Count(s, "\n")
 	}
-	omitted := 1 + strings.Count(rest[:tailIdx+1], "\n")
-	return s[:headIdx] + "\n... [中段省略 " + strconv.Itoa(omitted) + " 行] ...\n" + rest[tailIdx+1:]
+	return s[:headIdx] + "\n" + rest[tailIdx+1:], 1, 1 + strings.Count(s, "\n")
 }
 
 // clipBytes 按字节截断，UTF-8 边界安全（多字节字符不切半）。

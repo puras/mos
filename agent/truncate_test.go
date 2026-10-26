@@ -38,18 +38,15 @@ func TestTruncateHeadForReadFile(t *testing.T) {
 	if !truncated {
 		t.Fatal("应发生截断")
 	}
-	// 头部保留：开头在场、结尾不在
+	// 头部保留：开头在场、结尾不在；说明带保留区间（PI 续读提示同款信息）
 	if !strings.HasPrefix(out, "line 1\n") {
 		t.Fatalf("read_file 应保留头部: %.40s", out)
 	}
 	if strings.Contains(out, "line 100") {
 		t.Fatalf("尾部不该保留: %.80s", out)
 	}
-	if !strings.Contains(out, "[中段省略") {
-		t.Fatalf("应有省略标记: %s", out)
-	}
-	if !strings.Contains(out, "已截断") || !strings.Contains(out, "100 行") {
-		t.Fatalf("应说明截断了多少: %s", out)
+	if !strings.Contains(out, "保留第 1–10 行（共 100 行）") {
+		t.Fatalf("应说明保留区间: %s", out)
 	}
 }
 
@@ -62,8 +59,8 @@ func TestTruncateTailForShell(t *testing.T) {
 	if !strings.Contains(out, "line 100") {
 		t.Fatalf("shell 应保留尾部（报错在最后）: %.80s", out)
 	}
-	if !strings.Contains(out, "[前面省略") {
-		t.Fatalf("应有省略标记: %.80s", out)
+	if !strings.Contains(out, "保留第 91–100 行（共 100 行）") {
+		t.Fatalf("应说明保留区间: %.80s", out)
 	}
 }
 

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -8,161 +9,197 @@ import (
 	"github.com/puras/mos/session"
 )
 
-func msg(role llm.Role, content string) llm.Message {
-	return llm.Message{Role: role, Content: content}
+// fakeModel 记录收到的请求，返回预设文本（供压缩器测试）。
+type fakeModel struct {
+	req   *llm.Request
+	text  string
+	calls []llm.ToolCall // 非空时模拟模型试图调用工具
+	err   error
 }
 
-func stateWith(facts ...string) *session.TaskState {
-	st := &session.TaskState{Goal: "目标", Status: session.StatusRunning}
-	for _, f := range facts {
-		st.Facts = append(st.Facts, session.Fact{Tool: "read_file", Summary: f})
+func (m *fakeModel) Chat(_ context.Context, req *llm.Request) (*llm.Response, error) {
+	m.req = req
+	if m.err != nil {
+		return nil, m.err
 	}
-	return st
+	return &llm.Response{
+		Message: llm.Message{Content: m.text, ToolCalls: m.calls},
+		Usage:   llm.Usage{TotalTokens: 42},
+	}, nil
 }
 
-func TestCompactNoOpUnderBudget(t *testing.T) {
-	c := NewDefaultCompactor(CompactorConfig{KeepRecent: 12})
-	hist := []llm.Message{msg(llm.RoleSystem, "sys"), msg(llm.RoleUser, "hi"), msg(llm.RoleAssistant, "yo")}
-	after, ok := c.Compact(hist, stateWith())
-	if ok || len(after) != 3 {
-		t.Fatalf("预算内不该压缩: ok=%v n=%d", ok, len(after))
-	}
+func (m *fakeModel) ChatStream(ctx context.Context, req *llm.Request, _ func(llm.StreamChunk) error) (*llm.Response, error) {
+	return m.Chat(ctx, req)
+}
+func (m *fakeModel) Capabilities() llm.Capability { return 0 }
+
+func u(content string) llm.Message { return llm.Message{Role: llm.RoleUser, Content: content} }
+func a(content string) llm.Message { return llm.Message{Role: llm.RoleAssistant, Content: content} }
+func toolMsg(content string) llm.Message {
+	return llm.Message{Role: llm.RoleTool, Content: content, ToolCallID: "c1"}
 }
 
-func TestCompactShadowsOldKeepsSystem(t *testing.T) {
-	c := NewDefaultCompactor(CompactorConfig{KeepRecent: 4})
-	hist := []llm.Message{msg(llm.RoleSystem, "sys")}
-	for i := 0; i < 10; i++ {
-		hist = append(hist, msg(llm.RoleUser, strings.Repeat("u", i+1)))
-		hist = append(hist, msg(llm.RoleAssistant, strings.Repeat("a", i+1)))
-	}
-	after, ok := c.Compact(hist, stateWith("事实甲"))
-	if !ok {
-		t.Fatal("应发生压缩")
-	}
-	// system + 摘要 + 4 条保留
-	if len(after) != 1+1+4 {
-		t.Fatalf("压缩后 = %d 条, want 6: %+v", len(after), after)
-	}
-	if after[0].Role != llm.RoleSystem || after[0].Content != "sys" {
-		t.Fatalf("system 应原样保留在首位: %+v", after[0])
-	}
-	if after[1].Role != llm.RoleUser || !strings.Contains(after[1].Content, "[任务进度摘要]") {
-		t.Fatalf("第 2 条应为摘要: %+v", after[1])
-	}
-	if !strings.Contains(after[1].Content, "任务目标: 目标") || !strings.Contains(after[1].Content, "- 事实甲") {
-		t.Fatalf("摘要应是 TaskState 快照:\n%s", after[1].Content)
-	}
-	// 保留区是历史的尾部（第 9 个 user 起的 4 条）
-	if after[2].Content != strings.Repeat("u", 9) {
-		t.Fatalf("保留区应从尾部第 4 条起: %+v", after[2])
-	}
-}
+func sm(seq int64, m llm.Message) session.SeqMessage { return session.SeqMessage{Seq: seq, Message: m} }
 
-func TestCompactDoesNotSplitToolCallPair(t *testing.T) {
-	c := NewDefaultCompactor(CompactorConfig{KeepRecent: 3})
-	// u, a(toolcalls), tool, a(toolcalls), tool, a → 尾部保留 3 条会切在 tool 上
-	hist := []llm.Message{
-		msg(llm.RoleUser, "q1"),
-		{Role: llm.RoleAssistant, Content: "r1", ToolCalls: []llm.ToolCall{{ID: "c1"}}},
-		{Role: llm.RoleTool, Content: "res1", ToolCallID: "c1"},
-		{Role: llm.RoleAssistant, Content: "r2", ToolCalls: []llm.ToolCall{{ID: "c2"}}},
-		{Role: llm.RoleTool, Content: "res2", ToolCallID: "c2"},
-		msg(llm.RoleUser, "q2"),
-	}
-	after, ok := c.Compact(hist, stateWith())
-	if !ok {
-		t.Fatal("应发生压缩")
-	}
-	kept := keptMessages(t, after)
-	// 保留区首条绝不能是 tool 消息（否则它的调用方被切掉了）
-	if kept[0].Role == llm.RoleTool {
-		t.Fatalf("切割点切断了 ToolCall-Result 对: %+v", after)
-	}
-	// 成对不变式：每个 tool 消息的前一条必须是带 ToolCalls 的 assistant
-	for i, m := range kept {
-		if m.Role == llm.RoleTool {
-			if i == 0 || kept[i-1].Role != llm.RoleAssistant || len(kept[i-1].ToolCalls) == 0 {
-				t.Fatalf("孤儿 tool 消息: %+v", kept)
-			}
-		}
-	}
-}
-
-func TestCompactAllPairsNoFakeCompaction(t *testing.T) {
-	// 保留区全是成对工具往返、前移后无可丢弃区：放弃压缩，不拿摘要冒充历史
-	c := NewDefaultCompactor(CompactorConfig{KeepRecent: 4})
-	hist := []llm.Message{
-		msg(llm.RoleSystem, "sys"),
-		{Role: llm.RoleAssistant, Content: "r1", ToolCalls: []llm.ToolCall{{ID: "c1"}}},
-		{Role: llm.RoleTool, Content: "res1", ToolCallID: "c1"},
-		{Role: llm.RoleAssistant, Content: "r2", ToolCalls: []llm.ToolCall{{ID: "c2"}}},
-		{Role: llm.RoleTool, Content: "res2", ToolCallID: "c2"},
-	}
-	after, ok := c.Compact(hist, stateWith())
-	if ok {
-		t.Fatalf("无可丢弃区时应放弃压缩: %+v", after)
-	}
-}
-
-func TestCompactOnCompactObserved(t *testing.T) {
-	var gotSummary string
-	var gotShadowed, gotKept int
-	c := NewDefaultCompactor(CompactorConfig{
-		KeepRecent: 2,
-		OnCompact:  func(summary string, shadowed, kept int) { gotSummary, gotShadowed, gotKept = summary, shadowed, kept },
-	})
-	hist := []llm.Message{
-		msg(llm.RoleUser, "old1"),
-		msg(llm.RoleAssistant, "old2"),
-		msg(llm.RoleUser, "old3"),
-		msg(llm.RoleAssistant, "old4"),
-		msg(llm.RoleUser, "new1"),
-		msg(llm.RoleAssistant, "new2"),
-	}
-	if _, ok := c.Compact(hist, stateWith("乙")); !ok {
-		t.Fatal("应发生压缩")
-	}
-	if gotShadowed != 4 || gotKept != 2 {
-		t.Fatalf("OnCompact = (%d, %d), want (4, 2)", gotShadowed, gotKept)
-	}
-	if !strings.Contains(gotSummary, "- 乙") {
-		t.Fatalf("回调应拿到摘要文本: %q", gotSummary)
-	}
-}
-
-func TestCompactNilStateHonestSummary(t *testing.T) {
-	c := NewDefaultCompactor(CompactorConfig{KeepRecent: 2})
-	hist := []llm.Message{msg(llm.RoleUser, "1"), msg(llm.RoleAssistant, "2"), msg(llm.RoleUser, "3"), msg(llm.RoleAssistant, "4"), msg(llm.RoleUser, "5")}
-	after, ok := c.Compact(hist, nil)
-	if !ok {
-		t.Fatal("应发生压缩")
-	}
-	if !strings.Contains(summaryOf(t, after).Content, "暂无已验证事实") {
-		t.Fatalf("nil 状态应诚实说明: %+v", after)
-	}
-}
-
-// keptMessages 取压缩结果里摘要之后的保留区。
-func keptMessages(t *testing.T, after []llm.Message) []llm.Message {
+func newCompactor(t *testing.T, m llm.ChatModel, window int) *LLMCompactor {
 	t.Helper()
-	for i, m := range after {
-		if strings.Contains(m.Content, "[任务进度摘要]") {
-			return after[i+1:]
-		}
-	}
-	t.Fatalf("压缩结果里没有摘要: %+v", after)
-	return nil
+	return NewLLMCompactor(m, CompactorConfig{ContextWindow: window})
 }
 
-// summaryOf 取压缩注入的摘要消息。
-func summaryOf(t *testing.T, after []llm.Message) llm.Message {
-	t.Helper()
-	for _, m := range after {
-		if strings.Contains(m.Content, "[任务进度摘要]") {
-			return m
+// 触发公式与 PI 一致：contextTokens > contextWindow - reserveTokens。
+func TestShouldCompact(t *testing.T) {
+	c := newCompactor(t, &fakeModel{}, 100000)
+	if c.ShouldCompact(100000 - 16384) {
+		t.Fatal("未超预算不该触发")
+	}
+	if !c.ShouldCompact(100000 - 16384 + 1) {
+		t.Fatal("超预算应触发")
+	}
+	// 未配置窗口 = 永不自动触发（fail-closed）
+	noWindow := NewLLMCompactor(&fakeModel{}, CompactorConfig{})
+	if noWindow.ShouldCompact(1 << 30) {
+		t.Fatal("无窗口不该触发")
+	}
+}
+
+// 切割点算法（PI 的 findCutPoint）：从尾部按估算累计，超预算处取其后最近
+// 的合法切割点；合法切割点 = user / assistant，绝不是 tool 结果。
+func TestPlanCutNeverAtToolResult(t *testing.T) {
+	c := newCompactor(t, &fakeModel{}, 1<<30)
+	// 长历史 + 尾部若干短消息；预算设小让切割落进中段
+	small := NewLLMCompactor(&fakeModel{}, CompactorConfig{ContextWindow: 1 << 30, KeepRecentTokens: 10})
+	view := []session.SeqMessage{
+		sm(1, u(strings.Repeat("长", 400))),
+		sm(2, a(strings.Repeat("复", 400))),
+		sm(3, u("q2")),
+		sm(4, a("r2 with tool call")),
+		sm(5, toolMsg("tool result")),
+		sm(6, u("q3")),
+	}
+	plan, ok := small.Plan(view, 1<<30)
+	if !ok {
+		t.Fatal("应产生切割方案")
+	}
+	if view[plan.Cut].Message.Role == llm.RoleTool {
+		t.Fatalf("切割点落在了 tool 结果上: cut=%d", plan.Cut)
+	}
+	// 预算只有 10 token：保留的应是尾部少数几条（q2 起）
+	if plan.Cut < 2 {
+		t.Fatalf("切割点应贴近尾部: cut=%d", plan.Cut)
+	}
+	_ = c
+}
+
+// 预算内不压缩；切到开头（无可摘要段）也不压缩。
+func TestPlanNoOp(t *testing.T) {
+	c := NewLLMCompactor(&fakeModel{}, CompactorConfig{ContextWindow: 1 << 30, KeepRecentTokens: 1 << 20})
+	view := []session.SeqMessage{sm(1, u("a")), sm(2, a("b")), sm(3, u("c"))}
+	if _, ok := c.Plan(view, 1<<30); ok {
+		t.Fatal("预算远大于视图不该压缩")
+	}
+	// 视图只有一条消息：没有合法切割点
+	tiny := NewLLMCompactor(&fakeModel{}, CompactorConfig{ContextWindow: 1 << 30, KeepRecentTokens: 1})
+	if _, ok := tiny.Plan(view[:1], 1<<30); ok {
+		t.Fatal("无可摘要段不该压缩")
+	}
+}
+
+// Summarize 走 PI 的提示词结构：<conversation> 包裹 + 系统提示禁止续写；
+// 有旧摘要时附 <previous-summary> 并换用更新提示词；工具结果被截断；
+// 模型试图调用工具时直接报错。
+func TestSummarizePromptShape(t *testing.T) {
+	m := &fakeModel{text: "## Goal\nx"}
+	c := NewLLMCompactor(m, CompactorConfig{ContextWindow: 1000, MaxToolResultChars: 50})
+	msgs := []llm.Message{
+		u("问题"),
+		a("回答"),
+		{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{Name: "read_file", Args: `{"path":"a.go"}`}}},
+		toolMsg(strings.Repeat("结果", 100)),
+	}
+	text, usage, err := c.Summarize(context.Background(), msgs, "")
+	if err != nil {
+		t.Fatalf("Summarize: %v", err)
+	}
+	if text != "## Goal\nx" || usage.TotalTokens != 42 {
+		t.Fatalf("返回值不对: %q %+v", text, usage)
+	}
+
+	req := m.req
+	if len(req.Messages) != 2 || req.Messages[0].Role != llm.RoleSystem {
+		t.Fatalf("请求应为 [system, user]: %+v", req.Messages)
+	}
+	if !strings.Contains(req.Messages[0].Content, "Do NOT continue the conversation") {
+		t.Fatalf("系统提示应禁止续写: %s", req.Messages[0].Content)
+	}
+	body := req.Messages[1].Content
+	for _, want := range []string{
+		"<conversation>", "[User]: 问题", "[Assistant]: 回答",
+		"[Assistant tool calls]: read_file(", "[Tool result]: 结果",
+		"chars truncated]", "## Goal",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("提示词缺 %q:\n%.400s", want, body)
 		}
 	}
-	t.Fatalf("压缩结果里没有摘要: %+v", after)
-	return llm.Message{}
+	if strings.Contains(body, "<previous-summary>") {
+		t.Fatal("无旧摘要时不应带 previous-summary")
+	}
+	// 工具结果截到 50 rune + 标注
+	if strings.Count(body, "结果") > 60 {
+		t.Fatal("工具结果未被截断")
+	}
+
+	// 迭代路径：previous 非空 → <previous-summary> + 更新提示词
+	if _, _, err := c.Summarize(context.Background(), msgs, "旧摘要"); err != nil {
+		t.Fatalf("Summarize(previous): %v", err)
+	}
+	body = m.req.Messages[1].Content
+	if !strings.Contains(body, "<previous-summary>\n旧摘要\n</previous-summary>") {
+		t.Fatalf("应带 previous-summary:\n%.300s", body)
+	}
+	if !strings.Contains(body, "Update the existing summary") {
+		t.Fatal("应换用更新提示词")
+	}
+	// 旧摘要不再作为对话序列化
+	if strings.Contains(body, "[User]: [历史摘要]") {
+		t.Fatal("旧摘要不该被序列化进对话")
+	}
+}
+
+// 模型试图调用工具：摘要是纯文本产出，直接报错（PI 同款护栏）。
+func TestSummarizeRejectsToolCalls(t *testing.T) {
+	m := &fakeModel{calls: []llm.ToolCall{{Name: "shell"}}}
+	c := newCompactor(t, m, 1000)
+	if _, _, err := c.Summarize(context.Background(), []llm.Message{u("x")}, ""); err == nil {
+		t.Fatal("应拒绝试图调用工具的摘要响应")
+	}
+}
+
+// nil 模型 fail-closed。
+func TestSummarizeNilModel(t *testing.T) {
+	c := NewLLMCompactor(nil, CompactorConfig{ContextWindow: 1000})
+	if _, _, err := c.Summarize(context.Background(), nil, ""); err == nil {
+		t.Fatal("nil 模型应报错")
+	}
+}
+
+// 序列化：思维链省略；空内容跳过。
+func TestSerializeConversation(t *testing.T) {
+	msgs := []llm.Message{
+		{Role: llm.RoleUser, Content: "q"},
+		{Role: llm.RoleAssistant, Content: "", ReasoningContent: "思考过程", ToolCalls: []llm.ToolCall{{Name: "t", Args: `{}`}}},
+		toolMsg("res"),
+	}
+	out := serializeConversation(msgs, 100)
+	if strings.Contains(out, "思考过程") {
+		t.Fatal("思维链应省略（PI：摘要请求不应大于被总结的上下文）")
+	}
+	if strings.Contains(out, "[Assistant]:") {
+		t.Fatalf("空文本 assistant 只应出 tool calls 行:\n%s", out)
+	}
+	for _, want := range []string{"[User]: q", "[Assistant tool calls]: t({})", "[Tool result]: res"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("缺 %q:\n%s", want, out)
+		}
+	}
 }

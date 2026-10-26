@@ -20,7 +20,7 @@
 1. **fail-closed**：未知工具拒绝；capability 缺失即 `NotConfiguredError`；必需组件（规划器/评审器）缺失拒绝运行而非降级放行；截断消息中的工具调用 fail-closed。
 2. **日志即事实**：会话日志 append-only；`Append` 同步落盘 fail-fast（写失败事件不进内存）；崩溃恢复只补事件不改写（孤儿 turn 合成 `interrupted`）。
 3. **审计不变式**：只有环境可验证的事实进入 `TaskState`，模型自述不算数；机器可回放信号（退出码/路径命中/事件日志）优先于 LLM 判断；有界轮次耗尽诚实停机，不造假绿灯。
-4. **上下文是稀缺资源**：截断 + 压缩；压缩切割点不切断 ToolCall-Result 对；压缩摘要 = `TaskState` 快照而非 LLM 重新总结。
+4. **上下文是稀缺资源**：截断 + 压缩；压缩切割点不切断 ToolCall-Result 对；压缩按 token 预算触发（contextWindow 感知）、摘要由模型生成并作为 compaction 事件落会话日志——被遮蔽内容不删，重放确定性地复现压缩后视图（对齐 PI/DSH）。
 5. **Hook/Guard 双轨制**：可改写环节走 HookBus（waterfall，可短路/改写/替换）；安全约束走 GuardBus（serial，单调裁决，不可被钩子改写绕过）。
 6. **零开销降级**：扩展点 nil 时行为与未注入完全一致（Telemetry/Observer/EventBus 等 no-op 零成本）。
 7. **依赖纪律**：SDK 近零依赖（协议层 + uuid + yaml.v3）；协议仓库只读；不操作数据库（`Persistence` 接口 + 轻量默认，数据库后端由业务层注入）。
@@ -38,6 +38,7 @@
 | `agent/policy` | 工具名级策略：fail-closed 黑白名单 + YAML 装配 | 移植裁剪 | S5c ✅ |
 | `filesystem` | 文件 jail：宿主声明可读/可写根 + Lexical/Realpath 双层校验 | 移植裁剪 | S5d ✅ |
 | `sandbox` | 进程隔离：超时 + 进程组击杀 + 输出上限 + 资源限制 + 环境裁剪 | 移植裁剪 | S5f-1 ✅ |
+| `agent/prompt` | 系统提示词分节装配：`Section`/`Builder`（Add 严格插入 / Set 覆写 / Complete 整段替换 / Clone 派生）+ 中心顺序常量；`tool.Guideline` 可选接口让工具自带跨调用指引（文案归工具包，位置归本包）——PI 紧凑模板 × DSH 顺序中心化的中间态 | 新增 | S7 前置 ✅ |
 | `agent`（上下文件） | 截断、压缩、Auditor | 重写瘦身 | S6 ✅ |
 | `assistant` | 一行装配 + 示例 CLI | 重写 | S7 |
 
@@ -51,7 +52,7 @@
 
 - **历史来源唯一**：`RunContext.History(sess)` = 静态系统引导 + 会话事件投影，驱动不自行维护 `[]Message`；工具定义单独传决策器（对话与能力是两件事）；
 - **轮次序号派生**：`sess.NextTurn()` 取日志最大值 + 1，Restore 后自然接续；
-- **投影合法性不变式**：assistant 的 `ToolCalls` 与随后的 `tool/result` 按 CallID 成对——否则投出的历史对服务商非法（缺 tool 消息会报错）；
+- **投影合法性不变式**：assistant 的 `ToolCalls` 与随后的 `tool/result` 按 CallID 成对——否则投出的历史对服务商非法（缺 tool 消息会报错）；进程被硬杀会在日志里留下无回执的 `tool/call`（append-only 不改写，洞就是发生过的事实），投影时给未配对调用补**合成中断回执**（带工具名与中断语义，按声明序补在首个非 tool/result 事件之前），保证对外历史永远合法——日志留洞，healed 的是派生态；
 - **日志顺序**：`tool/call` 按模型顺序全部先落，执行后 `tool/result` 按序回填，Seq 连续可重放（为并发执行留形，S4b 目前串行）；
 - **错误分级**：工具报错（含模型幻觉出的未注册工具）是**结果**，以 `IsError` 回填给模型让它自我纠正，不中断 turn；只有落盘失败与决策失败才中断，且都以 `turn/end{reason:error}` 收尾，不留孤儿 turn；
 - **收尾带详情**：`turn/end` 的 `reason` 是分类（completed / terminated / error / interrupted），另带 `error` 字段记详情（出错原因、终止理由，上限 4KB 按 UTF-8 边界截断）——**只进日志、不进模型投影**（`project()` 不投影 `turn/end`）。理由：日志是审计凭据，失败若只有分类，事后只剩“失败了”三个字，无从追查是模型不可用、证书过期还是守卫拦的；完整错误仍由返回值交给宿主，二者不互相替代；
@@ -337,25 +338,23 @@ llm.WithRetry(model, llm.RetryPolicy{
 - **能力由宿主决定**：`FileTools(fsys, gate)`，nil 门 = 旧行为（无条件变更）。
 - **并发与边界**：进程内写/改独占执行（execpath 屏障调度），校验窗口天然串行；**跨进程竞争不设防**（DSH 的 hard-link no-replace 暂未做）——文档写明。
 
-### 3.13 上下文工程（S6：截断 + 压缩 + TaskState/Auditor）
+### 3.13 上下文工程（S6：截断 + 压缩 + TaskState/Auditor，对齐 PI/DSH）
 
-包 `agent`（截断 / 压缩 / 审计门三件套）+ `session.TaskState`（外置可信状态）。上下文是稀缺资源（不变式 4），三件套各管一段：
+包 `agent`（截断 / 压缩 / 审计门三件套）+ `session` 的 compaction 事件与投影遮蔽。规则逐项对齐 PI（`tools/truncate.ts` + `core/compaction/compaction.ts`）与 DSH（`dsh-compaction*` / `dsh-spill`），不自创机制：
 
-**TaskState 不存储、从事件日志派生**（`session.DeriveTaskState`）——"日志即事实"（不变式 2）的自然延伸：Goal = 首条用户输入；Facts = 审计门信任工具的**无错** `tool/result`（证据即回填原文，(tool, evidence) 去重）；Status 派生三档（pending / running / completed；blocked 留给 M3，不猜）。Restore 后免费恢复，Persistence 无需感知它的存在。Pending / Blocked 字段是 M3 Manager 角色的预留位。
+**截断**（`agent.ResultTruncator` → `TruncateHook` 挂 `tool/post-execute`）：行/字节双限（默认 2000 行 / **50KB**，PI 的 `DEFAULT_MAX_LINES/DEFAULT_MAX_BYTES` 同款），按工具定向保留——`read_file` 留头、`shell` 留尾、其余两头各半（PI 的 `truncateHead/Tail` 同构）；只保留整行，字节预算在行级保不住时落到 UTF-8 安全的字节截断（对位 PI 的 `truncateMiddle`）。截断说明带**保留区间**（"保留第 1–10 行（共 100 行）"，PI 续读提示同款信息）与全文落盘路径（逃生通道：宿主指定目录，必须在文件 jail 可读根内；落盘失败诚实降级）。
 
-**审计门**（`agent.Auditor`）：只有环境自证的只读工具（`current_time`、`read_file`）的输出可进 TaskState；变更类（shell、write_file）的输出是"未核实声明"，要进状态需用只读工具二次取证，或宿主 `Trust` 显式扩名单（决策在宿主，机制在框架）。nil 审计门 = 全不信任（fail-closed）——模型自述永远不进状态（不变式 3）。
+**压缩**（`agent.LLMCompactor`，PI compaction 的移植）：
+- **触发**：`contextTokens > contextWindow - reserveTokens`（默认预留 16384）。token 估算两段式：优先用最后一次模型调用的**真实用量**（total，或分项之和），其后新增事件按 chars/4 估算（PI 的 `calculateContextTokens` + `estimateTokens` 同款）；ContextWindow 未配置 = 永不自动触发（fail-closed）。
+- **时机**：每次决策前（PI 同款：工具结果追加之后、下一次模型响应之前）。
+- **切割**（PI 的 `findCutPoint`）：从尾部按估算累计到 `keepRecentTokens`（默认 20000）；切割点取超预算处**之后最近的合法切割点**——合法 = user/assistant 消息，**绝不是 tool 结果**（保留段不能以孤儿回执开头，投影对服务商非法）。无可摘要段时不压缩。
+- **摘要**：被压缩历史序列化为纯文本（`[User]: / [Assistant]: / [Assistant tool calls]: / [Tool result]:`；工具结果截到 2000 字符、思维链省略——摘要请求不应大于被总结的上下文），包进 `<conversation>`，附 `<previous-summary>`（迭代压缩）并换用"更新既有摘要"提示词；系统提示明令禁止续写对话；模型试图调用工具即报错。全部提示词逐字移植自 PI。
+- **落库**：摘要作为 `compaction` 事件写入会话日志（Summary + FirstKeptSeq + tokensBefore + 摘要调用的 usage——计入会话总量，PI 同款）。投影从此遮蔽旧历史：LLM 看到 `[system, 摘要, 保留段...]`。**被遮蔽的事件留在日志里**——审计走全量日志（`Events()`），重放确定性地复现压缩后视图；旧摘要在迭代压缩中作为 previous-summary 折叠进新摘要，不重复出现。
+- **失败即终止本轮**（fail-fast）：静默超预算只会在下一次调用溢出，那种报错更难懂。溢出错误的"压缩后重试"（PI/DSH 都有）留作后续：需要跨协议识别溢出错误，不半做。
 
-**截断**（`agent.ResultTruncator` → `TruncateHook` 挂 `tool/post-execute`）：行/字节双限制（默认 2000 行 / 64KB），按工具定向保留——`read_file` 留头（结构在前）、`shell` 留尾（报错在后）、其余两头各半；截断说明带"少了多少"。逃生通道：全文落盘（宿主指定目录，**必须在文件 jail 可读根内**——jail 外的路径是模型兑现不了的承诺），落盘失败诚实降级为"只报截断"。日志落的是截断后的回填——日志记的就是模型实际看到的。
+**TaskState/Auditor**（`session.DeriveTaskState` / `agent.Auditor`）：PRD M2.1/M2.2 基线（状态外置、审计门），作为独立基础设施落地，**不参与压缩**（PI/DSH 均无审计门；M3 多智能体与宿主消费）。审计不变式不变：只有环境自证的只读工具（`current_time`/`read_file`）的输出可进 TaskState，模型自述不算数。
 
-**压缩**（`agent.Compactor`，每个决策轮前重算）：历史超 `KeepRecent`（默认 12）时，旧消息让位给一份摘要 + 最近原样保留。两条不变式：
-- **切割点不切断 ToolCall-Result 对**：保留区首条若是孤儿 tool 结果（调用方被切），切割点前移到成对为止；前移到头（无可丢弃区）就放弃压缩——不拿摘要冒充历史；
-- **摘要 = TaskState 快照，而非 LLM 重新总结**（不变式 4）：已验证事实的投影，不是模型的转述。
-
-压缩是派生行为，无需持久化任何"压缩状态"；`OnCompact` 回调供宿主观测（静默压缩是查不出问题的）。
-
-**决策路径顺序固定**：`History` 投影 → 压缩（框架行为，要读日志派生状态，不经钩子）→ `pre-step` 瀑布（宿主钩子：RAG / 注入等）→ 决策器。两者均零开销降级（Compactor / Hooks 为 nil 时与未注入完全一致）。
-
-**轮次上限放开**：压缩接管上下文增长后，`MaxDecisionRounds <= 0` = 不限（默认，对齐 PI/DSH）；保险丝旋钮保留给无人值守场景。
+**决策路径顺序固定**：压缩检查 → `History` 投影（含压缩遮蔽）→ `pre-step` 瀑布（宿主钩子）→ 决策器。均零开销降级。轮次默认不限（压缩接管上下文增长）。
 
 ## 4. 治理规则（防再膨胀）
 

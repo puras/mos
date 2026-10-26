@@ -43,7 +43,7 @@ type HookKind string
 
 const (
 	// HookPreStep 改写模型输入（RAG / 注入 / 预算监控）——S6 接线：驱动在
-	// 每次决策前跑一遍 pre-step 瀑布（压缩由框架先做，宿主钩子改写其结果）。
+	// 每次决策前（压缩检查之后）跑一遍 pre-step 瀑布。
 	HookPreStep HookKind = "pre-step"
 	// HookToolPreExecute 裁决一次工具调用（允许 / 拒绝 / 请求审批 / 终止本轮）——S5e 消费。
 	// 载荷（工具名 / 参数 / CallID）对钩子**不可变**：钩子只做决策，不改调用。

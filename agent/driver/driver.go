@@ -67,14 +67,13 @@ type RunContext struct {
 	// 从另一个进程收决定都行。nil 时，pre-execute 的「需人工确认」降级为
 	// 拒绝（fail-closed）。
 	Answerer approval.Answerer
-	// Compactor 是上下文压缩器（可选，nil = 不压缩）。每次决策前，历史超
-	// 过预算时旧消息让位给 TaskState 快照（已验证事实的投影，不是 LLM 的
-	// 再总结）；切割点不切断 ToolCall-Result 对。
+	// Compactor 是上下文压缩器（可选，nil = 不压缩）。每次决策前，超过
+	// token 预算（contextWindow - reserveTokens，PI 同款）时：从投影视图
+	// 定切割点（永不落在 tool 结果上）→ 模型生成结构化摘要 → 摘要作为
+	// compaction 事件落会话日志（投影从此遮蔽旧历史，重放可复现）。
+	// 压缩失败以错误终止本轮（fail-fast：静默超预算会在下一次调用溢出，
+	// 那时报错更难懂）。参见 agent.LLMCompactor。
 	Compactor agent.Compactor
-	// Auditor 是审计门（可选，nil = 全不信任——没有事实进 TaskState，
-	// fail-closed）。它裁定哪些工具的输出是环境自证：压缩摘要里的事实、
-	// 以及宿主经 session.DeriveTaskState 做的任何审计，都以它为准。
-	Auditor agent.Auditor
 	// SystemPrompt 是静态系统引导词（可选，作为历史首条消息注入）。
 	SystemPrompt string
 	// Stream 为 true 时优先走决策器的流式接口（若实现），

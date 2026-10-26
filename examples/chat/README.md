@@ -12,13 +12,11 @@ S4b 里程碑示例——智能体经**驱动层循环**与模型对话，模型
 - **路径强制**（macOS）：写限定在工作区内，越界写被**内核**拒绝（`Operation not permitted`）——与命令怎么拼无关，拆解命令绕不过。被隔离命令的缓存/临时目录由宿主指到工作区内（`GOCACHE`/`TMPDIR`）；非 macOS 平台此强制未落地，非全开调用会明确报错
 - 开了 shell 会附带一份**默认系统引导词**（教模型用命令验证）；`MOS_SYSTEM_PROMPT` 可覆盖
 - **写前观察**（S5h）：`write_file` 覆盖没读过的文件、或读后文件已被修改（shell/人改的）→ **拒绝并要求重读**——防丢失更新。新建文件不需要先读
-- **上下文工程**（S6）：
-  - **压缩**（`-keep-recent`，默认 12，0 = 关）：历史超预算时旧消息让位给一份**任务进度摘要**——它是从事件日志派生的 TaskState 快照（已验证事实），不是 LLM 的再总结；切割点不切断 ToolCall-Result 对。压缩发生时在 stderr 打 `[compact]` 一行（摘要 + 丢弃/保留条数）
-  - **结果截断**（`-trim` 字节，0 = 关）：工具结果过大时就地瘦身（read_file 留头、shell 留尾、其余两头各半），全文落 `.mos-trunc/`（在工作区内，`read_file` 可回读）
-  - **审计门**：哪些工具的输出配进摘要由白名单定（`current_time`/`read_file`）；`-trust` 可把自认为输出可作证据的工具加进去
+- **上下文工程**（S6，对齐 PI）：
+  - **压缩**（`-context-window`，需指定模型窗口；0 = 关）：超过窗口-预留时，从投影定切割点（永不切断工具调用对），**模型生成结构化摘要**（Goal/Progress/Key Decisions/Next Steps）作为 compaction 事件落会话日志；投影从此遮蔽旧历史，被遮蔽内容留在日志可审计。`-reserve-tokens`（默认 16384）/ `-keep-recent-tokens`（默认 20000）调预算
+  - **结果截断**（`-trim` 字节，0 = 关）：工具结果过大时就地瘦身（read_file 留头、shell 留尾、其余两头各半，说明带保留区间），全文落 `.mos-trunc/`（在工作区内，`read_file` 可回读）
 - **人工审批**（`approval.go`）：pre-execute 的「需人工确认」会在终端问 `[审批] 是否允许执行 shell？[y/N]`——**空回车 = 拒绝**（默认答案必须是安全的那个）。未装配时（`-approval=false`）一律拒绝（fail-closed）。批准只对**本次调用**生效，不缓存
 - **宿主侧参数级规则**（`guard.go`）：按参数判定——敏感文件（`.env` / `id_rsa` / `*.pem`）不读不写（deny），**删除命令**（`rm` / `unlink` / `git rm`，无论带什么 flag）需人工确认（ask）。**规则键在语义上，不在字母形状上**（曾键在"含 r 的 flag"上：`git status --short` 误触发、逐个 `git rm` 漏过，被拒后模型拆解命令绕过了拦截）。诚实边界：`find -delete`、脚本语言仍绕得过——这只是业务规则，真正的边界是路径强制隔离（S5f-2b，未落地）
-- `lab/` 是配套的**练手项目**（独立的 go module，故意留了个逻辑 bug）：让 agent 修好它并跑测试——仓库自己的 `go test ./...` 不受它影响（嵌套 module 被根 module 忽略）
 - 流式打字机输出（协议不支持时自动回退非流式）；思维链以暗色文本透出
 - 会话事件日志落 JSONL（`data/`）：多轮上下文由事件投影累积，**重启自动恢复续聊**；中断的 turn 被合成为 `interrupted` 收尾
 - 每轮打印会话累计 token 用量：**输入（去缓存口径）/ 缓存读 / 缓存写 / 输出 / 共**，有缓存命中时附**命中率**（自算：cache_read / (输入 + cache_read)）——缓存命中单列才看得出成本结构（Anthropic 的输入本就不含缓存，OpenAI 的含，故统一用去缓存口径）
@@ -57,34 +55,9 @@ go run . -new -allow-shell -shell-spill /tmp/mos  # 输出落盘目录（截断�
 
 开启后模型多了 `shell` 工具，于是这条回路成立：**改 → 跑 → 看真实输出 → 再改**。
 
-### 走一遍：`lab/` 练手项目
+关键在**中间那步**：模型先跑一次、**看到真实失败**，才去改；改完再跑一次验证。这条回路是 agent 自主收敛的前提——没有它，模型只能靠猜代码对不对。
 
-`lab/` 是一个独立的 go module，故意留了一个逻辑 bug（`SumRange` 少算 `hi` 那一项）。问一句：
-
-```text
-你 > lab 里有个测试没过，修好它并跑测试验证
-```
-
-期望看到的事件流（下面是**真实跑出来的**，非模拟）：
-
-```text
-tool/call   read_file {"path":".../lab/main.go","offset":1,"limit":30}
-tool/result ok        {"content":"// Package main 是 chat 示例的练手项目…"}
-tool/call   read_file {"path":".../lab/main_test.go","offset":1,"limit":30}
-tool/result ok        {"content":"package main\n\nimport \"testing\"…"}
-tool/call   shell     {"command":"cd lab && go test ./... "}
-tool/result ok        {"exit_code":1,"output":"--- FAIL: TestSumRange (0.00s)
-                          main_test.go:7: SumRange(1, 5) = 10, want 15（含两端）
-                          [exit code: 1]",...}
-tool/call   edit_file {"path":".../lab/main.go","edits":[{"old_string":"for i := lo; i < hi; i++ {","new_string":"for i := lo; i <= hi; i++ {"}]}
-tool/result ok        {"bytes":484,"first_changed_line":12,...}
-tool/call   shell     {"command":"cd lab && go test ./... "}
-tool/result ok        {"exit_code":0,"output":"ok  \tmoslab\t0.501s\n","duration_ms":1008,"truncated":false}
-```
-
-关键在**中间那两条**：模型先跑了一次测试、**看到了真实失败**，才去改；改完再跑一次、通过。这条回路是 agent 自主收敛的前提——没有它，模型只能靠猜代码对不对。
-
-注意 `go test` 在 `lab/` 里跑得起来，靠的是沙箱保留了 `PATH` 与 `HOME`（`GOMODCACHE` 在 HOME 下）；环境变量是**白名单**，主机的密钥不会泄给模型执行的命令。
+注意子进程能跑起来，靠的是沙箱保留了 `PATH` 与 `HOME`（`GOMODCACHE` 在 HOME 下）；环境变量是**白名单**，主机的密钥不会泄给模型执行的命令。
 
 ### 沙箱做了什么（详见 `docs/ARCHITECTURE.md` §3.7）
 

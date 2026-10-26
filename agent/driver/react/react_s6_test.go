@@ -3,6 +3,8 @@ package react
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -14,60 +16,54 @@ import (
 	"github.com/puras/mos/session"
 )
 
-// recordingCompactor 记录每次收到的历史与状态快照，可配置是否压缩。
-type recordingCompactor struct {
-	keep         int // <=0 = 不压缩
-	seenHistory  [][]llm.Message
-	seenStates   []*session.TaskState
-	summaryGiven string
+// stubCompactor 是可编程的压缩器桩：按预设返回切割方案与摘要，
+// 并记录收到的视图与消息（供断言）。
+type stubCompactor struct {
+	planOK   bool
+	cut      int
+	previous string
+	text     string
+	sumErr   error
+
+	gotView   []session.SeqMessage
+	gotTokens int
+	gotMsgs   []llm.Message
+	gotPrev   string
 }
 
-func (c *recordingCompactor) Compact(history []llm.Message, state *session.TaskState) ([]llm.Message, bool) {
-	c.seenHistory = append(c.seenHistory, history)
-	c.seenStates = append(c.seenStates, state)
-	if c.keep <= 0 {
-		return history, false
+func (c *stubCompactor) ShouldCompact(int) bool { return true }
+
+func (c *stubCompactor) Plan(view []session.SeqMessage, contextTokens int) (agent.CutPlan, bool) {
+	c.gotView = view
+	c.gotTokens = contextTokens
+	if !c.planOK {
+		return agent.CutPlan{}, false
 	}
-	// 极简压缩：只留 system + 摘要 + 最后 keep 条（成对由测试保证，这里不重复实现）
-	start := 0
-	if len(history) > 0 && history[0].Role == llm.RoleSystem {
-		start = 1
-	}
-	msgs := history[start:]
-	if len(msgs) <= c.keep {
-		return history, false
-	}
-	cut := len(msgs) - c.keep
-	for cut > 0 && msgs[cut].Role == llm.RoleTool {
-		cut--
-	}
-	if cut == 0 {
-		return history, false
-	}
-	summary := llm.Message{Role: llm.RoleUser, Content: c.summaryGiven}
-	out := []llm.Message{}
-	if start > 0 {
-		out = append(out, history[0])
-	}
-	out = append(out, summary)
-	out = append(out, msgs[cut:]...)
-	return out, true
+	return agent.CutPlan{Cut: c.cut, Previous: c.previous}, true
 }
 
-// prefillSessions 预先落多轮历史：每轮 user + assistant(带工具调用) + tool/result。
-// trusted 工具的结果会经审计门进 TaskState。
+func (c *stubCompactor) Summarize(_ context.Context, msgs []llm.Message, previous string) (string, llm.Usage, error) {
+	c.gotMsgs = msgs
+	c.gotPrev = previous
+	if c.sumErr != nil {
+		return "", llm.Usage{}, c.sumErr
+	}
+	return c.text, llm.Usage{TotalTokens: 42}, nil
+}
+
+// prefillSessions 预先落多轮历史：每轮 user + assistant(带工具调用) + tool/call + tool/result + 收尾。
 func prefillSessions(t *testing.T, sess *session.Session, turns int) {
 	t.Helper()
 	for turn := 1; turn <= turns; turn++ {
 		for _, ev := range []session.Event{
 			{Kind: session.EventTurnStart, Turn: turn},
-			{Kind: session.EventUser, Turn: turn, Text: "第 " + string(rune('0'+turn)) + " 个问题"},
+			{Kind: session.EventUser, Turn: turn, Text: fmt.Sprintf("第 %d 个问题", turn)},
 			{Kind: session.EventAssistant, Turn: turn, ToolCalls: []llm.ToolCall{
-				{ID: callID(turn), Name: "read_file", Args: `{}`},
+				{ID: fmt.Sprintf("call-%d", turn), Name: "read_file", Args: `{}`},
 			}},
-			{Kind: session.EventToolCall, Turn: turn, ToolCall: &llm.ToolCall{ID: callID(turn), Name: "read_file", Args: `{}`}},
+			{Kind: session.EventToolCall, Turn: turn, ToolCall: &llm.ToolCall{ID: fmt.Sprintf("call-%d", turn), Name: "read_file", Args: `{}`}},
 			{Kind: session.EventToolResult, Turn: turn, ToolResult: &session.ToolResult{
-				CallID: callID(turn), Content: "环境证据 " + string(rune('0'+turn)),
+				CallID: fmt.Sprintf("call-%d", turn), Content: fmt.Sprintf("环境证据 %d", turn),
 			}},
 			{Kind: session.EventTurnEnd, Turn: turn, Reason: "completed"},
 		} {
@@ -78,61 +74,127 @@ func prefillSessions(t *testing.T, sess *session.Session, turns int) {
 	}
 }
 
-func callID(turn int) string { return "call-" + string(rune('0'+turn)) }
-
-// 压缩要接进决策路径：决策器收到的历史被替换成 [system, 摘要, 保留区]，
-// 且摘要内容来自 TaskState 快照（审计门信任的工具输出）。
+// 压缩接线（PI 同款时序：工具结果追加之后、下一次模型响应之前）：
+// 超预算 → 定切割点 → 摘要落 compaction 事件 → 后续投影即压缩后视图。
 func TestCompactionWiredIntoDecide(t *testing.T) {
 	sess := session.New("t", nil)
 	prefillSessions(t, sess, 5)
 
-	comp := &recordingCompactor{keep: 2, summaryGiven: "[压缩摘要]"}
+	// 切割点定在视图第 2 条（真实算法保证它不会落在 tool 结果上，
+	// 桩里直接给定）。
+	comp := &stubCompactor{planOK: true, cut: 2, text: "## Goal\n测试"}
 	p := &scriptedPlanner{acts: []planner.Action{answer("done")}}
-	rt := &driver.RunContext{
-		Planner:   p,
-		Compactor: comp,
-		Auditor:   agent.NewDefaultAuditor(), // read_file 在白名单 → 有事实
-	}
+	rt := &driver.RunContext{Planner: p, Compactor: comp, SystemPrompt: "sys"}
 	a := driver.New(rt, New())
 	if _, err := a.Run(context.Background(), sess, "新问题"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
+	// 压缩器收到的视图与上下文估算
+	if len(comp.gotView) == 0 || comp.gotTokens <= 0 {
+		t.Fatalf("应收到视图与 token 估算: view=%d tokens=%d", len(comp.gotView), comp.gotTokens)
+	}
+
+	// compaction 事件落日志：FirstKeptSeq 指向切割下标的 Seq，摘要调用的用量一并记
+	var compaction *session.Event
+	for i, ev := range sess.Events() {
+		if ev.Kind == session.EventCompaction {
+			compaction = &sess.Events()[i]
+		}
+	}
+	if compaction == nil {
+		t.Fatal("应落 compaction 事件")
+	}
+	wantSeq := comp.gotView[comp.cut].Seq
+	if compaction.Compaction.FirstKeptSeq != wantSeq {
+		t.Fatalf("FirstKeptSeq = %d, want %d", compaction.Compaction.FirstKeptSeq, wantSeq)
+	}
+	if compaction.Compaction.Summary != "## Goal\n测试" {
+		t.Fatalf("Summary = %q", compaction.Compaction.Summary)
+	}
+	if compaction.Usage == nil || compaction.Usage.TotalTokens != 42 {
+		t.Fatalf("摘要调用用量应随事件落库: %+v", compaction.Usage)
+	}
+
+	// 投影从此是压缩后视图：决策器看到 [system, 摘要, 保留段..., 新输入]
 	hist := p.seen[0]
-	// system 未设 → 首条应为压缩摘要；之后是保留区 + 本轮新输入
-	if hist[0].Content != "[压缩摘要]" {
-		t.Fatalf("决策器应收到压缩后的历史: %+v", hist[0])
+	if len(hist) == 0 || !strings.HasPrefix(hist[1].Content, session.CompactionSummaryPrefix) {
+		t.Fatalf("决策器应看到压缩后的历史: %+v", hist)
 	}
-	if len(hist) != 1+2+1 { // 摘要 + 保留 2 条 + 本轮新 user
-		t.Fatalf("历史应被压缩: %d 条: %+v", len(hist), hist)
+	if hist[0].Content != "sys" {
+		t.Fatalf("系统引导仍应在首位: %+v", hist[0])
 	}
-	// 压缩器收到的状态快照应带审计门验证过的事实
-	st := comp.seenStates[0]
-	if st == nil || len(st.Facts) == 0 || st.Facts[0].Tool != "read_file" {
-		t.Fatalf("TaskState 应含 read_file 的已验证事实: %+v", st)
+	if hist[len(hist)-1].Content != "新问题" {
+		t.Fatalf("本轮输入应在末尾: %+v", hist[len(hist)-1])
 	}
-	if !strings.Contains(st.Facts[0].Evidence, "环境证据") {
-		t.Fatalf("事实证据应来自工具结果: %+v", st.Facts[0])
+	// 摘要调用收到的消息不含旧摘要占位（无旧摘要时为空）
+	if comp.gotPrev != "" {
+		t.Fatalf("首轮压缩无旧摘要: %q", comp.gotPrev)
 	}
 }
 
-// 没装配审计门 = 全不信任：快照里只有目标与状态，没有任何事实（fail-closed）。
-func TestNilAuditorNoFactsInSnapshot(t *testing.T) {
+// 迭代压缩：被遮蔽视图里的旧摘要作为 previous-summary 传给摘要器，且不进序列化输入。
+func TestIterativeCompactionCarriesPreviousSummary(t *testing.T) {
 	sess := session.New("t", nil)
 	prefillSessions(t, sess, 3)
+	// 预置一次压缩：旧摘要遮蔽前两轮
+	view := sess.View()
+	if _, err := sess.Append(session.Event{Kind: session.EventCompaction, Compaction: &session.Compaction{
+		Summary: "旧摘要内容", FirstKeptSeq: view[3].Seq,
+	}}); err != nil {
+		t.Fatalf("预置压缩: %v", err)
+	}
 
-	comp := &recordingCompactor{keep: 0} // 只记录、不压缩
+	comp := &stubCompactor{planOK: true, cut: 2, previous: "旧摘要内容"}
 	p := &scriptedPlanner{acts: []planner.Action{answer("ok")}}
 	rt := &driver.RunContext{Planner: p, Compactor: comp}
 	if _, err := driver.New(rt, New()).Run(context.Background(), sess, "q"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	st := comp.seenStates[0]
-	if len(st.Facts) != 0 {
-		t.Fatalf("nil 审计门不该有事实进快照: %+v", st.Facts)
+	if comp.gotPrev != "旧摘要内容" {
+		t.Fatalf("previous-summary 应传给摘要器: %q", comp.gotPrev)
 	}
-	if st.Goal != "第 1 个问题" {
-		t.Fatalf("Goal 仍应派生: %q", st.Goal)
+	for _, m := range comp.gotMsgs {
+		if strings.HasPrefix(m.Content, session.CompactionSummaryPrefix) {
+			t.Fatal("旧摘要不该进序列化输入")
+		}
+	}
+}
+
+// 未超预算（Plan 说不需要）：不落压缩事件，行为与未装配一致。
+func TestCompactionPlanNoOp(t *testing.T) {
+	sess := session.New("t", nil)
+	prefillSessions(t, sess, 2)
+	before := len(sess.Events())
+	comp := &stubCompactor{planOK: false}
+	p := &scriptedPlanner{acts: []planner.Action{answer("ok")}}
+	rt := &driver.RunContext{Planner: p, Compactor: comp}
+	if _, err := driver.New(rt, New()).Run(context.Background(), sess, "q"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, ev := range sess.Events() {
+		if ev.Kind == session.EventCompaction {
+			t.Fatal("不该有压缩事件")
+		}
+	}
+	_ = before
+}
+
+// 压缩失败以错误终止本轮（fail-fast）：静默超预算会在下次调用溢出。
+func TestCompactionFailureAbortsTurn(t *testing.T) {
+	sess := session.New("t", nil)
+	prefillSessions(t, sess, 2)
+	comp := &stubCompactor{planOK: true, cut: 1, sumErr: errors.New("模型不可用")}
+	p := &scriptedPlanner{acts: []planner.Action{answer("ok")}}
+	rt := &driver.RunContext{Planner: p, Compactor: comp}
+	_, err := driver.New(rt, New()).Run(context.Background(), sess, "q")
+	if err == nil || !strings.Contains(err.Error(), "压缩失败") {
+		t.Fatalf("压缩失败应终止本轮: %v", err)
+	}
+	// 收尾事件落了 error 详情
+	last := sess.Events()[len(sess.Events())-1]
+	if last.Kind != session.EventTurnEnd || last.Reason != "error" {
+		t.Fatalf("应以 turn/end{error} 收尾: %+v", last)
 	}
 }
 
@@ -158,8 +220,6 @@ func TestPreStepHookRewritesInput(t *testing.T) {
 // S6 起默认不限决策轮次：不设 MaxDecisionRounds 时长任务照常完成。
 func TestUnlimitedRoundsByDefault(t *testing.T) {
 	sess := session.New("t", nil)
-	// 60 轮工具调用后收尾（旧默认上限 128 内，但足以证明 <=0 不会立刻熔断；
-	// 真正的"不限"由 MaxDecisionRounds<=0 语义保证，这里锁定不回归）。
 	acts := []planner.Action{}
 	for i := 0; i < 60; i++ {
 		acts = append(acts, toolCallAction("read_file"))
@@ -197,9 +257,7 @@ type bigTool struct{ body string }
 
 func (b *bigTool) Name() string        { return "spill" }
 func (b *bigTool) Description() string { return "测试工具（大输出）" }
-func (b *bigTool) Parameters() any {
-	return &struct{}{}
-}
+func (b *bigTool) Parameters() any     { return &struct{}{} }
 func (b *bigTool) Execute(_ context.Context, _ json.RawMessage) (any, error) {
 	return map[string]any{"out": b.body}, nil
 }
