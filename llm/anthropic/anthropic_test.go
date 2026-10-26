@@ -638,3 +638,85 @@ func TestChatStreamUsagePartsSumToTotal(t *testing.T) {
 		t.Fatalf("TotalTokens = %d, want 1173（900+3+186+84）", u.TotalTokens)
 	}
 }
+
+// 真实事故回归（内网 MiniMax Anthropic 兼容路由）：message_start 把**总输入**
+// 报在 cache_read_input_tokens 里，真正的命中数只在 message_delta。
+//
+//	message_start {input_tokens:925, cache_read_input_tokens:1113}
+//	message_delta {output_tokens:194, cache_read_input_tokens:188}
+//	1113 = 925(新鲜) + 188(命中) = 总输入
+//
+// 正确读法：命中 188、合计 1307（925+188+194），与网关后台一致。
+// 让 message_start 赢的话会得到命中 1113、合计 2232——对不上账。
+func TestChatStreamUsageDeltaWinsOverStart(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"message_start","message":{"role":"assistant","usage":{"input_tokens":925,"cache_creation_input_tokens":0,"cache_read_input_tokens":1113,"output_tokens":0}}}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`,
+		`data: {"type":"content_block_stop","index":0}`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":194,"cache_read_input_tokens":188}}`,
+		`data: {"type":"message_stop"}`,
+	}, "\n")
+
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse)
+	})
+	defer srv.Close()
+
+	resp, err := p.ChatStream(context.Background(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+	}, func(c llm.StreamChunk) error { return nil })
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	u := resp.Usage
+	if got := u.FreshInput(); got != 925 {
+		t.Fatalf("输入 = %d, want 925", got)
+	}
+	if u.Details.Input.CacheRead != 188 {
+		t.Fatalf("缓存命中 = %d, want 188（message_delta 权威，不是 start 的 1113）", u.Details.Input.CacheRead)
+	}
+	if u.CompletionTokens != 194 {
+		t.Fatalf("输出 = %d, want 194", u.CompletionTokens)
+	}
+	if u.TotalTokens != 1307 {
+		t.Fatalf("合计 = %d, want 1307（925+188+194）", u.TotalTokens)
+	}
+	if resp.FinishReason != "end_turn" {
+		t.Fatalf("FinishReason = %q", resp.FinishReason)
+	}
+}
+
+// message_delta 省略输入侧时，用 message_start 的补齐（delta 零值不覆盖）。
+func TestChatStreamUsageStartFillsDeltaGaps(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"message_start","message":{"role":"assistant","usage":{"input_tokens":900,"cache_creation_input_tokens":3,"cache_read_input_tokens":186,"output_tokens":0}}}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`,
+		`data: {"type":"content_block_stop","index":0}`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":84}}`,
+		`data: {"type":"message_stop"}`,
+	}, "\n")
+
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse)
+	})
+	defer srv.Close()
+
+	resp, err := p.ChatStream(context.Background(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+	}, func(c llm.StreamChunk) error { return nil })
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	u := resp.Usage
+	if u.FreshInput() != 900 || u.Details.Input.CacheRead != 186 ||
+		u.Details.Input.CacheWrite != 3 || u.CompletionTokens != 84 {
+		t.Fatalf("delta 省略的输入侧应由 start 补齐: %+v", u)
+	}
+	if u.TotalTokens != 1173 {
+		t.Fatalf("TotalTokens = %d, want 1173", u.TotalTokens)
+	}
+}

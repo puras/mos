@@ -615,12 +615,21 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 	return resp, nil
 }
 
-// mergeUsage 合并 Anthropic 分两处到达的用量：逐字段取"有值的那个"。
+// mergeUsage 合并 Anthropic 分两处到达的用量：**message_delta 是最终累计快照，
+// 权威**；message_start 只补 delta 省略的字段（输入侧、5m/1h 缓存明细）。
+// 逐字段"非零覆盖"，方向不能反——与网关自己的 MergeSnapshot 语义一致。
 //
-// 为什么不能只读一处：输入侧在 message_start（input_tokens + 缓存明细），
-// 输出侧在 message_delta（output_tokens + thinking 明细）；只读 message_delta
-// 的网关（实测内网 MoGo 就是）会让**全部**用量丢失（tokens 恒为 0）；
-// 只读 message_start 的网关则拿不到输出侧。
+// 为什么必须让 delta 赢（实测内网 MiniMax 的 Anthropic 兼容路由）：它的
+// message_start.cache_read_input_tokens 报的是**总输入**，不是命中子集——
+//
+//	message_start {input_tokens:925, cache_read_input_tokens:1113}
+//	message_delta {output_tokens:194, cache_read_input_tokens:188}
+//
+// 而 1113 = 925(新鲜) + 188(命中) 正是总输入。让 start 赢 → 命中写成 1113、
+// 合计 2232；让 delta 赢 → 命中 188、合计 1307，与网关后台对得上账。
+//
+// 也不能只读一处：只读 message_delta 的网关（早期实测）会让全部用量丢失
+// （tokens 恒为 0）；只读 message_start 的网关则拿不到输出侧。
 func mergeUsage(start, delta *pkgusage.Usage) *pkgusage.Usage {
 	switch {
 	case start == nil && delta == nil:
@@ -628,22 +637,52 @@ func mergeUsage(start, delta *pkgusage.Usage) *pkgusage.Usage {
 	case start == nil:
 		return delta
 	case delta == nil:
+		// 只有 message_start：上游没给输出侧，如实返回（输出 token 缺失，不猜）
 		return start
 	}
-	// 输入侧：message_start 是权威（Anthropic 的 input_tokens 不含缓存）
-	if start.Base.InputTokens > 0 {
+
+	// delta 为底，start 只在 delta 零值处补齐
+	if delta.Base.InputTokens == 0 {
 		delta.Base.InputTokens = start.Base.InputTokens
 	}
-	if start.Base.FreshInputTokens > 0 {
+	if delta.Base.FreshInputTokens == 0 {
 		delta.Base.FreshInputTokens = start.Base.FreshInputTokens
 	}
-	// 缓存明细：任一有值即用（message_start 侧更全：5m/1h 嵌套明细）
-	if start.Cache != nil {
-		delta.Cache = start.Cache
+	if delta.Base.OutputTokens == 0 {
+		delta.Base.OutputTokens = start.Base.OutputTokens
 	}
-	// thinking 明细：message_start 侧没有输出明细，用 delta 的
-	// TotalTokens 按 Anthropic 口径重算：输入 + 输出 + 缓存创建 + 缓存读取
-	// （moproto 的同一公式；delta 侧的 input 可能是 0）。
+
+	// 缓存明细：delta 的非零字段赢，零值字段用 start 补（start 更全：含 5m/1h 嵌套）
+	var cache pkgusage.CacheMetrics
+	if start.Cache != nil {
+		cache = *start.Cache
+	}
+	if delta.Cache != nil {
+		if delta.Cache.CreationInputTokens != 0 {
+			cache.CreationInputTokens = delta.Cache.CreationInputTokens
+		}
+		if delta.Cache.ReadInputTokens != 0 {
+			cache.ReadInputTokens = delta.Cache.ReadInputTokens
+		}
+		if delta.Cache.CachedTokens != 0 {
+			cache.CachedTokens = delta.Cache.CachedTokens
+		}
+		if delta.Cache.Ephemeral5mInputTokens != 0 {
+			cache.Ephemeral5mInputTokens = delta.Cache.Ephemeral5mInputTokens
+		}
+		if delta.Cache.Ephemeral1hInputTokens != 0 {
+			cache.Ephemeral1hInputTokens = delta.Cache.Ephemeral1hInputTokens
+		}
+	}
+	if cache != (pkgusage.CacheMetrics{}) {
+		delta.Cache = &cache
+	}
+	if delta.Thinking == nil {
+		delta.Thinking = start.Thinking
+	}
+
+	// TotalTokens 按 Anthropic 口径重算：输入（不含缓存）+ 输出 + 缓存写 + 缓存读
+	// （moproto 的同一公式；delta 侧的 input 常省略）。
 	delta.Base.TotalTokens = delta.Base.InputTokens + delta.Base.OutputTokens
 	if delta.Cache != nil {
 		delta.Base.TotalTokens += delta.Cache.CreationInputTokens + delta.Cache.ReadInputTokens
