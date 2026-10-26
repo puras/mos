@@ -228,36 +228,81 @@ func TestToolsWithoutRegistryFailsClosedCleanly(t *testing.T) {
 	}
 }
 
-// 模型一直请求工具不收口：耗尽上限报错，不留孤儿 turn。
+// 模型一直请求工具不收口：耗尽**可配的**上限报错，不留孤儿 turn。
+// 上限是宿主的旋钮（这里设 4），不是写死的 16。
 func TestMaxDecisionRounds(t *testing.T) {
 	sess := session.New("t", nil)
 	p := &scriptedPlanner{
 		acts: []planner.Action{
-			toolCallAction("probe"), toolCallAction("probe"), toolCallAction("probe"),
-			toolCallAction("probe"), toolCallAction("probe"), toolCallAction("probe"),
-			toolCallAction("probe"), toolCallAction("probe"), toolCallAction("probe"),
-			toolCallAction("probe"), toolCallAction("probe"), toolCallAction("probe"),
-			toolCallAction("probe"), toolCallAction("probe"), toolCallAction("probe"),
-			toolCallAction("probe"), // 第 17 次：上限 16 次决策后拒绝
+			toolCallAction("probe"), toolCallAction("probe"),
+			toolCallAction("probe"), toolCallAction("probe"),
+			toolCallAction("probe"), // 第 5 次：上限 4 次决策后拒绝
 		},
 	}
 	ft := &fakeTool{name: "probe"}
-	d := driver.New(&driver.RunContext{Planner: p, Tools: registryOf(t, ft)}, New())
+	d := driver.New(&driver.RunContext{
+		Planner: p, Tools: registryOf(t, ft),
+		MaxDecisionRounds: 4,
+	}, New())
 
 	_, err := d.Run(context.Background(), sess, "干活")
 	if !errors.Is(err, ErrMaxDecisionRounds) {
 		t.Fatalf("应报决策上限, got %v", err)
 	}
-	if ft.calls != maxDecisionRounds {
-		t.Fatalf("工具执行 %d 次, want %d", ft.calls, maxDecisionRounds)
+	if ft.calls != 4 {
+		t.Fatalf("工具执行 %d 次, want 4", ft.calls)
 	}
 	evs := sess.Events()
 	last := evs[len(evs)-1]
 	if last.Kind != session.EventTurnEnd || last.Reason != "error" {
 		t.Fatalf("耗尽上限也要收尾: %+v", last)
 	}
+	if !strings.Contains(last.Error, "4 次") {
+		t.Fatalf("错误应带轮数: %q", last.Error)
+	}
 	if last.Turn != 1 {
 		t.Fatalf("收尾 Turn = %d", last.Turn)
+	}
+}
+
+// 连续相同调用：第 3 次起在 tool/result 里附提醒（advisory，不拦截）；
+// 中间插入不同调用会重置计数。
+func TestRepeatCallReminder(t *testing.T) {
+	sess := session.New("t", nil)
+	p := &scriptedPlanner{
+		acts: []planner.Action{
+			toolCallAction("probe"), toolCallAction("probe"), toolCallAction("probe"), // 连续 3 次
+			toolCallAction("other"),                          // 插入不同调用 → 重置
+			toolCallAction("probe"), toolCallAction("probe"), // 只连续 2 次 → 不提醒
+			answer("完"),
+		},
+	}
+	ft := &fakeTool{name: "probe"}
+	ft2 := &fakeTool{name: "other"}
+	reg := tool.NewRegistry()
+	if err := reg.Register(ft); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register(ft2); err != nil {
+		t.Fatal(err)
+	}
+	d := driver.New(&driver.RunContext{Planner: p, Tools: reg, MaxDecisionRounds: 16}, New())
+
+	if _, err := d.Run(context.Background(), sess, "干活"); err != nil {
+		t.Fatal(err)
+	}
+	reminded, total := 0, 0
+	for _, ev := range sess.Events() {
+		if ev.Kind != session.EventToolResult || ev.ToolResult == nil {
+			continue
+		}
+		total++
+		if strings.Contains(ev.ToolResult.Content, "连续第 3 次") {
+			reminded++
+		}
+	}
+	if reminded != 1 {
+		t.Fatalf("应恰有 1 条提醒（连续第 3 次）, got %d / total %d", reminded, total)
 	}
 }
 

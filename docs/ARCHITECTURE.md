@@ -56,7 +56,7 @@
 - **错误分级**：工具报错（含模型幻觉出的未注册工具）是**结果**，以 `IsError` 回填给模型让它自我纠正，不中断 turn；只有落盘失败与决策失败才中断，且都以 `turn/end{reason:error}` 收尾，不留孤儿 turn；
 - **收尾带详情**：`turn/end` 的 `reason` 是分类（completed / terminated / error / interrupted），另带 `error` 字段记详情（出错原因、终止理由，上限 4KB 按 UTF-8 边界截断）——**只进日志、不进模型投影**（`project()` 不投影 `turn/end`）。理由：日志是审计凭据，失败若只有分类，事后只剩“失败了”三个字，无从追查是模型不可用、证书过期还是守卫拦的；完整错误仍由返回值交给宿主，二者不互相替代；
 - **能力缺口 fail-closed**：未装 `RunContext.Tools` 却要求工具时直接报 `react.ErrToolsUnsupported`，且**不写 assistant 事件**（避免留下非法历史）；
-- **内层上限**：单 turn 决策上限 `maxDecisionRounds = 16`，防模型空转；S6 的 DoomLoopGuard 与 MaxTurns 落地后由其接管停止裁决，届时重议。
+- **内层上限（保险丝，可配）**：单 turn 决策上限 `RunContext.MaxDecisionRounds`（<=0 取默认 **128**）。它只防"循环烧穿"，不是正常路径——空转由**连续相同调用提醒**打断（同一 (tool, args) 连续 3 次起，在 tool/result 末尾附提醒让模型改变策略；advisory 不 veto，DSH `repeat-tool-reminder` 同一哲学）。PI/DSH 均无硬上限（靠 compaction + 软提醒 + 用户中断）；MoS 的 compaction（S6）落地前刻意不给"不限"，落地后计划默认放开为不限、旋钮保留给无人值守场景。
 
 ### 3.2 执行通道契约（S5a 骨架，S5e 补齐）
 

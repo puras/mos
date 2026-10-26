@@ -25,7 +25,7 @@ MoS（取自 Sapient）是基于 Go 的智能体基础框架（Agent Base SDK）
 | S5f-2b | 路径强制隔离：默认范围=工作区（fail-closed）、只能收窄、全开=显式逃生门；macOS Seatbelt ✅ / Linux Landlock ⬜ | 🔶 |
 | S5g | 人工审批（`agent/approval`：四档结果 + 问人由宿主注入 + `approval/asked`/`decided` 审计落会话日志） | ✅ |
 | S5h | 写前观察（`ObserveGate`：不许覆盖没读过的文件 + 版本 CAS 防丢失更新；能力由宿主决定） | ✅ |
-| S6 | 上下文工程（截断 + 压缩 + TaskState/Auditor） | ⬜ |
+| S6 | 上下文工程（截断 + 压缩 + TaskState/Auditor；DoomLoopGuard 最小版——连续相同调用提醒 + 轮次上限可配——已先行落地） | ⬜ |
 | S7 | 装配层（`assistant.New` 一行装配 + 示例 CLI） | ⬜ |
 
 S1–S7 完成即覆盖 PRD G1–G6 的最小闭环；此后按 PRD §5/§7 逐个回填后续里程碑（M2.8 挂起恢复 → M2.9/M2.10 → M3 多智能体 → M4 生产化）。

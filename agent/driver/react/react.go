@@ -28,13 +28,21 @@ var ErrToolsUnsupported = errors.New("react: 模型请求工具调用，但 RunC
 
 // ErrMaxDecisionRounds 表示单轮内决策次数耗尽仍未产出最终作答。
 //
-// 这是 S4b 的临时保险（防止模型无限请求工具把循环转死）；S6 引入
-// DoomLoopGuard（重复调用检测）与 MaxTurns（轮次上限）后，停止裁决
-// 交由那两处统一裁决，本上限届时重议。
+// 上限可配（RunContext.MaxDecisionRounds，默认 128）。这是**保险丝**而非
+// 正常路径：空转应由连续相同调用的提醒（advisory）打断，而不是烧到上限。
 var ErrMaxDecisionRounds = errors.New("react: 单轮决策次数超出上限（工具可能在空转）")
 
-// maxDecisionRounds 是单个 turn 内允许的最大决策次数（含最终作答那次）。
-const maxDecisionRounds = 16
+const (
+	// defaultMaxDecisionRounds 是单 turn 内允许的最大决策次数（含最终作答）。
+	// S6 的 compaction 落地后计划放开为不限（对齐 PI/DSH），旋钮保留。
+	defaultMaxDecisionRounds = 128
+
+	// repeatRemindAt 与 repeatRemindEvery 控制连续相同调用的提醒节奏：
+	// 第 3 次起提醒，之后每 3 次再提一次（advisory，不 veto——DSH 的
+	// repeat-tool-reminder 同一哲学：空转靠提醒模型改变策略，不靠硬杀）。
+	repeatRemindAt    = 3
+	repeatRemindEvery = 3
+)
 
 // Driver 是 ReAct 循环驱动：无状态，可并发复用。
 type Driver struct{}
@@ -60,7 +68,18 @@ func (d *Driver) Run(ctx context.Context, rt *driver.RunContext, sess *session.S
 		defs = rt.Tools.List()
 	}
 
-	for round := 0; round < maxDecisionRounds; round++ {
+	maxRounds := rt.MaxDecisionRounds
+	if maxRounds <= 0 {
+		maxRounds = defaultMaxDecisionRounds
+	}
+
+	// 连续相同调用检测（S6 DoomLoopGuard 的最小版，advisory）：同一
+	// (tool, args) 连续出现达阈值时，在该次 tool/result 末尾附加提醒，
+	// 让模型改变策略或向用户说明。不拦、不改——只提醒。
+	var lastCallKey string
+	var repeats int
+
+	for round := 0; round < maxRounds; round++ {
 		action, err := decide(ctx, rt, sess, defs)
 		if err != nil {
 			return "", d.abort(sess, turn, err)
@@ -133,9 +152,21 @@ func (d *Driver) Run(ctx context.Context, rt *driver.RunContext, sess *session.S
 		outcomes := execpath.ExecuteBatch(ctx, rt.Tools, action.ToolCalls, opts)
 		terminated := false
 		for _, oc := range outcomes {
+			content := oc.Content
+			// 连续相同调用：计数并在阈值时附提醒（advisory）。
+			key := oc.Call.Name + "\x00" + oc.Call.Args
+			if key == lastCallKey {
+				repeats++
+			} else {
+				lastCallKey = key
+				repeats = 1
+			}
+			if repeats >= repeatRemindAt && (repeats-repeatRemindAt)%repeatRemindEvery == 0 {
+				content += fmt.Sprintf("\n\n[提醒] 这已是连续第 %d 次发起完全相同的调用。若它一直失败或结果不符预期，请改变策略（换方法/先收集更多信息），或直接向用户说明现状。", repeats)
+			}
 			if _, err := sess.Append(session.Event{
 				Kind: session.EventToolResult, Turn: turn,
-				ToolResult: &session.ToolResult{CallID: oc.Call.ID, Content: oc.Content, IsError: oc.IsError},
+				ToolResult: &session.ToolResult{CallID: oc.Call.ID, Content: content, IsError: oc.IsError},
 			}); err != nil {
 				return "", err
 			}
@@ -155,7 +186,7 @@ func (d *Driver) Run(ctx context.Context, rt *driver.RunContext, sess *session.S
 		}
 		// 回到循环顶部：把工具结果投影进历史，再让决策器决策
 	}
-	return "", d.abort(sess, turn, ErrMaxDecisionRounds)
+	return "", d.abort(sess, turn, fmt.Errorf("%w: 已达 %d 次决策上限", ErrMaxDecisionRounds, maxRounds))
 }
 
 // abort 以 error 原因收尾本轮并返回原错误（落盘失败时原样返回，收尾已尽力）。
