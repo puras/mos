@@ -126,7 +126,7 @@ func TestWriteFileThroughSymlinkDenied(t *testing.T) {
 // FileTools 返回读 + 写 + 精确编辑三个工具。
 func TestFileTools(t *testing.T) {
 	_, fsys := jail(t)
-	tools := FileTools(fsys)
+	tools := FileTools(fsys, nil)
 	if len(tools) != 3 {
 		t.Fatalf("工具数 = %d", len(tools))
 	}
