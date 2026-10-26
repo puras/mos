@@ -56,6 +56,16 @@ func StatusCodeOf(err error) int {
 // 与"参数写错了"不同——重试有意义。DSH 的 EMPTY_RESPONSE 是同一位置。
 var ErrEmptyResponse = errors.New("模型返回空响应")
 
+// ErrStreamTruncated 表示流式响应在收到结束信号之前就中断了
+// （连接被断开 / 服务端异常终止）。
+//
+// 适配器遇到这种流必须返回本错误，而不是把半截聚合当正常响应返回——
+// 半截消息 + 残缺工具调用会误导下游（2026-10 事故：空参数的 write_file
+// 进了执行通道）。注意：S2b 的重试包装对**已吐出内容**的流不会重试
+// （增量已下发，重试会重复输出），本错误主要供驱动层记入 turn/end 详情、
+// 供指标分类。
+var ErrStreamTruncated = errors.New("流式响应意外终止（未收到结束信号）")
+
 // NewStatusError 构造一个带状态码的错误（适配器层用）。
 func NewStatusError(provider string, statusCode int, message string) *StatusError {
 	return &StatusError{Provider: provider, StatusCode: statusCode, Message: message}

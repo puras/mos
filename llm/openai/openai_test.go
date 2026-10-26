@@ -377,3 +377,24 @@ func TestEmptyResponseIsRetryable(t *testing.T) {
 		t.Fatalf("空响应应判为可重试: %v", err)
 	}
 }
+
+// 流被掐断（没收到 finish_reason 就结束）必须报错，不能把半截聚合当正常响应。
+func TestChatStreamTruncatedErrors(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"半截回答"}}]}`,
+		// ← 没有 finish_reason 块、没有 [DONE]：连接被掐
+	}, "\n")
+
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse)
+	})
+	defer srv.Close()
+
+	_, err := p.ChatStream(context.Background(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+	}, func(c llm.StreamChunk) error { return nil })
+	if !errors.Is(err, llm.ErrStreamTruncated) {
+		t.Fatalf("应返回 ErrStreamTruncated, got %v", err)
+	}
+}

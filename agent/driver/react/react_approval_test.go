@@ -57,7 +57,7 @@ func TestApprovalGrantedExecutesTool(t *testing.T) {
 	}
 	ans := &scriptedAnswerer{out: approval.Approved}
 	p := &scriptedPlanner{acts: []planner.Action{
-		{ToolCalls: []llm.ToolCall{{ID: "c1", Name: "danger", Args: "{}"}}},
+		{ToolCalls: []llm.ToolCall{{ID: "c1", Name: "danger", Args: "{}"}}, FinishReason: "tool_use"},
 		{Content: "好了"},
 	}}
 	d := driver.New(&driver.RunContext{
@@ -114,7 +114,7 @@ func TestApprovalRejectedBlocksTool(t *testing.T) {
 	}
 	ans := &scriptedAnswerer{out: approval.Rejected}
 	p := &scriptedPlanner{acts: []planner.Action{
-		{ToolCalls: []llm.ToolCall{{ID: "c1", Name: "danger", Args: "{}"}}},
+		{ToolCalls: []llm.ToolCall{{ID: "c1", Name: "danger", Args: "{}"}}, FinishReason: "tool_use"},
 		{Content: "好"},
 	}}
 	d := driver.New(&driver.RunContext{
@@ -149,7 +149,7 @@ func TestApprovalNotConfiguredFailsClosed(t *testing.T) {
 		t.Fatalf("注册: %v", err)
 	}
 	p := &scriptedPlanner{acts: []planner.Action{
-		{ToolCalls: []llm.ToolCall{{ID: "c1", Name: "danger", Args: "{}"}}},
+		{ToolCalls: []llm.ToolCall{{ID: "c1", Name: "danger", Args: "{}"}}, FinishReason: "tool_use"},
 		{Content: "好"},
 	}}
 	d := driver.New(&driver.RunContext{

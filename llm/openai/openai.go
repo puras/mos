@@ -468,6 +468,12 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("openai: read stream: %w", err)
 	}
+	// 流完整性（S5f-2a 事故后补）：正常结束必带 finish_reason（终止块）。
+	// 没收到就结束 = 流被掐断（连接断开/服务端异常）——半截文本 + 残缺
+	// 工具调用不能当正常响应返回。
+	if acc.finish == "" {
+		return nil, fmt.Errorf("openai: %w", llm.ErrStreamTruncated)
+	}
 
 	msg := llm.Message{Role: llm.RoleAssistant, Content: acc.content.String()}
 	if acc.reasoning.Len() > 0 {

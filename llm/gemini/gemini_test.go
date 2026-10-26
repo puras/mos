@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -239,3 +240,28 @@ func TestErrorResponse(t *testing.T) {
 }
 
 func intPtr(n int) *int { return &n }
+
+// 流被掐断（没收到 finishReason 就结束）必须报错，不能把半截聚合当正常响应。
+func TestChatStreamTruncatedErrors(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"candidates":[{"content":{"parts":[{"text":"半截回答"}]}}]}`,
+		// ← 没有 finishReason 块：连接被掐
+	}, "\n")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse)
+	}))
+	defer srv.Close()
+
+	p, err := New(llm.Config{"api_key": "k", "model": "gemini-pro", "base_url": srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = p.(*Chat).ChatStream(context.Background(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+	}, func(c llm.StreamChunk) error { return nil })
+	if !errors.Is(err, llm.ErrStreamTruncated) {
+		t.Fatalf("应返回 ErrStreamTruncated, got %v", err)
+	}
+}

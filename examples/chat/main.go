@@ -276,11 +276,17 @@ func mustModel(retryAttempts, retryDelay int) llm.ChatModel {
 		fmt.Fprintf(os.Stderr, "缺少 %s（在 .env 或环境变量中配置）\n", keyEnv)
 		os.Exit(1)
 	}
-	model, err := reg.Create(provider(), llm.Config{
+	cfg := llm.Config{
 		"api_key":  os.Getenv(keyEnv),
 		"base_url": os.Getenv("MOS_BASE_URL"),
 		"model":    os.Getenv("MOS_MODEL"),
-	})
+	}
+	// max_tokens 是输出的硬上限：太小 → 回答半截、工具调用参数残缺
+	//（anthropic 协议必填，框架默认 8192）。宿主可用环境变量调。
+	if v := os.Getenv("MOS_MAX_TOKENS"); v != "" {
+		cfg["max_tokens"] = v
+	}
+	model, err := reg.Create(provider(), cfg)
 	check(err)
 
 	// 重试策略：**参数是宿主的，机制是框架的**（llm.WithRetry）。

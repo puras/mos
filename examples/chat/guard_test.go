@@ -99,6 +99,7 @@ func TestHostPolicyDenyBlocksTool(t *testing.T) {
 		ToolCalls: []llm.ToolCall{{
 			ID: "c1", Name: "read_file", Args: `{"path":"/tmp/.env"}`,
 		}},
+		FinishReason: "tool_use",
 	}, {Content: "好"}}}
 	d := driver.New(&driver.RunContext{
 		Planner: p, Tools: reg, Guards: guards, Hooks: hooks,
@@ -140,6 +141,7 @@ func TestHostPolicyAskFailsClosed(t *testing.T) {
 		ToolCalls: []llm.ToolCall{{
 			ID: "c1", Name: "shell", Args: `{"command":"rm -rf build"}`,
 		}},
+		FinishReason: "tool_use",
 	}, {Content: "好"}}}
 	d := driver.New(&driver.RunContext{
 		Planner: p, Tools: reg, Guards: guards, Hooks: hooks,
@@ -241,6 +243,7 @@ func TestHostPolicyAskReachesTerminalApproval(t *testing.T) {
 			ToolCalls: []llm.ToolCall{{
 				ID: "c1", Name: "shell", Args: `{"command":"rm -rf build"}`,
 			}},
+			FinishReason: "tool_use",
 		}, {Content: "好"}}}
 		d := driver.New(&driver.RunContext{
 			Planner: p, Tools: reg, Guards: guards, Hooks: hooks, Answerer: ans,

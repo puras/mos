@@ -94,6 +94,27 @@ func (d *Driver) Run(ctx context.Context, rt *driver.RunContext, sess *session.S
 				return "", err
 			}
 		}
+
+		// 截断的输出带的工具调用**不可信**：参数可能是半截 JSON，甚至整个
+		// 参数都没传到（finish 为空 = 适配器未收到结束信号——正常应已被
+		// ErrStreamTruncated 拦下，这里是双保险）。fail-closed：不执行，逐条
+		// 回填错误结果（保持 assistant↔tool/result 配对合法），模型可重新发起。
+		if truncatedFinish(action.FinishReason) {
+			for _, call := range action.ToolCalls {
+				if _, err := sess.Append(session.Event{
+					Kind: session.EventToolResult, Turn: turn,
+					ToolResult: &session.ToolResult{
+						CallID:  call.ID,
+						Content: fmt.Sprintf("模型输出被截断（finish_reason=%s），此工具调用的参数可能不完整，已拒绝执行。请重新发起该调用", action.FinishReason),
+						IsError: true,
+					},
+				}); err != nil {
+					return "", err
+				}
+			}
+			continue
+		}
+
 		// 执行统一走 execpath 通道（守卫裁决 / 调度 / 回填顺序的全库唯一语义）；
 		// 驱动只负责把结果落成 tool/result 事件。
 		opts := execpath.Options{
@@ -158,6 +179,19 @@ func terminateDetail(outcomes []execpath.Outcome) string {
 		}
 	}
 	return ""
+}
+
+// truncatedFinish 判断停止原因是否意味着"输出被截断"。
+//
+// length/max_tokens 是明确的截断信号；空值不该出现（适配器保证收到结束
+// 信号，否则报 ErrStreamTruncated），出现也按截断处理——宁可少执行一次，
+// 不执行一个参数残缺的调用。
+func truncatedFinish(finish string) bool {
+	switch finish {
+	case "", "length", "max_tokens":
+		return true
+	}
+	return false
 }
 
 // sessionAudit 把审批审计写进会话日志。

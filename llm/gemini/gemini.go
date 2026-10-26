@@ -371,6 +371,10 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("gemini: read stream: %w", err)
 	}
+	// 流完整性：正常结束必带 finishReason。没收到就结束 = 流被拑断。
+	if acc.finish == "" {
+		return nil, fmt.Errorf("gemini: %w", llm.ErrStreamTruncated)
+	}
 
 	msg := llm.Message{Role: llm.RoleAssistant, Content: acc.content.String()}
 	if calls := acc.finishCalls(); len(calls) > 0 {

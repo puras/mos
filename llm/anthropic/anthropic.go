@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	pkganthropic "github.com/puras/moproto/protocol/anthropic"
@@ -23,20 +24,26 @@ import (
 )
 
 const (
-	defaultBaseURL   = "https://api.anthropic.com"
-	apiVersion       = "2023-06-01"
-	defaultMaxTokens = 1024
+	defaultBaseURL = "https://api.anthropic.com"
+	apiVersion     = "2023-06-01"
+	// defaultMaxTokens 是 max_tokens 的默认值。Anthropic 协议**强制要求**
+	// 此参数，而它同时是输出的硬上限——1024 连一次像样的架构设计 + 工具
+	// 调用参数都装不下，响应必然截断（finish_reason=max_tokens），截断的
+	// 工具调用参数就是残缺 JSON。8192 是工具型 agent 的合理下限；
+	// 宿主用 Config["max_tokens"] 覆盖。
+	defaultMaxTokens = 8192
 )
 
 // Chat 是 Anthropic 协议（llm.ChatModel）的实现。
 type Chat struct {
-	apiKey  string
-	baseURL string
-	model   string
-	hc      *transport.Client
+	apiKey    string
+	baseURL   string
+	model     string
+	maxTokens int
+	hc        *transport.Client
 }
 
-// New 根据配置创建 Chat，支持键：api_key / base_url / model / http_timeout。
+// New 根据配置创建 Chat，支持键：api_key / base_url / model / max_tokens / http_timeout。
 // http_timeout 为 Go duration 字符串（如 "60s"）；为空时每次请求经 httpx seam
 // 解析客户端（无硬超时，依赖调用方 ctx 取消）。
 func New(cfg llm.Config) (llm.ChatModel, error) {
@@ -52,7 +59,15 @@ func New(cfg llm.Config) (llm.ChatModel, error) {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
-	p := &Chat{apiKey: apiKey, baseURL: baseURL, model: model}
+	maxTokens := defaultMaxTokens
+	if v := cfg["max_tokens"]; v != "" {
+		n, err := strconv.Atoi(fmt.Sprint(v))
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("anthropic: invalid config \"max_tokens\": %v", v)
+		}
+		maxTokens = n
+	}
+	p := &Chat{apiKey: apiKey, baseURL: baseURL, model: model, maxTokens: maxTokens}
 	hc, err := transport.New(transport.Config{
 		Endpoint:    func(bool) string { return p.endpoint() },
 		AuthHeaders: map[string]string{"x-api-key": apiKey, "anthropic-version": apiVersion},
@@ -111,7 +126,7 @@ func (p *Chat) endpoint() string {
 func (p *Chat) buildRequest(req *llm.Request, stream bool) *pkganthropic.AnthropicRequest {
 	ar := &pkganthropic.AnthropicRequest{
 		Model:       p.model,
-		MaxTokens:   defaultMaxTokens,
+		MaxTokens:   p.maxTokens,
 		Temperature: req.Temperature,
 		Stream:      stream,
 	}
@@ -503,6 +518,12 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("anthropic: read stream: %w", err)
+	}
+	// 流完整性：正常结束必带 message_delta.stop_reason。没收到就结束 =
+	// 流被掐断（连接断开/服务端异常）——半截文本 + 残缺 tool_use（参数
+	// JSON 只传了一半）不能当正常响应返回。
+	if finishReason == "" {
+		return nil, fmt.Errorf("anthropic: %w", llm.ErrStreamTruncated)
 	}
 
 	msg := llm.Message{Role: llm.RoleAssistant, Content: content.String()}

@@ -3,6 +3,7 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -162,6 +163,7 @@ func TestChatStreamToolUse(t *testing.T) {
 		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"a\":1"}}`,
 		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":",\"b\":2}"}}`,
 		`data: {"type":"content_block_stop","index":0}`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":21}}`,
 		`data: {"type":"message_stop"}`,
 	}, "\n")
 
@@ -275,11 +277,11 @@ func TestChatThinkingRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
-	// high → budget 16384；默认 max_tokens 1024 <= budget，应提升为 16384+1024。
+	// high → budget 16384；默认 max_tokens 8192 <= budget，应提升为 16384+8192。
 	if !strings.Contains(gotBody, `"thinking":{"type":"enabled","budget_tokens":16384}`) {
 		t.Fatalf("request body missing thinking config:\n%s", gotBody)
 	}
-	if !strings.Contains(gotBody, `"max_tokens":17408`) {
+	if !strings.Contains(gotBody, `"max_tokens":24576`) {
 		t.Fatalf("max_tokens should be raised above budget:\n%s", gotBody)
 	}
 
@@ -377,5 +379,48 @@ func TestChatStreamThinking(t *testing.T) {
 	}
 	if strings.Join(reasoningDeltas, "") != "先想想…" {
 		t.Fatalf("reasoning deltas = %v", reasoningDeltas)
+	}
+}
+
+// 流被掐断（没收到 stop_reason 就结束）必须报错，不能把半截聚合当正常响应。
+// （2026-10 事故：半截文本 + 空 args 的 write_file 被当成完整消息处理。）
+func TestChatStreamTruncatedErrors(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"message_start","message":{"role":"assistant"}}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"半截回答"}}`,
+		// ← 没有 message_delta / message_stop：连接被掐
+	}, "\n")
+
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse)
+	})
+	defer srv.Close()
+
+	_, err := p.ChatStream(context.Background(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+	}, func(c llm.StreamChunk) error { return nil })
+	if !errors.Is(err, llm.ErrStreamTruncated) {
+		t.Fatalf("应返回 ErrStreamTruncated, got %v", err)
+	}
+}
+
+// max_tokens 可经 Config 配置（宿主的成本旋钮）。
+func TestMaxTokensFromConfig(t *testing.T) {
+	var gotBody string
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		_, _ = io.WriteString(w, `{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	})
+	defer srv.Close()
+
+	if _, err := p.Chat(context.Background(), &llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}}}); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	// 未配置 → 默认 8192（工具型 agent 的合理下限）
+	if !strings.Contains(gotBody, `"max_tokens":8192`) {
+		t.Fatalf("默认 max_tokens 应为 8192:\n%s", gotBody)
 	}
 }
