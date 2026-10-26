@@ -460,6 +460,11 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 		curBlock     *streamToolBlock
 		finishReason string
 		usage        *pkgusage.Usage
+		// sawStop 记录是否收到 message_stop（流的合法结束标记）。
+		// 结束**原因**（message_delta.stop_reason）与结束**标记**是两回事：
+		// 有些网关（含自建的 anthropic 兼容层）只发 message_stop、不发
+		// message_delta——那时没有 stop_reason，但流是完整的。
+		sawStop bool
 	)
 	flush := func() error {
 		if curBlock == nil {
@@ -562,6 +567,8 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 			if e.Usage != nil {
 				usage = pkgusage.FromAnthropicMessageDelta(e.Usage)
 			}
+		case pkganthropic.AnthropicMessageStopEvent:
+			sawStop = true
 		case pkganthropic.AnthropicErrorStreamEvent:
 			if e.Error != nil && e.Error.Error != nil {
 				return nil, fmt.Errorf("anthropic: stream error: %s", e.Error.Error.Type)
@@ -575,10 +582,13 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("anthropic: read stream: %w", err)
 	}
-	// 流完整性：正常结束必带 message_delta.stop_reason。没收到就结束 =
-	// 流被掐断（连接断开/服务端异常）——半截文本 + 残缺 tool_use（参数
-	// JSON 只传了一半）不能当正常响应返回。
-	if finishReason == "" {
+	// 流完整性：**结束标记（message_stop）或结束原因（stop_reason）任一到
+	// 即算完整**。两者都没有 = 流被掐断（连接断开/服务端异常）——半截文本 +
+	// 残缺 tool_use（参数 JSON 只传了一半）不能当正常响应返回。
+	//
+	// 注意：有些网关只发 message_stop、不发 message_delta（无 stop_reason、
+	// 无最终 usage）——那种情况下流是完整的，只是我们不知道它为什么停。
+	if finishReason == "" && !sawStop {
 		return nil, fmt.Errorf("anthropic: %w", llm.ErrStreamTruncated)
 	}
 

@@ -398,3 +398,27 @@ func TestChatStreamTruncatedErrors(t *testing.T) {
 		t.Fatalf("应返回 ErrStreamTruncated, got %v", err)
 	}
 }
+
+// 真实网关形态：只发 [DONE]、不带 finish_reason —— 流是完整的，不能误判成截断。
+func TestChatStreamWithDoneOnlyIsComplete(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"回答"}}]}`,
+		`data: [DONE]`, // ← 只有结束标记
+	}, "\n")
+
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse)
+	})
+	defer srv.Close()
+
+	resp, err := p.ChatStream(context.Background(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+	}, func(c llm.StreamChunk) error { return nil })
+	if err != nil {
+		t.Fatalf("有 [DONE] 的流应完整: %v", err)
+	}
+	if resp.Message.Content != "回答" {
+		t.Fatalf("content = %q", resp.Message.Content)
+	}
+}

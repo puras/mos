@@ -418,6 +418,8 @@ func (p *Chat) handleResponse(r io.Reader) (*llm.Response, error) {
 // handleStream 逐行解析 SSE 数据，聚合内容与工具调用增量。
 func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm.Response, error) {
 	acc := newStreamAccumulator()
+	// sawDone 记录是否收到 [DONE]（流的合法结束标记）。
+	sawDone := false
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
@@ -425,6 +427,12 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 		line := strings.TrimSpace(scanner.Text())
 		if !strings.HasPrefix(line, "data:") {
 			continue
+		}
+		// [DONE] 是流的合法结束标记（与 finish_reason 是两回事：有些网关
+		// 只发 [DONE]、不带 finish_reason）。
+		if strings.TrimSpace(strings.TrimPrefix(line, "data:")) == "[DONE]" {
+			sawDone = true
+			break
 		}
 		evt, err := pkgopenai.ParseSSEEvent(line)
 		if err != nil {
@@ -468,10 +476,10 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("openai: read stream: %w", err)
 	}
-	// 流完整性（S5f-2a 事故后补）：正常结束必带 finish_reason（终止块）。
-	// 没收到就结束 = 流被掐断（连接断开/服务端异常）——半截文本 + 残缺
-	// 工具调用不能当正常响应返回。
-	if acc.finish == "" {
+	// 流完整性：**结束标记（[DONE]）或结束原因（finish_reason）任一到即
+	// 算完整**。两者都没有 = 流被掐断（连接断开/服务端异常）——半截文本 +
+	// 残缺工具调用不能当正常响应返回。
+	if acc.finish == "" && !sawDone {
 		return nil, fmt.Errorf("openai: %w", llm.ErrStreamTruncated)
 	}
 

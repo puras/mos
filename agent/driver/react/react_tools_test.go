@@ -415,3 +415,21 @@ func TestGuardDeniesThroughDriver(t *testing.T) {
 		t.Fatalf("投影缺配对的 tool 消息: %+v", msgs[2])
 	}
 }
+
+// 结束原因未知（""，如只发 message_stop/[DONE] 的网关）**不等于**截断：
+// 工具调用照常执行（否则这类部署的工具全被拒）。
+func TestEmptyFinishReasonIsNotTruncated(t *testing.T) {
+	sess := session.New("t", nil)
+	act := toolCallAction("probe")
+	act.FinishReason = "" // 部署不报结束原因
+	p := &scriptedPlanner{acts: []planner.Action{act, answer("完")}}
+	ft := &fakeTool{name: "probe"}
+	d := driver.New(&driver.RunContext{Planner: p, Tools: registryOf(t, ft)}, New())
+
+	if _, err := d.Run(context.Background(), sess, "干活"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if ft.calls != 1 {
+		t.Fatalf("工具应执行, calls = %d", ft.calls)
+	}
+}

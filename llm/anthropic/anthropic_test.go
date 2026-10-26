@@ -479,3 +479,57 @@ func TestMaxTokensAdaptiveDowngrade(t *testing.T) {
 		t.Fatal("显式配置超限应原样报错")
 	}
 }
+
+// 真实网关形态（2026-10 实测内网 MoGo）：只发 message_stop，**不发**
+// message_delta（无 stop_reason、无最终 usage）——流是完整的，不能误判成截断。
+func TestChatStreamWithoutMessageDeltaIsComplete(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"message_start","message":{"role":"assistant","usage":{"input_tokens":10}}}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"回答"}}`,
+		`data: {"type":"content_block_stop","index":0}`,
+		`data: {"type":"message_stop"}`, // ← 只有结束标记
+	}, "\n")
+
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse)
+	})
+	defer srv.Close()
+
+	resp, err := p.ChatStream(context.Background(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+	}, func(c llm.StreamChunk) error { return nil })
+	if err != nil {
+		t.Fatalf("有 message_stop 的流应完整: %v", err)
+	}
+	if resp.Message.Content != "回答" {
+		t.Fatalf("content = %q", resp.Message.Content)
+	}
+	// 结束原因未知就是未知（空），但流本身是完整的
+	if resp.FinishReason != "" {
+		t.Fatalf("网关没报 stop_reason 时应为空, got %q", resp.FinishReason)
+	}
+}
+
+// 真截断：既没有 message_stop 也没有 stop_reason → 报错。
+func TestChatStreamCutWithoutAnyEndSignalErrors(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"message_start","message":{"role":"assistant"}}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"半截"}}`,
+	}, "\n")
+
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse)
+	})
+	defer srv.Close()
+
+	_, err := p.ChatStream(context.Background(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+	}, func(c llm.StreamChunk) error { return nil })
+	if !errors.Is(err, llm.ErrStreamTruncated) {
+		t.Fatalf("应返回 ErrStreamTruncated, got %v", err)
+	}
+}

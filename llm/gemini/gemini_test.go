@@ -265,3 +265,27 @@ func TestChatStreamTruncatedErrors(t *testing.T) {
 		t.Fatalf("应返回 ErrStreamTruncated, got %v", err)
 	}
 }
+
+// require_finish=false：宿主用不报 finishReason 的网关时的逃生阀。
+func TestRequireFinishFalseAllowsMissingFinish(t *testing.T) {
+	sse := `data: {"candidates":[{"content":{"parts":[{"text":"回答"}]}}]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse)
+	}))
+	defer srv.Close()
+
+	p, err := New(llm.Config{"api_key": "k", "model": "m", "base_url": srv.URL, "require_finish": "false"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	resp, err := p.(*Chat).ChatStream(context.Background(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+	}, func(c llm.StreamChunk) error { return nil })
+	if err != nil {
+		t.Fatalf("关闭检查后应放行: %v", err)
+	}
+	if resp.Message.Content != "回答" {
+		t.Fatalf("content = %q", resp.Message.Content)
+	}
+}

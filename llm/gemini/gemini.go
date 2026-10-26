@@ -35,9 +35,13 @@ type Chat struct {
 	baseURL string
 	model   string
 	hc      *transport.Client
+	// requireFinish 控制"流完整性"检查：默认开（没收到 finishReason 即视为
+	// 流被掐断）。Gemini 协议没有独立结束标记，非标准网关若不报 finishReason
+	// 可用 Config["require_finish"]="false" 关闭。
+	requireFinish bool
 }
 
-// New 根据配置创建 Chat，支持键：api_key / base_url / model / http_timeout。
+// New 根据配置创建 Chat，支持键：api_key / base_url / model / require_finish / http_timeout。
 // http_timeout 为 Go duration 字符串（如 "60s"）；为空时每次请求经 httpx seam
 // 解析客户端（无硬超时，依赖调用方 ctx 取消）。
 func New(cfg llm.Config) (llm.ChatModel, error) {
@@ -53,7 +57,11 @@ func New(cfg llm.Config) (llm.ChatModel, error) {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
-	p := &Chat{apiKey: apiKey, baseURL: baseURL, model: model}
+	requireFinish := true
+	if v := cfg["require_finish"]; v != "" && v != "true" {
+		requireFinish = false
+	}
+	p := &Chat{apiKey: apiKey, baseURL: baseURL, model: model, requireFinish: requireFinish}
 	hc, err := transport.New(transport.Config{
 		Endpoint:    p.endpoint, // stream 决定 generateContent / streamGenerateContent?alt=sse
 		AuthHeaders: map[string]string{"x-goog-api-key": apiKey},
@@ -371,8 +379,11 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("gemini: read stream: %w", err)
 	}
-	// 流完整性：正常结束必带 finishReason。没收到就结束 = 流被拑断。
-	if acc.finish == "" {
+	// 流完整性：Gemini 协议**没有独立的结束标记**（SSE 直接结束），唯一的
+	// 完整性信号就是 finishReason。所以这里比 anthropic/openai 更严：没有
+	// finishReason 即视为被掐断。宿主若使用不报 finishReason 的网关，可用
+	// Config["require_finish"]="false" 关闭本检查。
+	if acc.finish == "" && p.requireFinish {
 		return nil, fmt.Errorf("gemini: %w", llm.ErrStreamTruncated)
 	}
 

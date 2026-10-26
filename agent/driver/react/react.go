@@ -214,12 +214,16 @@ func terminateDetail(outcomes []execpath.Outcome) string {
 
 // truncatedFinish 判断停止原因是否意味着"输出被截断"。
 //
-// length/max_tokens 是明确的截断信号；空值不该出现（适配器保证收到结束
-// 信号，否则报 ErrStreamTruncated），出现也按截断处理——宁可少执行一次，
-// 不执行一个参数残缺的调用。
+// 只有**明确的**截断信号（length / max_tokens）才算——空值不算：空值现在
+// 合法地表示"这个部署不报结束原因"（有些网关只发 message_stop / [DONE]，
+// 不发 stop_reason / finish_reason；2026-10 事故后实测）。把空值当截断会把
+// 这些部署的**所有**工具调用都拒掉。
+//
+// 代价：这类部署里"因 max_tokens 截断而残缺"的工具调用不会被这里拦，
+// 但参数解析会在工具层失败（fail-closed，理由回填给模型）。
 func truncatedFinish(finish string) bool {
 	switch finish {
-	case "", "length", "max_tokens":
+	case "length", "max_tokens":
 		return true
 	}
 	return false
