@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,10 +35,18 @@ const (
 // （fail-closed：拒绝而不是放行）。
 type ReadFile struct {
 	FS filesystem.FileSystem
+	// Gate 是写前观察门（可选，nil = 不记录）。读取成功（或确认不存在）后
+	// 记录观察，供 write_file / edit_file 做新鲜度校验（S5h）。
+	Gate *ObserveGate
 }
 
 // NewReadFile 构造读文件工具。
 func NewReadFile(fsys filesystem.FileSystem) *ReadFile { return &ReadFile{FS: fsys} }
+
+// NewReadFileObserved 构造带观察门的读文件工具（S5h：写前观察需要读侧记录）。
+func NewReadFileObserved(fsys filesystem.FileSystem, gate *ObserveGate) *ReadFile {
+	return &ReadFile{FS: fsys, Gate: gate}
+}
 
 type readFileParams struct {
 	Path   string `json:"path" mos:"desc=文件路径（相对路径以工作目录为锚点）"`
@@ -86,12 +96,23 @@ func (r *ReadFile) Execute(ctx context.Context, args json.RawMessage) (any, erro
 
 	f, err := os.Open(res.TargetKey)
 	if err != nil {
+		// 文件不存在是一次权威观察（确认了"没有"）：记 absent，模型随后可以
+		// 直接 write_file 创建（createIfAbsent 语义）。其余错误不记录。
+		if r.Gate != nil && errors.Is(err, fs.ErrNotExist) {
+			r.Gate.Record(res.TargetKey, "", false)
+		}
 		return nil, err
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
 		return nil, err
+	}
+	// 读取成功 = 权威观察：记下这个版本（S5h）。
+	if r.Gate != nil {
+		if v, ok := versionOf(info); ok {
+			r.Gate.Record(res.TargetKey, v, true)
+		}
 	}
 
 	// 逐行扫描：只保留需要的窗口（内存有界），但一路数到文件末尾，
@@ -184,10 +205,18 @@ func truncateLongLine(line string) string {
 // 逃逸与经链接创建），越界返回 *filesystem.PathDeniedError。
 type WriteFile struct {
 	FS filesystem.FileSystem
+	// Gate 是写前观察门（可选，nil = 不启用）：write 前校验"读过才许覆盖、
+	// 读后变了要重读"，写后记录新版本（S5h）。
+	Gate *ObserveGate
 }
 
 // NewWriteFile 构造写文件工具。
 func NewWriteFile(fsys filesystem.FileSystem) *WriteFile { return &WriteFile{FS: fsys} }
+
+// NewWriteFileObserved 构造带观察门的写文件工具（S5h）。
+func NewWriteFileObserved(fsys filesystem.FileSystem, gate *ObserveGate) *WriteFile {
+	return &WriteFile{FS: fsys, Gate: gate}
+}
 
 type writeFileParams struct {
 	Path    string `json:"path" mos:"desc=文件路径（相对路径以工作目录为锚点）"`
@@ -226,6 +255,10 @@ func (w *WriteFile) Execute(ctx context.Context, args json.RawMessage) (any, err
 		return nil, err
 	}
 	target := res.TargetKey
+	// 写前观察（S5h）：不许覆盖没读过的文件；读后被改过/删过要先重读。
+	if err := w.Gate.CheckWrite(target, res.DisplayPath); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return nil, err
 	}
@@ -243,6 +276,10 @@ func (w *WriteFile) Execute(ctx context.Context, args json.RawMessage) (any, err
 	if err := atomicWrite(target, []byte(p.Content), 0o644); err != nil {
 		return nil, err
 	}
+	// 写成功 = 新的权威状态（S5h）：记录新版本，后续 edit 以此为 CAS 基准。
+	if v, present, err := fileVersion(target); err == nil && present {
+		w.Gate.Record(target, v, true)
+	}
 	return map[string]any{
 		"path":           res.DisplayPath,
 		"bytes":          len(p.Content),
@@ -255,8 +292,12 @@ var _ tool.Tool = (*WriteFile)(nil)
 
 // FileTools 返回受文件能力约束的工具集（读 + 写 + 精确编辑）。
 //
+// gate 为写前观察门（S5h）：非 nil 时启用「不许覆盖没读过的文件、读后被改
+// 要先重读」；nil 时不启用（旧行为：无条件变更）。**能力由宿主决定**——
+// 与 shell 的 -allow-shell 同一哲学。
+//
 // 宿主没装配文件能力时可以不调用本函数——不给模型这个能力，比给它一个
 // 必然失败的工具更干净。
-func FileTools(fsys filesystem.FileSystem) []tool.Tool {
-	return []tool.Tool{NewReadFile(fsys), NewWriteFile(fsys), NewEdit(fsys)}
+func FileTools(fsys filesystem.FileSystem, gate *ObserveGate) []tool.Tool {
+	return []tool.Tool{NewReadFileObserved(fsys, gate), NewWriteFileObserved(fsys, gate), NewEditObserved(fsys, gate)}
 }

@@ -83,7 +83,9 @@ func main() {
 		ReadRoots:  []string{jailRoot},
 		WriteRoots: []string{jailRoot},
 	})
-	for _, tl := range builtin.FileTools(fsys) {
+	// 写前观察（S5h）：不许覆盖没读过的文件、读后被改要先重读（防丢失更新）。
+	fileGate := builtin.NewObserveGate()
+	for _, tl := range builtin.FileTools(fsys, fileGate) {
 		if err := reg.Register(tl); err != nil {
 			check(fmt.Errorf("注册工具 %q: %w", tl.Name(), err))
 		}

@@ -33,10 +33,18 @@ import (
 // 整体覆盖）。edit 不创建文件——文件不存在就报错。
 type Edit struct {
 	FS filesystem.FileSystem
+	// Gate 是写前观察门（可选，nil = 不启用）：编辑前必须先读过，且读后
+	// 文件没变（S5h 防丢失更新）。
+	Gate *ObserveGate
 }
 
 // NewEdit 构造编辑工具。
 func NewEdit(fsys filesystem.FileSystem) *Edit { return &Edit{FS: fsys} }
+
+// NewEditObserved 构造带观察门的编辑工具（S5h）。
+func NewEditObserved(fsys filesystem.FileSystem, gate *ObserveGate) *Edit {
+	return &Edit{FS: fsys, Gate: gate}
+}
 
 type editParams struct {
 	Path  string       `json:"path" mos:"desc=文件路径（相对路径以工作目录为锚点）"`
@@ -104,6 +112,10 @@ func (e *Edit) Execute(ctx context.Context, args json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 写前观察（S5h）：编辑前必须先读过，且读后文件没被别人改过。
+	if err := e.Gate.CheckEdit(res.TargetKey, res.DisplayPath); err != nil {
+		return nil, err
+	}
 
 	raw, err := os.ReadFile(res.TargetKey)
 	if err != nil {
@@ -159,6 +171,10 @@ func (e *Edit) Execute(ctx context.Context, args json.RawMessage) (any, error) {
 	final := bom + restoreLineEndings(updated, ending)
 	if err := atomicWrite(res.TargetKey, []byte(final), 0o644); err != nil {
 		return nil, fmt.Errorf("写入文件 %q 失败: %w", res.DisplayPath, err)
+	}
+	// 编辑成功 = 新的权威状态（S5h）：记录新版本，后续 edit 以此为 CAS 基准。
+	if v, present, err := fileVersion(res.TargetKey); err == nil && present {
+		e.Gate.Record(res.TargetKey, v, true)
 	}
 	return map[string]any{
 		"path":               res.DisplayPath,

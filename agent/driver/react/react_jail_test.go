@@ -42,7 +42,7 @@ func TestFileJailDeniesThroughDriver(t *testing.T) {
 		WriteRoots: []string{root},
 	})
 	reg := tool.NewRegistry()
-	for _, tl := range builtin.FileTools(fsys) {
+	for _, tl := range builtin.FileTools(fsys, nil) {
 		if err := reg.Register(tl); err != nil {
 			t.Fatal(err)
 		}
@@ -113,7 +113,7 @@ func TestFileJailAllowsInsideThroughDriver(t *testing.T) {
 		WriteRoots: []string{root},
 	})
 	reg := tool.NewRegistry()
-	for _, tl := range builtin.FileTools(fsys) {
+	for _, tl := range builtin.FileTools(fsys, nil) {
 		if err := reg.Register(tl); err != nil {
 			t.Fatal(err)
 		}
