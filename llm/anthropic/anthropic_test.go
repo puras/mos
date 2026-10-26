@@ -533,3 +533,73 @@ func TestChatStreamCutWithoutAnyEndSignalErrors(t *testing.T) {
 		t.Fatalf("应返回 ErrStreamTruncated, got %v", err)
 	}
 }
+
+// Anthropic 的 usage 分两处到达：**输入侧在 message_start**（input_tokens +
+// 缓存明细），输出侧在 message_delta。实测内网网关只发 message_start——
+// 只读 message_delta 的话用量全丢（tokens 恒为 0）。
+func TestChatStreamUsageFromMessageStart(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"message_start","message":{"role":"assistant","usage":{"input_tokens":10,"cache_creation_input_tokens":2,"cache_read_input_tokens":3,"output_tokens":0}}}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"回答"}}`,
+		`data: {"type":"content_block_stop","index":0}`,
+		`data: {"type":"message_stop"}`,
+	}, "\n")
+
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse)
+	})
+	defer srv.Close()
+
+	resp, err := p.ChatStream(context.Background(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+	}, func(c llm.StreamChunk) error { return nil })
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	if resp.Usage.PromptTokens != 10 {
+		t.Fatalf("输入侧 token 应来自 message_start, got %+v", resp.Usage)
+	}
+	if resp.Usage.Details.Input.CacheRead != 3 || resp.Usage.Details.Input.CacheWrite != 2 {
+		t.Fatalf("缓存明细应来自 message_start, got %+v", resp.Usage.Details)
+	}
+	// Anthropic 口径：total = 输入 + 输出 + 缓存创建 + 缓存读取
+	if resp.Usage.TotalTokens != 15 {
+		t.Fatalf("TotalTokens = %d, want 15（Anthropic 口径含缓存）", resp.Usage.TotalTokens)
+	}
+}
+
+// 两侧都有时：输入侧取 message_start（权威），输出侧取 message_delta。
+func TestChatStreamUsageMergesBothEvents(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"message_start","message":{"role":"assistant","usage":{"input_tokens":10,"output_tokens":0}}}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"回答"}}`,
+		`data: {"type":"content_block_stop","index":0}`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":10,"output_tokens":7}}`,
+		`data: {"type":"message_stop"}`,
+	}, "\n")
+
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse)
+	})
+	defer srv.Close()
+
+	resp, err := p.ChatStream(context.Background(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+	}, func(c llm.StreamChunk) error { return nil })
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	if resp.Usage.PromptTokens != 10 || resp.Usage.CompletionTokens != 7 {
+		t.Fatalf("usage 应两侧合并: %+v", resp.Usage)
+	}
+	if resp.Usage.TotalTokens != 17 {
+		t.Fatalf("TotalTokens = %d, want 17", resp.Usage.TotalTokens)
+	}
+	if resp.FinishReason != "end_turn" {
+		t.Fatalf("FinishReason = %q", resp.FinishReason)
+	}
+}

@@ -459,7 +459,13 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 		toolCalls    []llm.ToolCall
 		curBlock     *streamToolBlock
 		finishReason string
-		usage        *pkgusage.Usage
+		// startUsage 是 message_start 带来的**输入侧**用量（input_tokens +
+		// 缓存明细 + service_tier）；deltaUsage 是 message_delta 带来的最终
+		// 快照（含 output_tokens）。Anthropic 的 usage 分两处到达，而有的网关
+		// 只发其中一个（实测内网网关只发 message_start）——两侧都读、逐字段
+		// 取"有值的那个"，不因为少一个事件就整条丢掉用量。
+		startUsage *pkgusage.Usage
+		deltaUsage *pkgusage.Usage
 		// sawStop 记录是否收到 message_stop（流的合法结束标记）。
 		// 结束**原因**（message_delta.stop_reason）与结束**标记**是两回事：
 		// 有些网关（含自建的 anthropic 兼容层）只发 message_stop、不发
@@ -501,6 +507,10 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 			continue
 		}
 		switch e := evt.(type) {
+		case pkganthropic.AnthropicMessageStartEvent:
+			if e.Message != nil && e.Message.Usage != nil {
+				startUsage = pkgusage.FromAnthropic(e.Message.Usage)
+			}
 		case pkganthropic.AnthropicContentBlockStartEvent:
 			if err := flush(); err != nil {
 				return nil, err
@@ -565,7 +575,7 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 			}
 			// message_delta 的 usage 是累计快照（最后一条即最终用量），last-wins。
 			if e.Usage != nil {
-				usage = pkgusage.FromAnthropicMessageDelta(e.Usage)
+				deltaUsage = pkgusage.FromAnthropicMessageDelta(e.Usage)
 			}
 		case pkganthropic.AnthropicMessageStopEvent:
 			sawStop = true
@@ -599,10 +609,46 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 	msg.ToolCalls = toolCalls
 	resp := &llm.Response{Message: msg}
 	resp.FinishReason = finishReason
-	if usage != nil {
-		resp.Usage = transport.UsageFrom(usage)
+	if u := mergeUsage(startUsage, deltaUsage); u != nil {
+		resp.Usage = transport.UsageFrom(u)
 	}
 	return resp, nil
+}
+
+// mergeUsage 合并 Anthropic 分两处到达的用量：逐字段取"有值的那个"。
+//
+// 为什么不能只读一处：输入侧在 message_start（input_tokens + 缓存明细），
+// 输出侧在 message_delta（output_tokens + thinking 明细）；只读 message_delta
+// 的网关（实测内网 MoGo 就是）会让**全部**用量丢失（tokens 恒为 0）；
+// 只读 message_start 的网关则拿不到输出侧。
+func mergeUsage(start, delta *pkgusage.Usage) *pkgusage.Usage {
+	switch {
+	case start == nil && delta == nil:
+		return nil
+	case start == nil:
+		return delta
+	case delta == nil:
+		return start
+	}
+	// 输入侧：message_start 是权威（Anthropic 的 input_tokens 不含缓存）
+	if start.Base.InputTokens > 0 {
+		delta.Base.InputTokens = start.Base.InputTokens
+	}
+	if start.Base.FreshInputTokens > 0 {
+		delta.Base.FreshInputTokens = start.Base.FreshInputTokens
+	}
+	// 缓存明细：任一有值即用（message_start 侧更全：5m/1h 嵌套明细）
+	if start.Cache != nil {
+		delta.Cache = start.Cache
+	}
+	// thinking 明细：message_start 侧没有输出明细，用 delta 的
+	// TotalTokens 按 Anthropic 口径重算：输入 + 输出 + 缓存创建 + 缓存读取
+	// （moproto 的同一公式；delta 侧的 input 可能是 0）。
+	delta.Base.TotalTokens = delta.Base.InputTokens + delta.Base.OutputTokens
+	if delta.Cache != nil {
+		delta.Base.TotalTokens += delta.Cache.CreationInputTokens + delta.Cache.ReadInputTokens
+	}
+	return delta
 }
 
 // anthropicStopReason 将 Anthropic stop_reason 映射为统一停止原因。
