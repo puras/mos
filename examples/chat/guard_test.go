@@ -21,7 +21,7 @@ import (
 
 // 宿主参数级规则的判定（deny / ask / allow 三档）。
 func TestHostPolicyVerdicts(t *testing.T) {
-	hp := hostPolicy()
+	hp := policy.NewParamPolicy("宿主规则", hostRules()...)
 	verdict := func(name, args string) policy.Verdict {
 		if err := hp.Guard()(context.Background(), &hook.HookEvent{
 			ToolCall: llm.ToolCall{Name: name, Args: args},
@@ -88,7 +88,7 @@ func TestHostPolicyDenyBlocksTool(t *testing.T) {
 	if err := reg.Register(ft); err != nil {
 		t.Fatalf("注册: %v", err)
 	}
-	hp := hostPolicy()
+	hp := policy.NewParamPolicy("宿主规则", hostRules()...)
 	guards := hook.NewGuardBus()
 	guards.Add(hp.Guard())
 	hooks := hook.NewHookBus()
@@ -130,7 +130,7 @@ func TestHostPolicyAskFailsClosed(t *testing.T) {
 	if err := reg.Register(ft); err != nil {
 		t.Fatalf("注册: %v", err)
 	}
-	hp := hostPolicy()
+	hp := policy.NewParamPolicy("宿主规则", hostRules()...)
 	guards := hook.NewGuardBus()
 	guards.Add(hp.Guard())
 	hooks := hook.NewHookBus()
@@ -227,7 +227,7 @@ func TestHostPolicyAskReachesTerminalApproval(t *testing.T) {
 		if err := reg.Register(ft); err != nil {
 			t.Fatalf("注册: %v", err)
 		}
-		hp := hostPolicy()
+		hp := policy.NewParamPolicy("宿主规则", hostRules()...)
 		guards := hook.NewGuardBus()
 		guards.Add(hp.Guard())
 		hooks := hook.NewHookBus()

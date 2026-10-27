@@ -76,6 +76,11 @@ type Config struct {
 	// Compactor 是上下文压缩器。nil = 按下面的窗口参数建默认的模型压缩器；
 	// 宿主自备则用宿主的（想换摘要提示词时）。
 	Compactor agent.Compactor
+	// DisableCompaction 为 true 时**不装**压缩器（溢出风险自担）。
+	//
+	// 语义分两类，别混：压缩/截断是**机制**（框架造得出、参数是量）→ 默认装、
+	// 显式关；审批/沙箱是**能力**（只有宿主有）→ 给了才有，nil 就没有。
+	DisableCompaction bool
 	// Truncator 是工具结果截断器。nil = 按 TruncateMaxBytes 建默认的
 	// （全文落盘，read_file 可回读）。
 	Truncator agent.ResultTruncator
@@ -214,9 +219,13 @@ func New(cfg Config) (*Agent, error) {
 		return ap(ctx, ev, next)
 	})
 
-	// 上下文压缩：宿主自备优先，否则按窗口参数建默认的（模型生成摘要）。
+	// 上下文压缩：宿主自备优先，否则按窗口参数建默认的（模型生成摘要）；
+	// 显式关掉就不装（机制类能力的"显式关闭"）。
 	compactor := cfg.Compactor
-	if compactor == nil {
+	if cfg.DisableCompaction {
+		compactor = nil
+	}
+	if compactor == nil && !cfg.DisableCompaction {
 		compactor = agent.NewLLMCompactor(cfg.Model, agent.CompactorConfig{
 			ContextWindow:    cfg.ContextWindow,
 			ReserveTokens:    cfg.ReserveTokens,
@@ -359,7 +368,7 @@ func (a *Agent) Describe() string {
 		b.WriteString("  结果截断: 未开启\n")
 	}
 	if a.rules.count() > 0 {
-		fmt.Fprintf(&b, "  参数级规则: %d 条（deny→守卫 / ask→人工确认）\n", a.rules.count())
+		fmt.Fprintf(&b, "  参数级规则: %d 个检查器（deny→守卫 / ask→人工确认）\n", a.rules.count())
 	} else {
 		b.WriteString("  参数级规则: 无\n")
 	}

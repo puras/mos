@@ -117,7 +117,7 @@ func TestParamRulesWired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if !strings.Contains(a.Describe(), "参数级规则: 1 条") {
+	if !strings.Contains(a.Describe(), "参数级规则: 1 个检查器") {
 		t.Fatalf("Describe 应报规则条数:\n%s", a.Describe())
 	}
 	// deny 档：守卫应拒绝（单调，工具不会执行）。

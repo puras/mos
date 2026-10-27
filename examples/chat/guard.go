@@ -9,12 +9,15 @@ import (
 	"github.com/puras/mos/agent/policy"
 )
 
-// hostPolicy 是**宿主侧**的参数级检查示例（不是框架默认）。
+// hostRules 是**宿主侧**的参数级检查示例（不是框架默认）。
 //
 // 为什么在示例里而不是框架里：什么算"危险"由宿主决定，不该由框架替宿主决定。
 // PI 把这件事交给扩展（tool_call 事件 + block），DSH 干脆放在隔离层
 // （沙箱档位 + 提权审批），两边的框架核心都**没有**危险命令表。
 // 框架提供的是**决策点**（deny → 守卫，ask → pre-execute 钩子），规则归宿主。
+//
+// 规则以 []policy.Check 交给装配层：deny 档进守卫（单调拒绝），ask 档转人工
+// 确认——框架提供决策点，"什么算危险"由宿主定。
 //
 // 这里的两条规则都是词法可判的、不装懂：
 //  1. 敏感文件不读不写（.env / id_rsa / *.pem）——凭据不该进模型上下文；
@@ -22,8 +25,8 @@ import (
 //
 // 诚实边界：这是**业务规则**，不是安全边界。真正的边界是文件 jail（工具路径）
 // 与进程沙箱（超时/资源/环境）；命令文本判定绕得过去，也不该被当成边界。
-func hostPolicy() *policy.ParamPolicy {
-	return policy.NewParamPolicy("宿主规则",
+func hostRules() []policy.Check {
+	return []policy.Check{
 		func(ctx context.Context, call policy.Call) (policy.Verdict, string) {
 			switch call.Tool {
 			case "read_file", "write_file", "edit_file":
@@ -46,7 +49,7 @@ func hostPolicy() *policy.ParamPolicy {
 			}
 			return policy.VerdictAllow, ""
 		},
-	)
+	}
 }
 
 // sensitivePath 判断路径是否像敏感文件（凭据/私钥）。

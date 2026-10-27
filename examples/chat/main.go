@@ -31,10 +31,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/puras/mos/agent"
+	"github.com/puras/mos"
 	"github.com/puras/mos/agent/approval"
-	"github.com/puras/mos/agent/driver"
-	"github.com/puras/mos/agent/driver/react"
 	"github.com/puras/mos/agent/hook"
 	"github.com/puras/mos/agent/policy"
 	"github.com/puras/mos/agent/prompt"
@@ -43,7 +41,6 @@ import (
 	"github.com/puras/mos/llm/anthropic"
 	"github.com/puras/mos/llm/gemini"
 	"github.com/puras/mos/llm/openai"
-	"github.com/puras/mos/planner"
 	"github.com/puras/mos/sandbox"
 	"github.com/puras/mos/session"
 	"github.com/puras/mos/tool"
@@ -57,7 +54,7 @@ func main() {
 	denyFlag := flag.String("deny", "", "禁用指定工具（逗号分隔），演示策略拦截")
 	policyFlag := flag.String("policy", "", "策略配置文件（YAML），给出后忽略 -deny")
 	workdir := flag.String("workdir", ".", "文件工具的沙箱根目录（jail），越界路径会被拒绝")
-	trimFlag := flag.Int("trim", 0, "结果截断上限（字节），0 = 不截断（框架截断器，截断全文落盘可回读）")
+	trimFlag := flag.Int("trim", 32*1024, "结果截断上限（字节），默认 32768；0 = 不截断（截断全文落盘可回读）")
 	contextWindow := flag.Int("context-window", 131072, "模型上下文窗口（token，默认 128K，超过窗口-预留即触发压缩）；<=0 关闭自动压缩（溢出风险自担）")
 	reserveTokens := flag.Int("reserve-tokens", 16384, "为模型响应预留的空间（token），超过窗口-预留即触发压缩")
 	keepRecentTokens := flag.Int("keep-recent-tokens", 20000, "压缩后保留的近期上下文预算（token）")
@@ -109,8 +106,10 @@ func main() {
 
 	// shell 工具：默认**不装配**——不给模型这个能力，比给它一个必然失败的工具
 	// 干净。装配后走 sandbox 隔离执行（超时 / 输出上限 / 资源限制 / 环境裁剪）。
+	// 沙箱由宿主造，装配层拿到它就注册 shell 工具（能力即证据）。
+	var sb *sandbox.Local
 	if *allowShell {
-		sb := &sandbox.Local{
+		sb = &sandbox.Local{
 			WorkDir:    jailRoot,
 			Timeout:    time.Duration(*shellTimeout) * time.Second,    // 缺省
 			MaxTimeout: time.Duration(*shellMaxTimeout) * time.Second, // 上界
@@ -129,34 +128,18 @@ func main() {
 			"TMPDIR":  filepath.Join(jailRoot, ".tmp"),
 			"GOENV":   "off", // 别让它写宿主的 go 配置
 		}
-		if err := reg.Register(builtin.NewShell(sb)); err != nil {
-			check(fmt.Errorf("注册工具 %q: %w", "shell", err))
-		}
 	}
 
-	// 单调守卫：可改写环节走钩子，安全约束走守卫，两者不可互相绕过。
-	// 策略默认放行本示例已注册的内置工具，再叠加 -deny 拒绝名单。
+	// 名字级策略：Allow/Deny 名单（-policy 文件或 -deny 快捷方式）。
+	// 可见性过滤 + 守卫拒绝都由装配层按这份名单接上：被禁掉的工具**不出现在
+	// 模型的工具清单里**（PI/DSH 的可见性层语义）——不给模型一个它注定调不成的
+	// 工具。
 	policyPath := *policyFlag
 	if policyPath == "" {
 		policyPath = os.Getenv("MOS_POLICY")
 	}
 	deny := list(*denyFlag + "," + os.Getenv("MOS_DENY_TOOLS"))
 	cfg := policyConfig(policyPath, deny)
-	guards := hook.NewGuardBus()
-	if cfg != nil {
-		p := policy.New(*cfg)
-		// 可见性过滤：被策略禁掉的工具**不出现在模型的工具清单里**（PI/DSH 的
-		// 可见性层语义）——不给模型一个它注定调不成的工具。
-		reg.SetVisibility(p.Visible)
-		guards.Add(nameLevelGuard(*cfg))
-	}
-
-	// 参数级检查（宿主规则）：两个门都要装——
-	//   - 守卫门：deny 档直接拒绝（单调，不可被钩子洗白）；
-	//   - 钩子门：ask 档转成「需人工确认」（当前没有审批通道 → fail-closed 拒绝）。
-	hp := hostPolicy()
-	guards.Add(hp.Guard())
-	hooks := mustHooks(hp)
 
 	// 系统提示词：分节装配（agent/prompt）——默认节 + 工具自带指引 + 部署事实，
 	// 三类贡献方一处汇合；MOS_SYSTEM_PROMPT 仍可整段替换（Complete 语义：
@@ -181,53 +164,68 @@ func main() {
 	//   - 压缩：超过 token 预算（窗口 − 预留）时，模型生成结构化摘要
 	//     落会话日志，投影从此遮蔽旧历史。窗口默认 128K；确切窗口更小的
 	//     模型必须用 -context-window 显式配置，否则会在溢出后才触发。
-	if *trimFlag > 0 {
-		spillDir := filepath.Join(jailRoot, ".mos-trunc")
-		trunc := agent.NewDefaultTruncator(agent.TruncatorConfig{
-			MaxBytes: *trimFlag,
-			Dir:      spillDir, // 在 jail 可读根内，逃生通道才真的可达
-		})
-		hooks.On(hook.HookToolPostExecute, agent.TruncateHook(trunc))
-	}
-	var compactor agent.Compactor
-	if *contextWindow > 0 {
-		compactor = agent.NewLLMCompactor(model, agent.CompactorConfig{
-			ContextWindow:    *contextWindow,
-			ReserveTokens:    *reserveTokens,
-			KeepRecentTokens: *keepRecentTokens,
-		})
+	// 截断上限：宿主约定 0 = 不截断（框架里 0 是"默认上限"，这里翻译成负数）。
+	trimBytes := *trimFlag
+	if trimBytes == 0 {
+		trimBytes = -1
 	}
 
-	rt := &driver.RunContext{
-		Planner:      planner.NewReAct(model),
-		Tools:        reg,
-		Hooks:        hooks,
-		Guards:       guards,
-		Concurrency:  *concFlag,
-		SystemPrompt: sysPrompt,
-		Stream:       true,
-		OnChunk:      render,
-		Answerer:     answerer,
-		Compactor:    compactor,
-	}
-	agent := driver.New(rt, react.New())
+	// 装配层（mos.New）：把模型、工具、策略、安全、上下文工程一次装成可跑的
+	// 智能体。宿主只提供"要什么、允许什么"，接线与默认由框架做。
+	a, err := mos.New(mos.Config{
+		Model:             model,
+		Tools:             reg,
+		Approval:          answerer,    // 问人：宿主实现（终端弹 y/N）
+		Sandbox:           sb,          // 仅 -allow-shell 时非 nil（能力即证据）
+		Policy:            cfg,         // 名字级名单（宿主解析 YAML 得到）
+		Rules:             hostRules(), // 参数级规则（宿主业务判断）
+		SystemPrompt:      sysPrompt,
+		WorkDir:           jailRoot,
+		ContextWindow:     *contextWindow,
+		ReserveTokens:     *reserveTokens,
+		KeepRecentTokens:  *keepRecentTokens,
+		TruncateMaxBytes:  trimBytes,
+		SpillDir:          filepath.Join(jailRoot, ".mos-trunc"),
+		Concurrency:       *concFlag,
+		Stream:            true,
+		OnChunk:           render,
+		DisableCompaction: *contextWindow <= 0,
+	})
+	check(err)
+
+	// 宿主自己的观测钩子：装配层之后挂——审批钩子要留在 pre-execute 的**最前**
+	//（ask 决策要短路后面的钩子，被拦下的调用不该再打"即将执行"）。
+	hooks := a.RunContext().Hooks
+	hooks.On(hook.HookToolPreExecute, func(ctx context.Context, ev *hook.HookEvent, next hook.Next) (*hook.HookEvent, error) {
+		fmt.Fprintf(os.Stderr, "[hook] turn %d 即将执行 %s（call %s）\n", ev.Turn, ev.ToolCall.Name, ev.ToolCall.ID)
+		return next(ctx, ev)
+	})
+	hooks.On(hook.HookToolExecute, func(ctx context.Context, ev *hook.HookEvent, next hook.Next) (*hook.HookEvent, error) {
+		start := time.Now()
+		out, err := next(ctx, ev) // ← 真正的工具调用在这里发生
+		fmt.Fprintf(os.Stderr, "[hook] turn %d %s 执行完毕（%v，call %s）\n", ev.Turn, ev.ToolCall.Name, time.Since(start).Round(time.Millisecond), ev.ToolCall.ID)
+		return out, err
+	})
 
 	fmt.Printf("MoS chat 已就绪（provider=%s model=%s session=%s 已有 %d 条事件 / 累计 %d tokens）\n",
 		provider(), os.Getenv("MOS_MODEL"), sess.ID, len(sess.Events()), sess.TotalUsage().TotalTokens)
-	fmt.Printf("  已注册工具: %s\n", strings.Join(reg.Names(), ", "))
-	fmt.Printf("  模型可见工具: %s\n", strings.Join(visibleNames(reg), ", "))
+	// 装配快照由框架给（Describe）：装了什么、**没装什么**都写出来——宿主
+	// 不再各写一份横幅，也就不会出现"横幅说有、其实没装"的情况。
+	fmt.Print(a.Describe())
 	fmt.Printf("  文件沙箱: %s（越界路径会被拒绝，工具不会执行）\n", jailRoot)
-	fmt.Printf("  并发上限: %d（仅对声明可并发的工具生效；read_file 可并发，write_file 独占）\n", *concFlag)
 	if *retryAttempts > 1 {
 		fmt.Printf("  重试: %d 次尝试（首次退避 %ds，指数增长带抖动；只重试瞬时错误）\n", *retryAttempts, *retryDelay)
 	} else {
 		fmt.Println("  重试: 未开启（1 次尝试，失败即报错）")
 	}
 	if *allowShell {
-		fmt.Printf("  shell: 已装配（隔离执行 + 路径强制：写限定在工作区，越界写被内核拒绝；超时缺省 %ds / 上界 %ds；工作目录 %s）\n",
-			*shellTimeout, *shellMaxTimeout, jailRoot)
+		fmt.Printf("  shell 超时: 缺省 %ds / 上界 %ds（写限定在工作区，越界写被内核拒绝）\n",
+			*shellTimeout, *shellMaxTimeout)
+	}
+	if *approvalFlag {
+		fmt.Println("  人工审批: 已装配（需确认时在终端问 y/N；空回车 = 拒绝）")
 	} else {
-		fmt.Println("  shell: 未装配（模型看不到这个能力；加 -allow-shell 开启）")
+		fmt.Println("  人工审批: 未装配（需确认的调用一律拒绝，fail-closed）")
 	}
 	if sysPrompt != "" {
 		fmt.Printf("  系统引导: %s\n", promptKind)
@@ -243,26 +241,6 @@ func main() {
 		}
 		fmt.Println("  ─────────────────────")
 	}
-	// 名字级策略（Allow/Deny 名单）装没装，看 cfg——守卫总线本身总是非 nil
-	//（它还挂着参数级的宿主规则）。
-	fmt.Print(policyBanner(cfg, policyPath))
-	fmt.Println("  参数级规则: 宿主规则已装配（敏感文件拒绝 / 删除命令需人工确认）")
-	if *approvalFlag {
-		fmt.Println("  人工审批: 已装配（需确认时在终端问 y/N；空回车 = 拒绝）")
-	} else {
-		fmt.Println("  人工审批: 未装配（需确认的调用一律拒绝，fail-closed）")
-	}
-	if compactor != nil {
-		fmt.Printf("  上下文压缩: 已装配（窗口 %d / 预留 %d / 保留 %d tokens；超阈值时模型生成结构化摘要落日志）\n",
-			*contextWindow, *reserveTokens, *keepRecentTokens)
-	} else {
-		fmt.Println("  上下文压缩: 未装配（-context-window > 0 开启）")
-	}
-	if *trimFlag > 0 {
-		fmt.Printf("  结果截断: %d 字节（全文落 %s，read_file 可回读）\n", *trimFlag, filepath.Join(jailRoot, ".mos-trunc"))
-	} else {
-		fmt.Println("  结果截断: 未开启（-trim > 0 开启）")
-	}
 	fmt.Println("输入 q 退出。")
 
 	for {
@@ -277,17 +255,13 @@ func main() {
 		if line == "q" || line == "quit" || line == "exit" {
 			break
 		}
-		reply, err := agent.Run(context.Background(), sess, line)
+		reply, err := a.Run(context.Background(), sess, line)
 		if err != nil {
 			fmt.Println()
 			fmt.Fprintf(os.Stderr, "运行失败: %v\n", err)
 			continue
 		}
-		// 回复已由 OnChunk 流式渲染（决策器回退非流式时也会一次性 emit 全文）；
-		// 仅在关闭流式时才在此补打印，避免同一段回复显示两遍。
-		if !rt.Stream {
-			fmt.Println(reply)
-		}
+		_ = reply   // 回复已由 OnChunk 流式渲染
 		flushLine() // 模型回复未必以换行结尾，先收尾再打统计，避免两行黏在一起
 		u := sess.TotalUsage()
 		// 区分开：输入（去缓存口径）/ 缓存读 / 缓存写 / 输出 / 共。
@@ -465,7 +439,7 @@ func policyBanner(cfg *policy.Config, policyPath string) string {
 
 // nameLevelGuard 构建**工具名级**的守卫（Policy 的 Allow/Deny 名单）。
 //
-// 名字级策略管「能不能调这个工具」；参数级规则（hostPolicy）管「这次调用的
+// 名字级策略管「能不能调这个工具」；参数级规则（hostRules）管「这次调用的
 // 参数危不危险」——同一套守卫链上，先名字级后参数级。
 func nameLevelGuard(cfg policy.Config) hook.Guard {
 	p := policy.New(cfg)
