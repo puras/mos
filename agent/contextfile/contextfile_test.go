@@ -428,3 +428,53 @@ func TestLoadExpandsGlobalDirTilde(t *testing.T) {
 		t.Fatalf("应加载到 ~/.mos 里的全局约定：%+v", res.Files)
 	}
 }
+
+// 全局约定模板：SDK 内嵌一份，宿主拿去落盘（新装的人也有约定，不是只有手写的人有）。
+func TestGlobalTemplate(t *testing.T) {
+	tpl := GlobalTemplate()
+	if strings.TrimSpace(tpl) == "" {
+		t.Fatal("全局约定模板不能为空")
+	}
+	for _, want := range []string{"全局约定", "先给答案", "权限"} {
+		if !strings.Contains(tpl, want) {
+			t.Fatalf("模板缺少 %q", want)
+		}
+	}
+}
+
+// EnsureGlobalFile：写一份模板；**已存在不覆盖**（用户改过的是他们的）。
+func TestEnsureGlobalFile(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".mos")
+	created, path, err := EnsureGlobalFile(dir)
+	if err != nil {
+		t.Fatalf("EnsureGlobalFile: %v", err)
+	}
+	if !created {
+		t.Fatal("首次应创建")
+	}
+	if filepath.Base(path) != GlobalTemplateFileName {
+		t.Fatalf("路径 = %q", path)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读回: %v", err)
+	}
+	if string(got) != GlobalTemplate() {
+		t.Fatal("写入的内容应与模板一致")
+	}
+	// 用户改过了：再调一次不覆盖。
+	if err := os.WriteFile(path, []byte("我改过的约定"), 0o644); err != nil {
+		t.Fatalf("改写: %v", err)
+	}
+	created, _, err = EnsureGlobalFile(dir)
+	if err != nil {
+		t.Fatalf("EnsureGlobalFile(2): %v", err)
+	}
+	if created {
+		t.Fatal("已存在时不该再写")
+	}
+	got, _ = os.ReadFile(path)
+	if string(got) != "我改过的约定" {
+		t.Fatalf("用户改过的内容被覆盖了：%q", got)
+	}
+}

@@ -443,6 +443,7 @@ llm.WithRetry(model, llm.RetryPolicy{
 - **字节预算**（默认 32KB，`Options.MaxBytes`）：上下文文件是**静态**内容——它进系统提示词，工具结果那道截断网兜不住它。超出时裁当前文件（行边界优先、Rune 边界兜底）并标注保留了多少字节；预算用完则更具体的文件不再加载。**降级如实记进 `Result.Warnings`**，不静默丢内容。
 - **框架不碰文件系统**（§4 治理规则 5）：读文件以 `Reader` 接口注入，宿主选实现（默认 `OSReader`）；要 jail 语义就注入宿主自己的 Reader。全局目录也由宿主显式传入（`Options.GlobalDirs`）——框架不猜路径，但 **MoS 自己的全局目录名是定的：`~/.mos`**（`contextfile.DefaultGlobalDir()`，与产品层的 `~/.mos-web`、PI 的 `~/.pi/agent` 都不是一回事）；路径可写 `~/.mos`（自动展开）。
 - **策略归宿主**：要不要读、读哪些目录、上限多少，都是宿主的决定（`Options.MaxDepth` 默认 0 = 只看工作目录，最保守）。
+- **全局约定从哪来**：SDK **内嵌一份模板**（`contextfile.GlobalTemplate()`，随包发布）+ `EnsureGlobalFile(dir)`（写一份、**只写不覆盖**：用户改过的是他们的）。新装的人因此也有全局约定——不是「只有手写的人才有」的功能。落盘动作归宿主（框架不碰文件系统）。
 
 **装配层入口**（`mos.Config`）：`Context *ContextConfig` 一开就装（`Dir` 空 = `WorkDir`；`Options.GlobalDirs` 空 = 用 MoS 自己的 `~/.mos`）。正文作为「项目约定」进系统提示词：给了 `Config.Prompt`（分节装配器）就进分节（位置在约定之后、工具指引之前）；没给就追加在 `Config.SystemPrompt` 字符串之后（根包的 SystemPrompt 是字符串，位置只能到末尾——**想要精确位置就用 `Prompt`**）。`SystemPrompt` 与 `Prompt` 二选一，两个都给 = 装配错误（不知道听谁的）。装配快照（`Describe()`）写明装了哪些文件、多少字节、降级警告——**没装什么也写出来**。
 
