@@ -193,32 +193,6 @@ func (p *scriptPlanner) NextAction(context.Context, []llm.Message, []llm.Tool) (
 	return a, nil
 }
 
-// 启动横幅：没装名字级名单（cfg == nil）是**正常路径**，不能崩。
-func TestPolicyBannerNilConfig(t *testing.T) {
-	got := policyBanner(nil, "")
-	if !strings.Contains(got, "未装配") {
-		t.Fatalf("横幅 = %q", got)
-	}
-	got = policyBanner(&policy.Config{Allow: []string{"read_file"}, Deny: []string{"shell", "write_file"}}, "p.yaml")
-	if !strings.Contains(got, "read_file") || !strings.Contains(got, "shell, write_file") {
-		t.Fatalf("横幅 = %q", got)
-	}
-	// Allow 非空 → 未列名的工具一律拒绝；Allow 未配置 → 默认放行
-	if !strings.Contains(got, "未列名的工具一律拒绝") {
-		t.Fatalf("横幅语义不对: %q", got)
-	}
-	got = policyBanner(&policy.Config{}, "")
-	if !strings.Contains(got, "放行 不限制") || !strings.Contains(got, "未列名的工具默认放行") {
-		t.Fatalf("空配置的横幅 = %q", got)
-	}
-	if strings.Contains(got, "（空）write_file") {
-		t.Fatalf("占位符不该混进列表: %q", got)
-	}
-	if strings.Contains(got, "拒绝 无") && strings.Contains(got, "放行 [") {
-		t.Fatalf("空列表不该显示成有值: %q", got)
-	}
-}
-
 // 端到端：宿主规则的 ask 档 → 终端问人 → 批准才执行。
 func TestHostPolicyAskReachesTerminalApproval(t *testing.T) {
 	run := func(answer string) (executed bool, result string) {

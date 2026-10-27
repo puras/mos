@@ -36,11 +36,7 @@ import (
 	"github.com/puras/mos/agent/hook"
 	"github.com/puras/mos/agent/policy"
 	"github.com/puras/mos/agent/prompt"
-	"github.com/puras/mos/filesystem"
 	"github.com/puras/mos/llm"
-	"github.com/puras/mos/llm/anthropic"
-	"github.com/puras/mos/llm/gemini"
-	"github.com/puras/mos/llm/openai"
 	"github.com/puras/mos/sandbox"
 	"github.com/puras/mos/session"
 	"github.com/puras/mos/tool"
@@ -77,8 +73,7 @@ func main() {
 		}
 		return
 	}
-	jl, sess := mustSession(*fresh, *sessionFlag)
-	defer jl.Close()
+	sess := mustSession(*fresh, *sessionFlag)
 
 	// 内置工具集：模型可调用的工具在此登记（未登记的工具不进 function calling 清单）
 	reg := tool.NewRegistry()
@@ -92,13 +87,10 @@ func main() {
 	// 宿主装配层决定 jail 根（这里是 -workdir，默认当前目录）。
 	jailRoot, err := filepath.Abs(*workdir)
 	check(err)
-	fsys := filesystem.NewSandboxed(&filesystem.FileAccessPolicy{
-		ReadRoots:  []string{jailRoot},
-		WriteRoots: []string{jailRoot},
-	})
-	// 写前观察（S5h）：不许覆盖没读过的文件、读后被改要先重读（防丢失更新）。
-	fileGate := builtin.NewObserveGate()
-	for _, tl := range builtin.FileTools(fsys, fileGate) {
+	// FileToolsIn 一套给齐：jail 根 + 写前观察门（没读过的文件不许覆盖）。
+	fileTools, err := builtin.FileToolsIn(jailRoot)
+	check(err)
+	for _, tl := range fileTools {
 		if err := reg.Register(tl); err != nil {
 			check(fmt.Errorf("注册工具 %q: %w", tl.Name(), err))
 		}
@@ -307,48 +299,45 @@ func flushLine() {
 // 会各打一行，重试了几次、共耗时多久一目了然；若把日志放里面，只会看到最后
 // 一次成功，失败被静默吞掉。
 func mustModel(retryAttempts, retryDelay int) llm.ChatModel {
-	reg := llm.NewRegistry()
-	reg.Register("openai", openai.New)
-	reg.Register("anthropic", anthropic.New)
-	reg.Register("gemini", gemini.New)
-
-	keyEnv := map[string]string{
-		"openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY", "gemini": "GEMINI_API_KEY",
-	}[provider()]
+	// 密钥从哪来是宿主的事；框架只公布约定的环境变量名（不读环境变量）。
+	keyEnv := mos.APIKeyEnv(provider())
+	if keyEnv == "" {
+		fmt.Fprintf(os.Stderr, "未知协议 %q（可选：openai / anthropic / gemini）\n", provider())
+		os.Exit(1)
+	}
 	if os.Getenv(keyEnv) == "" {
 		fmt.Fprintf(os.Stderr, "缺少 %s（在 .env 或环境变量中配置）\n", keyEnv)
 		os.Exit(1)
 	}
-	cfg := llm.Config{
-		"api_key":  os.Getenv(keyEnv),
-		"base_url": os.Getenv("MOS_BASE_URL"),
-		"model":    os.Getenv("MOS_MODEL"),
-	}
 	// max_tokens 是输出的硬上限：太小 → 回答半截、工具调用参数残缺
 	//（anthropic 协议必填，框架默认 8192）。宿主可用环境变量调。
+	extra := llm.Config{}
 	if v := os.Getenv("MOS_MAX_TOKENS"); v != "" {
-		cfg["max_tokens"] = v
+		extra["max_tokens"] = v
 	}
-	model, err := reg.Create(provider(), cfg)
-	check(err)
-
-	// 重试策略：**参数是宿主的，机制是框架的**（llm.WithRetry）。
-	// 只重试瞬时错误（限流 / 5xx / 连接失败 / 空响应）；4xx、鉴权失败、
-	// 配额耗尽、用户取消一律快速失败——重试确定性的错误只是浪费配额。
-	m := llm.WithRetry(model, llm.RetryPolicy{
-		MaxAttempts: retryAttempts,
-		BaseDelay:   time.Duration(retryDelay) * time.Second,
-		// 重试要看得见：静默重试是查不出问题的。
-		OnScheduled: func(attempt int, delay time.Duration, err error) {
+	// 重试策略：**参数是宿主的，机制是框架的**（框架只重试瞬时错误：限流 /
+	// 5xx / 连接失败 / 空响应；4xx、鉴权失败、配额耗尽、用户取消一律快速
+	// 失败——重试确定性的错误只是浪费配额）。
+	model, err := mos.NewModel(mos.ModelConfig{
+		Provider: provider(),
+		APIKey:   os.Getenv(keyEnv),
+		BaseURL:  os.Getenv("MOS_BASE_URL"),
+		Model:    os.Getenv("MOS_MODEL"),
+		Extra:    extra,
+		Retry:    llm.RetryPolicy{MaxAttempts: retryAttempts, BaseDelay: time.Duration(retryDelay) * time.Second},
+		OnRetry: func(attempt int, delay time.Duration, err error) {
+			// 重试要看得见：静默重试是查不出问题的。
 			fmt.Fprintf(os.Stderr, "[llm] 第 %d 次重试（%v 后）：%v\n", attempt, delay.Round(time.Millisecond), err)
 		},
+		Log: func(r llm.CallResult) {
+			if logLLM() {
+				// 模型名等日志内容由闭包持有，装饰器只管「调用结束时回调一次」
+				logCall(os.Getenv("MOS_MODEL"), r)
+			}
+		},
 	})
-	if logLLM() {
-		// 模型名等日志内容由闭包持有，装饰器只管「调用结束时回调一次」
-		name := os.Getenv("MOS_MODEL")
-		m = llm.WithLogging(m, func(r llm.CallResult) { logCall(name, r) })
-	}
-	return m
+	check(err)
+	return model
 }
 
 // buildSystemPrompt 装配系统提示词（agent/prompt 分节 Builder）：
@@ -390,111 +379,6 @@ func shellRuntimeGuide(workdir string) string {
 正确做法是「改代码 → 跑命令 → 看真实输出 → 再改」，不要靠猜代码对不对。`, workdir)
 }
 
-// visibleNames 列出**模型真正看到**的工具（可见性过滤之后）。
-func visibleNames(reg *tool.Registry) []string {
-	var names []string
-	for _, tl := range reg.List() {
-		names = append(names, tl.Name)
-	}
-	return names
-}
-
-// mustGuards 构建单调守卫链：安全策略（Policy）作为第一道关卡。
-//
-// 拒绝是「结果」不是「故障」：工具不执行，拒绝理由经 tool/result 回填给
-// 模型，让它自行纠正。
-//
-// 这里在 Policy 外包一层只为演示可见性（打印被拒的工具名与轮次）——裁决
-// 本身全部委托 Policy.Check，示例不自己重写规则。GuardBus 尚无观测通道，
-// 正经日志是 S5c 之后的事。
-//
-// policyBanner 拼出策略横幅。
-//
-// 单独立函数是为了能测：cfg 为 nil（没装名字级名单）是**正常路径**，而守卫
-// 总线此时并非 nil（它还挂着参数级的宿主规则）——曾经在这里判错分支，
-// 直接解引用了 nil 的 cfg。
-func policyBanner(cfg *policy.Config, policyPath string) string {
-	if cfg == nil {
-		return "  策略: 未装配（名字级名单不收紧；参数级宿主规则仍然生效）\n"
-	}
-	src := "默认（放行已注册工具）+ -deny"
-	if policyPath != "" {
-		src = "文件 " + policyPath
-	}
-	allow := "不限制"
-	if len(cfg.Allow) > 0 {
-		allow = "[" + strings.Join(cfg.Allow, ", ") + "]"
-	}
-	deny := "无"
-	if len(cfg.Deny) > 0 {
-		deny = "[" + strings.Join(cfg.Deny, ", ") + "]"
-	}
-	// 语义：Allow 未配置 = 不限制（未列名的工具放行）；Allow 非空 = 只放行名单内。
-	unlisted := "未列名的工具默认放行"
-	if len(cfg.Allow) > 0 {
-		unlisted = "未列名的工具一律拒绝"
-	}
-	return fmt.Sprintf("  策略[%s]: 放行 %s 拒绝 %s（%s）\n", src, allow, deny, unlisted)
-}
-
-// nameLevelGuard 构建**工具名级**的守卫（Policy 的 Allow/Deny 名单）。
-//
-// 名字级策略管「能不能调这个工具」；参数级规则（hostRules）管「这次调用的
-// 参数危不危险」——同一套守卫链上，先名字级后参数级。
-func nameLevelGuard(cfg policy.Config) hook.Guard {
-	p := policy.New(cfg)
-	return func(ctx context.Context, ev *hook.HookEvent) error {
-		err := p.Check(ctx, ev)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[guard] 第 %d 轮：拒绝 %s——工具不会执行（%v）\n",
-				ev.Turn, ev.ToolCall.Name, err)
-		}
-		return err
-	}
-}
-
-// mustHooks 构建可改写环节的钩子链（HookBus）——与守卫是**两条不同的轨道**：
-// 守卫单调裁决（拒绝/放行），钩子可改写（环绕派发、裁决调用；结果截断由
-// 框架的 TruncateHook 在 main 里另装）。
-//
-// 这里演示两件事：
-//  1. pre-execute：只观测即将执行的调用（不改载荷——载荷对钩子冻结）；
-//  2. tool/execute：环绕派发，打印耗时（真实执行发生在钩子之间）。
-//
-// 载荷冻结是刻意的：钩子**改不了**工具名/参数/CallID，所以它无法绕过策略；
-// 要修正入参请在工具内部做（工具自己 normalize）。
-func mustHooks(pp *policy.ParamPolicy) *hook.HookBus {
-	hb := hook.NewHookBus()
-
-	// 参数级审批钩子**放最前**：ask 决策会短路后面的钩子——被拦下的调用
-	// 不该再打印「即将执行」（它不会真的执行）。
-	if pp != nil {
-		hb.On(hook.HookToolPreExecute, pp.Approval())
-	}
-
-	hb.On(hook.HookToolPreExecute, func(ctx context.Context, ev *hook.HookEvent, next hook.Next) (*hook.HookEvent, error) {
-		// 打 turn + callID：同一 turn 里的多次调用都只打「第 N 轮」分不清，
-		// 带上 callID 才看得出是两次不同的调用。
-		fmt.Fprintf(os.Stderr, "[hook] turn %d 即将执行 %s（call %s）\n", ev.Turn, ev.ToolCall.Name, ev.ToolCall.ID)
-		return next(ctx, ev)
-	})
-
-	hb.On(hook.HookToolExecute, func(ctx context.Context, ev *hook.HookEvent, next hook.Next) (*hook.HookEvent, error) {
-		start := time.Now()
-		out, err := next(ctx, ev) // ← 真正的工具调用在这里发生
-		fmt.Fprintf(os.Stderr, "[hook] turn %d %s 执行完毕（%v，call %s）\n", ev.Turn, ev.ToolCall.Name, time.Since(start).Round(time.Millisecond), ev.ToolCall.ID)
-		return out, err
-	})
-
-	return hb
-}
-
-// policyConfig 决定生效的策略：
-//   - 指定 -policy 文件：完全以该 YAML 为准（平台纯配置装配，G3）；
-//   - 否则：只有 -deny / MOS_DENY_TOOLS 的拒绝名单（allow 未配置 = 不限制）。
-//
-// 语义对齐 PI / DSH：两份名单都可选，都不给 = 不限制。策略层是**收窄层**——
-// fail-closed 的那道门是注册表（没注册的工具模型看不见也调不动）。
 func policyConfig(policyPath string, deny []string) *policy.Config {
 	if policyPath != "" {
 		cfg, err := loadPolicy(policyPath)
@@ -621,9 +505,7 @@ func logCall(model string, r llm.CallResult) {
 //   - -new：新建时间戳会话（chat-<unix>），不接旧上下文；
 //   - -session <id>：**继续指定的那个**（不存在则新建同名空会话）；
 //   - 都不给：继续默认会话 chat（示例里的"恢复上次会话"）。
-func mustSession(fresh bool, wantID string) (*session.JSONL, *session.Session) {
-	jl, err := session.NewJSONL("data")
-	check(err)
+func mustSession(fresh bool, wantID string) *session.Session {
 	id := "chat"
 	switch {
 	case fresh && wantID != "":
@@ -634,10 +516,10 @@ func mustSession(fresh bool, wantID string) (*session.JSONL, *session.Session) {
 	case wantID != "":
 		id = wantID
 	}
-	_ = jl.SaveHeader(id, session.Header{ID: id, CreatedAt: time.Now()})
-	sess, err := session.Restore(id, jl)
+	// 建或恢复一行（落盘 data/<id>.jsonl；不存在则新建）。
+	sess, err := session.Open("data", id)
 	check(err)
-	return jl, sess
+	return sess
 }
 
 // listSessionIDs 列出 data/ 下可继续的会话 id（文件名去掉 .jsonl）。

@@ -63,17 +63,15 @@ func TestMustSessionByID(t *testing.T) {
 	}
 	defer os.Chdir(old)
 
-	jl, sess := mustSession(false, "my-task")
+	sess := mustSession(false, "my-task")
 	if sess.ID != "my-task" {
 		t.Fatalf("session id = %q, want my-task", sess.ID)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "data", "my-task.jsonl")); err != nil {
 		t.Fatalf("会话文件应落盘: %v", err)
 	}
-	jl.Close()
-
 	// 再次打开同一 id：恢复（不新建）
-	_, sess2 := mustSession(false, "my-task")
+	sess2 := mustSession(false, "my-task")
 	if sess2.ID != "my-task" {
 		t.Fatalf("再次打开 id = %q", sess2.ID)
 	}
