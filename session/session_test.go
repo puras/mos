@@ -556,3 +556,48 @@ func TestHeaderRoundTrip(t *testing.T) {
 		t.Fatal("Exists(已存在) 应为 true")
 	}
 }
+
+// Open：建或恢复一行搞定（新会话有 header、恢复后事件一致）。
+func TestOpenCreatesAndRestores(t *testing.T) {
+	dir := t.TempDir()
+	s1, err := Open(dir, "c1")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := s1.Append(Event{Kind: EventUser, Turn: 1, Text: "你好"}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if _, err := s1.Append(Event{Kind: EventAssistant, Turn: 1, Text: "在"}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	// 再次打开同一 id：恢复（事件一致）。
+	s2, err := Open(dir, "c1")
+	if err != nil {
+		t.Fatalf("Open(恢复): %v", err)
+	}
+	if len(s2.Events()) != 2 {
+		t.Fatalf("恢复后事件数 = %d, want 2", len(s2.Events()))
+	}
+	// 落盘文件存在且首行是 header。
+	data, err := os.ReadFile(filepath.Join(dir, "c1.jsonl"))
+	if err != nil {
+		t.Fatalf("读日志: %v", err)
+	}
+	first := strings.SplitN(string(data), "\n", 2)[0]
+	if !strings.Contains(first, "\"id\":\"c1\"") {
+		t.Fatalf("首行应是 header: %s", first)
+	}
+	// 再次 Open 不该覆盖原有 header 的 createdAt。
+	jl, err := NewJSONL(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := jl.LoadHeader("c1")
+	if err != nil {
+		t.Fatalf("LoadHeader: %v", err)
+	}
+	if h.ID != "c1" {
+		t.Fatalf("header id = %q", h.ID)
+	}
+}

@@ -203,3 +203,23 @@ func (s *Session) repairOrphanTurn() bool {
 	}
 	return false
 }
+
+// Open 打开或恢复会话：落盘 dir/<id>.jsonl；文件不存在则新建（写首行
+// header）。中断的 turn 由 Restore 合成收尾（孤儿 turn → interrupted）。
+//
+// 便利入口：宿主说"我要 dir 下 id 这个会话"，框架管建/恢复/收尾。
+// 要别的落盘后端（数据库、远端）用 New + Restore 走底层接口。
+func Open(dir, id string) (*Session, error) {
+	if id == "" {
+		return nil, fmt.Errorf("session: 会话 id 不能为空")
+	}
+	jl, err := NewJSONL(dir)
+	if err != nil {
+		return nil, err
+	}
+	// SaveHeader 在文件已存在时不重复写（保住原有的 createdAt）。
+	if err := jl.SaveHeader(id, Header{ID: id, CreatedAt: time.Now()}); err != nil {
+		return nil, err
+	}
+	return Restore(id, jl)
+}
