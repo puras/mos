@@ -195,7 +195,95 @@ REPL 循环、事件落盘的落盘位置。
 **不落审计事件**：会话日志记的是"发生了什么"，不是"配置长什么样"；策略是宿主
 策略，换了值从 `Describe()` 能查到。
 
-## 9. 本切片不做
+## 9. S7b：把"每个宿主都要写一遍"的样板也收进框架
+
+S7 只收了**接线**（守卫/钩子/策略/审批/截断/压缩/驱动），示例里还留着三块
+**通用样板**——每个宿主都要写一遍，抄错就是 bug：
+
+| 样板 | 现状 | 收进 |
+| --- | --- | --- |
+| 模型装配（协议注册 + key + 重试 + 日志装饰器） | 示例 44 行 | `mos.NewModel` |
+| 会话建/恢复（JSONL + header + Restore） | 示例 18 行 | `session.Open` |
+| 文件工具套装（jail + 写前观察 + 注册） | 示例 ~20 行 | `builtin.FileToolsIn` |
+
+### 9.1 `mos.NewModel`（放根包，不放 `llm`）
+
+`llm` 包不能 import `llm/openai`（适配器 import `llm`，会成环）→ 只能放**根包**
+（装配层正是 import 两侧的地方）。
+
+```go
+// ModelConfig 是模型装配配置。
+type ModelConfig struct {
+    Provider  string          // openai / anthropic / gemini（必填）
+    APIKey    string          // 必填
+    BaseURL   string          // 可选（各适配器自带默认）
+    Model     string          // 必填
+    MaxTokens string          // 可选（输出上限；anthropic 适配器有默认）
+    Extra     llm.Config      // 适配器私有参数（如 thinking 预算）
+    Retry     llm.RetryPolicy // 零值 = 不重试
+    OnRetry   func(attempt int, delay time.Duration, err error)
+    Log       func(llm.CallResult) // 非空 = 挂日志装饰器
+}
+func NewModel(cfg ModelConfig) (llm.ChatModel, error)
+
+// APIKeyEnv 返回协议约定的密钥环境变量名（openai→OPENAI_API_KEY、…）。
+// 框架**不读环境变量**（A3：配置来源归宿主）——只公布名字，宿主自己取。
+func APIKeyEnv(provider string) string
+```
+
+**留在宿主**：密钥从哪来、模型名怎么选、重试几次、怎么打日志——都是宿主决策。
+
+### 9.2 `session.Open`
+
+```go
+// Open 打开或恢复会话：落盘 dir/<id>.jsonl；不存在则新建（写 header）。
+// 中断的 turn 由 Restore 合成收尾。
+func Open(dir, id string) (*Session, error)
+```
+
+### 9.3 `builtin.FileToolsIn`
+
+```go
+// FileToolsIn 返回一套文件工具（read_file/write_file/edit_file）：
+//   - jail 根 = root（越界路径被拒：Lexical + Realpath 双校验）；
+//   - 写前观察门开启（没读过的文件不许覆盖）。
+// root 为空 → 当前目录。要定制的宿主用 FileTools(fsys, gate) 自己拼。
+func FileToolsIn(root string) ([]Tool, error)
+```
+
+### 9.4 示例侧：删死代码 + 瘦身
+
+改造后 `visibleNames` / `nameLevelGuard` / `mustHooks` / `policyBanner` 都没人用了
+（横幅已由 `Describe()` 承担，策略与钩子已由装配层接上）→ 删掉（连带测试）。
+
+**留在宿主不动**：审批 UI（终端 y/N）、YAML 解析、REPL、**选哪些工具**、系统提示词
+里的"部署事实"（只有宿主知道）。
+
+### 9.5 测试计划
+
+- `mos.NewModel`：缺 provider/api_key/model → 报错；未知 provider → 报错；
+  `OnRetry` / `Log` 被调用；`MaxTokens` 透传到适配器。
+- `session.Open`：新建（文件生成 + header）/ 恢复（事件一致）。
+- `builtin.FileToolsIn`：越界读被拒；未读过的文件不许覆盖。
+- 删死代码后既有测试仍绿；示例的 main_test / guard_test 仍绿。
+
+### 9.6 风险
+
+| 风险 | 判断 |
+| --- | --- |
+| 根包依赖三个适配器 | 可接受：根包**就是**装配层；G6「近零依赖」不受影响（适配器同仓库） |
+| `session.Open` 绑 JSONL 后端 | 可接受：宿主要别的后端用底层 API（`session.New` / `Restore`） |
+| `FileToolsIn` 是"简单档" | 可接受：要定制（共享 fsys、自定义 gate）用底层 API |
+
+### 9.7 拆几个 commit
+
+1. `feat(mos): NewModel + APIKeyEnv`
+2. `feat(session): Open`
+3. `feat(tool/builtin): FileToolsIn`
+4. `refactor(examples/chat): 用新助手 + 删死代码`
+5. `docs: 同步`
+
+## 10. 本切片不做
 
 - YAML/JSON 解析、配置来源、密钥获取（宿主）；
 - option 函数式 API；
