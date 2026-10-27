@@ -2,13 +2,16 @@ package builtin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/puras/mos/filesystem"
+	"github.com/puras/mos/tool"
 )
 
 func jail(t *testing.T) (string, filesystem.FileSystem) {
@@ -327,5 +330,46 @@ func TestReadFileTruncatesLongLine(t *testing.T) {
 	content := out.(map[string]any)["content"].(string)
 	if !strings.Contains(content, "line truncated to 2000 chars") {
 		t.Fatalf("超长行应被截断并标记: %q", content[:80])
+	}
+}
+
+// FileToolsIn：jail 根 = root，越界被拒；写前观察门生效（没读过不许覆盖）。
+func TestFileToolsInJailsAndObserves(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	outFile := filepath.Join(outside, "secret.txt")
+	if err := os.WriteFile(outFile, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tools, err := FileToolsIn(root)
+	if err != nil {
+		t.Fatalf("FileToolsIn: %v", err)
+	}
+	if len(tools) != 3 {
+		t.Fatalf("应有 3 个文件工具, got %d", len(tools))
+	}
+	var read, write tool.Tool
+	for _, tl := range tools {
+		switch tl.Name() {
+		case "read_file":
+			read = tl
+		case "write_file":
+			write = tl
+		}
+	}
+
+	// 越界读：被 jail 拒绝。
+	if _, err := read.Execute(context.Background(), json.RawMessage(`{"path":`+strconv.Quote(outFile)+`}`)); err == nil {
+		t.Fatal("越界路径应被拒绝")
+	}
+
+	// 没读过的文件：写前观察门拒绝覆盖。
+	target := filepath.Join(root, "a.txt")
+	if err := os.WriteFile(target, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := write.Execute(context.Background(), json.RawMessage(`{"path":`+strconv.Quote(target)+`,"content":"new"}`)); err == nil {
+		t.Fatal("没读过的文件应被写前观察门拒绝")
 	}
 }

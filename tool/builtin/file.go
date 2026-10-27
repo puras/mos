@@ -312,3 +312,33 @@ var _ tool.Tool = (*WriteFile)(nil)
 func FileTools(fsys filesystem.FileSystem, gate *ObserveGate) []tool.Tool {
 	return []tool.Tool{NewReadFileObserved(fsys, gate), NewWriteFileObserved(fsys, gate), NewEditObserved(fsys, gate)}
 }
+
+// FileToolsIn 返回一套**文件工具**（read_file / write_file / edit_file），
+// 装好两件事：
+//
+//   - 文件 jail：根目录 = root，越界路径被拒（Lexical + Realpath 双校验，
+//     symlink 逃逸也挡住）；
+//   - 写前观察门：没读过的文件不许覆盖，读过之后被改过要先重读（S5h）。
+//
+// root 为空 → 用当前目录。要定制的宿主（共享 fsys、自定义观察门、读写根
+// 不同）用 FileTools(fsys, gate) 自己拼。
+//
+// 便利入口：宿主说"我要一套以 root 为界的文件工具"，框架管 jail + 观察门。
+func FileToolsIn(root string) ([]tool.Tool, error) {
+	if root == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("builtin: 取工作目录: %w", err)
+		}
+		root = wd
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("builtin: 解析文件工具根 %q: %w", root, err)
+	}
+	fsys := filesystem.NewSandboxed(&filesystem.FileAccessPolicy{
+		ReadRoots:  []string{abs},
+		WriteRoots: []string{abs},
+	})
+	return FileTools(fsys, NewObserveGate()), nil
+}
