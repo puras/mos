@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/puras/mos/llm"
@@ -508,5 +509,50 @@ func TestProjectHealsUnpairedToolCalls(t *testing.T) {
 	}
 	if msgs[2].Content != "ok" {
 		t.Fatalf("真实回执不应被改写: %q", msgs[2].Content)
+	}
+}
+
+// Header 的宿主元信息（Title/Cwd/ParentID/SeedSeq）要能落盘并读回：
+// 宿主（Web 控制台）靠它们做会话索引、按项目分组与 fork 血缘。
+// 旧日志文件没有这些字段照样能读（向后兼容）。
+func TestHeaderRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	jl, err := NewJSONL(dir)
+	if err != nil {
+		t.Fatalf("NewJSONL: %v", err)
+	}
+	id := "meta"
+	want := Header{
+		ID: id, CreatedAt: time.Now().Truncate(time.Second),
+		Title: "修复 lab 里的测试", Cwd: "/tmp/lab",
+		ParentID: "parent-1", SeedSeq: 42,
+	}
+	if err := jl.SaveHeader(id, want); err != nil {
+		t.Fatalf("SaveHeader: %v", err)
+	}
+	got, err := jl.LoadHeader(id)
+	if err != nil {
+		t.Fatalf("LoadHeader: %v", err)
+	}
+	if got.Title != want.Title || got.Cwd != want.Cwd ||
+		got.ParentID != want.ParentID || got.SeedSeq != want.SeedSeq {
+		t.Fatalf("Header 往返不一致: %+v", got)
+	}
+	if !got.CreatedAt.Equal(want.CreatedAt) {
+		t.Fatalf("CreatedAt = %v, want %v", got.CreatedAt, want.CreatedAt)
+	}
+
+	// 会话不存在 → 报错（LoadHeader 的契约：语义由调用方决定，
+	// 宿主先用 Exists 问一句）。与 Load 的「不存在返回空会话」不同——
+	// 这里是「读元信息」，读不到就该说读不到。
+	if _, err := jl.LoadHeader("missing"); err == nil {
+		t.Fatal("LoadHeader(不存在) 应报错")
+	}
+	// Exists：宿主用它区分「404」与「存在但没有事件的空会话」。
+	if jl.Exists("missing") {
+		t.Fatal("Exists(不存在) 应为 false")
+	}
+	if !jl.Exists(id) {
+		t.Fatal("Exists(已存在) 应为 true")
 	}
 }
