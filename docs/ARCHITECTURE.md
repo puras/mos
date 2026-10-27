@@ -5,7 +5,7 @@
 ## 1. 分层（目标形态）
 
 ```text
-装配层    assistant        模型对象 + 工具集 + 运行配置注入，nil 用框架默认（S7）
+装配层    mos（根包）      模型对象 + 工具集 + 运行配置注入，nil 用框架默认；能力即证据（S7 ✅）
 驱动层    LoopDriver       ReAct 起步；PlanExecute/Reflection/Scripted 按 PRD 逐个回填（S4a ✅）
 执行通道  execpath         守卫裁决 → 调度执行 → 结果回填，各驱动共用（S5a 骨架 ✅ / S5e 补齐）
 基础设施  session/event/hook  事件日志会话 + 总线 + 钩子守卫（S1/S5）
@@ -40,7 +40,7 @@
 | `sandbox` | 进程隔离：超时 + 进程组击杀 + 输出上限 + 资源限制 + 环境裁剪 | 移植裁剪 | S5f-1 ✅ |
 | `agent/prompt` | 系统提示词分节装配：`Section`/`Builder`（Add 严格插入 / Set 覆写 / Complete 整段替换 / Clone 派生）+ 中心顺序常量；`tool.Guideline` 可选接口让工具自带跨调用指引（文案归工具包，位置归本包）——PI 紧凑模板 × DSH 顺序中心化的中间态 | 新增 | S7 前置 ✅ |
 | `agent`（上下文件） | 截断、压缩、Auditor | 重写瘦身 | S6 ✅ |
-| `assistant` | 一行装配 + 示例 CLI | 重写 | S7 |
+| `mos`（根包） | 一行装配 `mos.New(Config)` + 运行期旋钮 + 装配快照 | 重写 | S7 ✅ |
 
 > S3 边界：`tool/builtin` 只带 `current_time`（无安全副作用）。涉及文件与命令执行的
 > 内置工具（read_file / write_file / find_files / grep / shell）等 S5 的 filesystem jail

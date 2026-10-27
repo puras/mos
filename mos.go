@@ -1,0 +1,425 @@
+// Package mos 是 MoS 的装配层：把「模型 + 工具 + 策略 + 安全 + 上下文工程」
+// 一次性装成一个可跑的智能体。
+//
+// 分工一句话：**框架负责接线与默认，宿主负责要什么、允许什么**——策略
+// （Allow/Deny、参数级规则）、能力（审批问人、shell 沙箱、工具集）与密钥来源
+// 都在宿主手里。框架不碰文件系统与网络，也不绑定配置格式（YAML/JSON 解析归
+// 宿主，policy 层已是这样做的）。
+//
+// 四条不变式（详见 docs/assembly.md）：
+//
+//   - 能力即证据：能力字段是接口/对象，nil = **不提供该能力**（模型看不到，
+//     需要时一律拒绝）。不用「开关 + 参数」表达「有没有」；
+//   - 缺能力 = fail-closed：没有模型就跑不起来；没有审批通道，需人工确认的
+//     调用一律拒绝；没给沙箱就不注册 shell；
+//   - 配置 ≠ 装配：Config 不含文件路径、配置格式、密钥来源；
+//   - 装配快照是事实：Describe() 只描述装了什么，**没装什么也写出来**。
+//
+// 用法：
+//
+//	a, err := mos.New(mos.Config{
+//		Model:    model,
+//		Tools:    reg,
+//		Approval: answerer, // 问人：宿主实现
+//		Policy:   &policy.Config{Allow: []string{"read_file"}},
+//		Rules:    hostRules, // 参数级规则：deny→守卫 / ask→审批
+//	})
+//	reply, err := a.Run(ctx, sess, "读一下 README")
+package mos
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+
+	"github.com/puras/mos/agent"
+	"github.com/puras/mos/agent/approval"
+	"github.com/puras/mos/agent/driver"
+	"github.com/puras/mos/agent/driver/react"
+	"github.com/puras/mos/agent/hook"
+	"github.com/puras/mos/agent/policy"
+	"github.com/puras/mos/llm"
+	"github.com/puras/mos/planner"
+	"github.com/puras/mos/sandbox"
+	"github.com/puras/mos/session"
+	"github.com/puras/mos/tool"
+	"github.com/puras/mos/tool/builtin"
+)
+
+// Config 是装配层配置：全字段可选，零值 = 框架默认（见 defaults.go）。
+//
+// 字段分四组：必填、能力、策略、运行参数。**能力即证据**——能力字段是
+// 接口/对象，nil 表示不提供该能力，框架不会"顺手装一个"。
+type Config struct {
+	// ── 必填 ──
+	//
+	// Model 是对话模型。nil 时 New 直接报错：没有模型就装配不出能跑的
+	// 智能体（fail-closed，不降级成空转）。
+	Model llm.ChatModel
+
+	// ── 能力（nil = 不提供该能力）──
+	//
+	// Tools 是工具注册表。nil = 空注册表（模型看不到任何工具）。宿主自己
+	// 注册工具（含文件工具、shell 等），装配层不替宿主选工具。
+	Tools *tool.Registry
+	// Approval 是人工审批的应答方（宿主实现"问人"）。nil = 未装配审批通道，
+	// 需要人工确认的调用一律拒绝（fail-closed）。
+	Approval approval.Answerer
+	// Sandbox 是 shell 的隔离执行器。非 nil 时装配层注册 shell 工具
+	// （注册表里已有 shell 则不重复注册）。nil = 不提供 shell 能力。
+	Sandbox *sandbox.Local
+	// Compactor 是上下文压缩器。nil = 按下面的窗口参数建默认的模型压缩器；
+	// 宿主自备则用宿主的（想换摘要提示词时）。
+	Compactor agent.Compactor
+	// Truncator 是工具结果截断器。nil = 按 TruncateMaxBytes 建默认的
+	// （全文落盘，read_file 可回读）。
+	Truncator agent.ResultTruncator
+	// Persistence 是会话落盘后端。nil = 内存会话（不落盘）。
+	Persistence session.Persistence
+
+	// ── 策略（宿主决定允许什么）──
+	//
+	// Policy 是名字级名单（工具 allow/deny + 模型可见性过滤）。nil = 不收紧
+	// （全部已注册工具都可见、可调）。
+	Policy *policy.Config
+	// Rules 是参数级规则：deny 档进守卫（单调拒绝，不可被钩子洗白），
+	// ask 档进 pre-execute 钩子（转人工确认）。nil = 无参数级规则。
+	Rules []policy.Check
+
+	// ── 运行参数（零值 = 框架默认）──
+	//
+	// SystemPrompt 是静态系统引导词（作为历史首条消息注入）。空 = 不加。
+	SystemPrompt string
+	// WorkDir 是工作目录：文件工具的沙箱根、截断落盘目录的父目录。空 = 当前目录。
+	WorkDir string
+	// ContextWindow 是模型上下文窗口（token）。0 = 默认 128K；确切窗口更小的
+	// 模型必须显式配置，否则会在溢出后才触发压缩。
+	ContextWindow int
+	// ReserveTokens 是为模型响应预留的空间。0 = 默认 16K。
+	ReserveTokens int
+	// KeepRecentTokens 是压缩后保留的近期上下文预算。0 = 默认 20K。
+	KeepRecentTokens int
+	// TruncateMaxBytes 是单次工具结果截断上限。0 = 默认 32KB；**负数 = 不截断**。
+	// 宿主自备 Truncator 时本项忽略。
+	TruncateMaxBytes int
+	// SpillDir 是截断全文的落盘目录。空 = <WorkDir>/.mos-trunc（在工作区内，
+	// 逃生通道才真的可达）。
+	SpillDir string
+	// Concurrency 是同一批工具调用的并发上限。<=0 = 默认 4；1 = 串行。
+	Concurrency int
+	// MaxDecisionRounds 是单轮内决策次数上限（含最终作答）。<=0 = 不限
+	// （上下文增长由压缩接管；保险丝留给无人值守场景按需设置）。
+	MaxDecisionRounds int
+	// Stream 为 true 时走决策器的流式接口；OnChunk 是流式增量回调
+	//（reasoning=true 表示这是思维链增量，应用层可据此区别渲染）。
+	// 零值 = 非流式（与框架默认一致）。
+	Stream  bool
+	OnChunk func(delta string, reasoning bool)
+}
+
+// Agent 是装配产物：模型 + 工具 + 策略 + 安全 + 上下文工程。
+//
+// 它**无状态**：会话由调用方持有（a.Run(ctx, sess, msg)），一个 Agent 可服务
+// 多个会话；运行期旋钮是 agent 级的（并行会话共用同一份设置）。
+type Agent struct {
+	rt     *driver.RunContext
+	driver driver.LoopDriver
+
+	tools *tool.Registry
+	// policyHolder 持有当前的名字级策略与其守卫移除函数（热替换用）。
+	policyMu     sync.Mutex
+	policy       *policy.Policy
+	removeGuard  func()
+	rules        *rulesHolder
+	compactor    agent.Compactor
+	truncator    agent.ResultTruncator
+	spillDir     string
+	workDir      string
+	truncateMax  int
+	shellEnabled bool
+
+	// 运行期旋钮（原子；下一轮生效）。
+	concurrency atomic.Int64
+	maxRounds   atomic.Int64
+}
+
+// New 装配智能体。缺 Model 或参数非法直接报错（fail-closed）。
+//
+// 装配出来的 Agent 无状态：会话由调用方持有并传入 Run。
+func New(cfg Config) (*Agent, error) {
+	if cfg.Model == nil {
+		return nil, errors.New("mos: 未装配模型（Config.Model 必填）")
+	}
+	if err := cfg.applyDefaults(); err != nil {
+		return nil, err
+	}
+
+	// 工具注册表：宿主自备优先，nil = 空注册表。
+	reg := cfg.Tools
+	if reg == nil {
+		reg = tool.NewRegistry()
+	}
+
+	// shell：给了沙箱就注册 shell 工具（能力即证据）；已有则不重复注册。
+	shellEnabled := false
+	if cfg.Sandbox != nil {
+		if _, ok := reg.Get("shell"); !ok {
+			if err := reg.Register(builtin.NewShell(cfg.Sandbox)); err != nil {
+				return nil, fmt.Errorf("mos: 注册 shell 工具: %w", err)
+			}
+		}
+		shellEnabled = true
+	}
+
+	// 守卫总线（单调裁决）与钩子总线（可改写环节）：两条轨道，互不绕过。
+	guards := hook.NewGuardBus()
+	hooks := hook.NewHookBus()
+
+	// 名字级策略：既管"能不能调"，也管"模型看不看得见"（不给模型一个它
+	// 注定调不成的工具）。
+	a := &Agent{
+		rt:           &driver.RunContext{},
+		driver:       react.New(),
+		tools:        reg,
+		rules:        newRulesHolder(),
+		compactor:    cfg.Compactor,
+		truncator:    cfg.Truncator,
+		spillDir:     cfg.SpillDir,
+		workDir:      cfg.WorkDir,
+		truncateMax:  cfg.TruncateMaxBytes,
+		shellEnabled: shellEnabled,
+	}
+	a.SetPolicy(cfg.Policy) // 装初始策略（挂守卫 + 设可见性）
+	a.rules.set(cfg.Rules)
+	// 参数级规则的两个门：deny 档进守卫（单调拒绝），ask 档进 pre-execute
+	// 钩子（转人工确认）。守卫与钩子都通过 holder 读**当前**规则——所以
+	// 热替换规则时不用重挂钩子，审批钩子的"最前"位置也不会丢。
+	guards.Add(func(ctx context.Context, ev *hook.HookEvent) error {
+		g := a.rules.guard()
+		if g == nil {
+			return nil
+		}
+		return g(ctx, ev)
+	})
+	hooks.On(hook.HookToolPreExecute, func(ctx context.Context, ev *hook.HookEvent, next hook.Next) (*hook.HookEvent, error) {
+		ap := a.rules.approval()
+		if ap == nil {
+			return next(ctx, ev)
+		}
+		return ap(ctx, ev, next)
+	})
+
+	// 上下文压缩：宿主自备优先，否则按窗口参数建默认的（模型生成摘要）。
+	compactor := cfg.Compactor
+	if compactor == nil {
+		compactor = agent.NewLLMCompactor(cfg.Model, agent.CompactorConfig{
+			ContextWindow:    cfg.ContextWindow,
+			ReserveTokens:    cfg.ReserveTokens,
+			KeepRecentTokens: cfg.KeepRecentTokens,
+		})
+	}
+	a.compactor = compactor
+
+	// 工具结果截断：宿主自备优先，否则按上限建默认的（全文落盘可回读）。
+	truncator := cfg.Truncator
+	if truncator == nil && cfg.TruncateMaxBytes > 0 {
+		dir := cfg.SpillDir
+		if dir == "" {
+			dir = filepath.Join(cfg.WorkDir, DefaultSpillDirName)
+		}
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("mos: 创建截断落盘目录 %q: %w", dir, err)
+		}
+		a.spillDir = dir
+		truncator = agent.NewDefaultTruncator(agent.TruncatorConfig{
+			MaxBytes: cfg.TruncateMaxBytes,
+			Dir:      dir,
+		})
+	}
+	a.truncator = truncator
+	if truncator != nil {
+		hooks.On(hook.HookToolPostExecute, agent.TruncateHook(truncator))
+	}
+
+	a.rt = &driver.RunContext{
+		Planner:           planner.NewReAct(cfg.Model),
+		Tools:             reg,
+		Hooks:             hooks,
+		Guards:            guards,
+		Concurrency:       cfg.Concurrency,
+		MaxDecisionRounds: cfg.MaxDecisionRounds,
+		SystemPrompt:      cfg.SystemPrompt,
+		Stream:            cfg.Stream,
+		OnChunk:           cfg.OnChunk,
+		Answerer:          cfg.Approval,
+		Compactor:         compactor,
+	}
+	a.concurrency.Store(int64(cfg.Concurrency))
+	a.maxRounds.Store(int64(cfg.MaxDecisionRounds))
+	return a, nil
+}
+
+// Run 执行一次任务（驱动自行决定流式/非流式路径）。会话由调用方持有——
+// 多会话与并行场景不被单会话 API 卡住。
+func (a *Agent) Run(ctx context.Context, sess *session.Session, input string) (string, error) {
+	if a == nil || a.driver == nil {
+		return "", errors.New("mos: 智能体未装配")
+	}
+	if sess == nil {
+		return "", errors.New("mos: 会话未设置")
+	}
+	// 每轮用运行上下文的**浅拷贝**：旋钮值写进副本，驱动只读副本——
+	// 并行会话之间没有共享可变状态（钩子/守卫/注册表是共享的，那是有意）。
+	rt := *a.rt
+	rt.Concurrency = int(a.concurrency.Load())
+	rt.MaxDecisionRounds = int(a.maxRounds.Load())
+	return a.driver.Run(ctx, &rt, sess, input)
+}
+
+// RunContext 返回底层运行上下文的**模板**（只读用）。
+//
+// 模板的字段改动只在没有运行中的轮次时才有意义：每轮跑的是模板的浅拷贝。
+func (a *Agent) RunContext() *driver.RunContext { return a.rt }
+
+// SetConcurrency 设置并发上限（运行期旋钮）。**下一轮生效**，不打断当前轮。
+func (a *Agent) SetConcurrency(n int) {
+	if n <= 0 {
+		n = DefaultConcurrency
+	}
+	a.concurrency.Store(int64(n))
+}
+
+// SetMaxDecisionRounds 设置单轮决策次数上限（运行期旋钮）。
+// **下一轮生效**；n <= 0 = 不限。
+func (a *Agent) SetMaxDecisionRounds(n int) { a.maxRounds.Store(int64(n)) }
+
+// SetPolicy 热替换名字级策略：旧守卫撤下、新守卫挂上、工具可见性同步更新。
+// **下一轮生效**（一轮里工具载荷已冻结、守卫已判过）。
+//
+// 宿主重载配置文件后调用它，实现"策略热更新"而不必重建智能体。
+func (a *Agent) SetPolicy(p *policy.Config) {
+	a.policyMu.Lock()
+	defer a.policyMu.Unlock()
+	if a.removeGuard != nil {
+		a.removeGuard()
+		a.removeGuard = nil
+	}
+	if p == nil {
+		a.policy = nil
+		a.tools.SetVisibility(nil)
+		return
+	}
+	pol := policy.New(*p)
+	a.policy = pol
+	a.removeGuard = a.rt.Guards.Add(pol.Check)
+	a.tools.SetVisibility(pol.Visible)
+}
+
+// SetRules 热替换参数级规则（运行期旋钮）。**下一轮生效**。
+//
+// 规则是宿主的业务判断（什么算危险由宿主定），宿主重载配置后调用它即可。
+func (a *Agent) SetRules(rules []policy.Check) { a.rules.set(rules) }
+
+// Describe 返回装配快照（多行文本）：装了什么、**没装什么**也写出来。
+//
+// 宿主直接打印它，不必各写一份横幅——框架说的是事实（"未装配" / "一律拒绝"
+// 都明说），不会用沉默代替事实。
+func (a *Agent) Describe() string {
+	if a == nil {
+		return "mos: 智能体未装配"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "  已注册工具: %s\n", strings.Join(a.tools.Names(), ", "))
+	fmt.Fprintf(&b, "  模型可见工具: %s\n", strings.Join(a.visibleNames(), ", "))
+	fmt.Fprintf(&b, "  并发上限: %d（仅对声明可并发的工具生效）\n", a.concurrency.Load())
+	if r := a.maxRounds.Load(); r > 0 {
+		fmt.Fprintf(&b, "  决策轮次上限: %d\n", r)
+	} else {
+		b.WriteString("  决策轮次上限: 不限（上下文增长由压缩接管）\n")
+	}
+	fmt.Fprintf(&b, "  工作目录: %s\n", a.workDir)
+	if a.shellEnabled {
+		b.WriteString("  shell: 已装配（隔离执行 + 路径强制：写限定在工作区）\n")
+	} else {
+		b.WriteString("  shell: 未装配（模型看不到这个能力）\n")
+	}
+	if a.compactor != nil {
+		b.WriteString("  上下文压缩: 已装配（超预算时模型生成结构化摘要落日志）\n")
+	} else {
+		b.WriteString("  上下文压缩: 未装配\n")
+	}
+	if a.truncator != nil {
+		fmt.Fprintf(&b, "  结果截断: %d 字节（全文落 %s，read_file 可回读）\n", a.truncateMax, a.spillDir)
+	} else {
+		b.WriteString("  结果截断: 未开启\n")
+	}
+	if a.rules.count() > 0 {
+		fmt.Fprintf(&b, "  参数级规则: %d 条（deny→守卫 / ask→人工确认）\n", a.rules.count())
+	} else {
+		b.WriteString("  参数级规则: 无\n")
+	}
+	if a.policy != nil {
+		b.WriteString("  名字级策略: 已装配\n")
+	} else {
+		b.WriteString("  名字级策略: 未装配（名字级名单不收紧）\n")
+	}
+	return b.String()
+}
+
+// visibleNames 返回模型可见的工具名（受可见性过滤）。
+func (a *Agent) visibleNames() []string {
+	out := make([]string, 0, len(a.tools.Names()))
+	for _, t := range a.tools.List() {
+		out = append(out, t.Name)
+	}
+	return out
+}
+
+// rulesHolder 持有当前参数级规则的两个门（守卫 + 审批钩子）。
+//
+// 用 holder 而不是把两个闭包直接挂进总线：热替换规则时不用重挂钩子——
+// 审批钩子必须待在 pre-execute 的**最前**（ask 决策要短路后面的钩子），
+// 重挂会把它挪到链尾。
+type rulesHolder struct {
+	mu       sync.RWMutex
+	guardFn  hook.Guard
+	approvFn hook.Hook
+	n        int
+}
+
+func newRulesHolder() *rulesHolder { return &rulesHolder{} }
+
+// set 换掉当前规则（空规则 = 无门）。
+func (h *rulesHolder) set(rules []policy.Check) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(rules) == 0 {
+		h.guardFn, h.approvFn, h.n = nil, nil, 0
+		return
+	}
+	pp := policy.NewParamPolicy("参数级规则", rules...)
+	h.guardFn, h.approvFn, h.n = pp.Guard(), pp.Approval(), len(rules)
+}
+
+func (h *rulesHolder) guard() hook.Guard {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.guardFn
+}
+
+func (h *rulesHolder) approval() hook.Hook {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.approvFn
+}
+
+func (h *rulesHolder) count() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.n
+}

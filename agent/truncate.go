@@ -33,10 +33,14 @@ type TruncatorConfig struct {
 	Dir string
 }
 
-// 默认上限：单工具 64KB / 2000 行（对位 PI 的 50KB 与 DSH 的输出上限；
+// 默认上限：单工具 32KB / 2000 行（对位 PI 的 50KB 与 DSH 的输出上限；
 // sandbox 的进程输出上限是另一层——这里管所有工具的回填文本）。
+//
+// 32KB ≈ 8K token：一次工具结果占 128K 窗口可用预算的 ~7%（64KB 就是 14%，
+// 几次叠加就过半）。截断只是瘦身，**全文落盘**（read_file 可回读），
+// 代价只是多一次回读。
 const (
-	DefaultTruncateMaxBytes = 64 * 1024
+	DefaultTruncateMaxBytes = 32 * 1024
 	DefaultTruncateMaxLines = 2000
 )
 
