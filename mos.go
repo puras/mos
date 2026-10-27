@@ -43,6 +43,7 @@ import (
 	"github.com/puras/mos/agent/driver/react"
 	"github.com/puras/mos/agent/hook"
 	"github.com/puras/mos/agent/policy"
+	"github.com/puras/mos/filesystem"
 	"github.com/puras/mos/llm"
 	"github.com/puras/mos/planner"
 	"github.com/puras/mos/sandbox"
@@ -86,6 +87,18 @@ type Config struct {
 	Truncator agent.ResultTruncator
 	// Persistence 是会话落盘后端。nil = 内存会话（不落盘）。
 	Persistence session.Persistence
+
+	// Roots 是**运行期可变的根集合**（可选）：声明文件 jail 与 shell 沙箱
+	// 共享的读写根。
+	//
+	// 给了它就能在运行期增删根（a.AddRoot(dir)）——用户在会话中途授权另一个
+	// 目录时不用重建智能体。宿主应把**同一个集合**接给文件工具
+	// （filesystem.NewSandboxedWithRoots(roots) / builtin.FileToolsInRoots）
+	// 与沙箱（sandbox.ScopeFunc）；装配层会把它接到 cfg.Sandbox 上（宿主没
+	// 自己接 Scope 时），避免"工具能读、命令写不了"的边界错位。
+	//
+	// nil = 不提供这个能力（a.AddRoot 报错，不静默无效）。
+	Roots *filesystem.RootSet
 
 	// ── 策略（宿主决定允许什么）──
 	//
@@ -147,6 +160,8 @@ type Agent struct {
 	workDir      string
 	truncateMax  int
 	shellEnabled bool
+	// roots 是运行期可变的根集合（宿主给的活边界；nil = 没有这个能力）。
+	roots *filesystem.RootSet
 
 	// 运行期旋钮（原子；下一轮生效）。
 	concurrency atomic.Int64
@@ -168,6 +183,16 @@ func New(cfg Config) (*Agent, error) {
 	reg := cfg.Tools
 	if reg == nil {
 		reg = tool.NewRegistry()
+	}
+
+	// 根集合（运行期可变）：宿主给的活边界。同时把它接到沙箱的动态范围上
+	//（宿主没自己接 Scope 时）——文件 jail 与 shell 沙箱共用一份根，
+	// 用户授权新目录时两层同时放宽，不会错位。
+	if roots := cfg.Roots; roots != nil && cfg.Sandbox != nil && cfg.Sandbox.Scope == nil {
+		cfg.Sandbox.Scope = sandbox.ScopeFunc(
+			func() []string { return roots.RootsFor(filesystem.OpRead) },
+			func() []string { return roots.RootsFor(filesystem.OpWrite) },
+		)
 	}
 
 	// shell：给了沙箱就注册 shell 工具（能力即证据）；已有则不重复注册。
@@ -198,6 +223,7 @@ func New(cfg Config) (*Agent, error) {
 		workDir:      cfg.WorkDir,
 		truncateMax:  cfg.TruncateMaxBytes,
 		shellEnabled: shellEnabled,
+		roots:        cfg.Roots,
 	}
 	a.SetPolicy(cfg.Policy) // 装初始策略（挂守卫 + 设可见性）
 	a.rules.set(cfg.Rules)
@@ -334,6 +360,77 @@ func (a *Agent) SetPolicy(p *policy.Config) {
 // 规则是宿主的业务判断（什么算危险由宿主定），宿主重载配置后调用它即可。
 func (a *Agent) SetRules(rules []policy.Check) { a.rules.set(rules) }
 
+// AddRoot 运行期加根（读写都加）：智能体从"只有 A"变成"A + B"。
+//
+// 生效时机：边界是**每次调用现判**的 → 下一次工具调用即生效（同一轮内也
+// 生效），不需要重建智能体，也不用等下一轮。
+//
+// 这是**宿主的权力**：模型不能自己扩边界（模型参数里的路径范围只能收窄）。
+// 加根是安全事件——变更记在根集合的历史里（a.Roots().History()），宿主可
+// 落盘审计。
+//
+// 作用域是 **agent 级**：该 Agent 的所有会话共享这份边界（与其它运行期旋钮
+// 同理）。要按会话隔离，就给每个会话配一个 Agent。
+//
+// 未装配根集合（Config.Roots == nil）→ 报错，不静默无效。
+func (a *Agent) AddRoot(dir string) error {
+	rs, err := a.rootSet()
+	if err != nil {
+		return err
+	}
+	rs.Add(dir)
+	return nil
+}
+
+// AddReadRoot 运行期加**读**根（不授予写权限）。
+func (a *Agent) AddReadRoot(dir string) error {
+	rs, err := a.rootSet()
+	if err != nil {
+		return err
+	}
+	rs.AddRead(dir)
+	return nil
+}
+
+// AddWriteRoot 运行期加**写**根（不授予读权限）。
+func (a *Agent) AddWriteRoot(dir string) error {
+	rs, err := a.rootSet()
+	if err != nil {
+		return err
+	}
+	rs.AddWrite(dir)
+	return nil
+}
+
+// RemoveRoot 运行期**移除**根（读写都移除）：收窄边界，随时可做。
+func (a *Agent) RemoveRoot(dir string) error {
+	rs, err := a.rootSet()
+	if err != nil {
+		return err
+	}
+	rs.Remove(dir)
+	return nil
+}
+
+// Roots 返回底层的根集合（nil = 未装配这个能力）。
+//
+// 宿主用它把**同一份集合**接给文件工具（filesystem.NewSandboxedWithRoots）
+// 与沙箱（sandbox.ScopeFunc）——否则两层边界会错位（工具能读、命令写不了）。
+func (a *Agent) Roots() *filesystem.RootSet {
+	if a == nil {
+		return nil
+	}
+	return a.roots
+}
+
+// rootSet 取根集合；未装配时报错（fail-closed：能力缺失要说清楚，不静默无效）。
+func (a *Agent) rootSet() (*filesystem.RootSet, error) {
+	if a == nil || a.roots == nil {
+		return nil, errors.New("mos: 未装配根集合（Config.Roots 为 nil）——运行期改边界不可用")
+	}
+	return a.roots, nil
+}
+
 // Describe 返回装配快照（多行文本）：装了什么、**没装什么**也写出来。
 //
 // 宿主直接打印它，不必各写一份横幅——框架说的是事实（"未装配" / "一律拒绝"
@@ -352,6 +449,12 @@ func (a *Agent) Describe() string {
 		b.WriteString("  决策轮次上限: 不限（上下文增长由压缩接管）\n")
 	}
 	fmt.Fprintf(&b, "  工作目录: %s\n", a.workDir)
+	if a.roots != nil {
+		snap := a.roots.Snapshot()
+		fmt.Fprintf(&b, "  文件根（运行期可变）: 读 %d 个 / 写 %d 个\n", len(snap.ReadRoots), len(snap.WriteRoots))
+	} else {
+		b.WriteString("  文件根（运行期可变）: 未装配（运行期加根不可用）\n")
+	}
 	if a.shellEnabled {
 		b.WriteString("  shell: 已装配（隔离执行 + 路径强制：写限定在工作区）\n")
 	} else {

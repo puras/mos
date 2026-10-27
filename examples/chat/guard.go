@@ -19,9 +19,11 @@ import (
 // 规则以 []policy.Check 交给装配层：deny 档进守卫（单调拒绝），ask 档转人工
 // 确认——框架提供决策点，"什么算危险"由宿主定。
 //
-// 这里的两条规则都是词法可判的、不装懂：
+// 这里的三条规则都是词法可判的、不装懂：
 //  1. 敏感文件不读不写（.env / id_rsa / *.pem）——凭据不该进模型上下文；
-//  2. shell 命令里出现递归删除（rm -rf）→ 需人工确认（ask 档）。
+//  2. shell 命令里出现递归删除（rm -rf）→ 需人工确认（ask 档）；
+//  3. 模型申请访问新目录（grant_access）→ 需人工确认（ask 档）——
+//     授权扩大边界，批不批由人决定；模型拿到同意后才能读那个目录。
 //
 // 诚实边界：这是**业务规则**，不是安全边界。真正的边界是文件 jail（工具路径）
 // 与进程沙箱（超时/资源/环境）；命令文本判定绕得过去，也不该被当成边界。
@@ -46,6 +48,12 @@ func hostRules() []policy.Check {
 				if hasDeleteCommand(cmd) {
 					return policy.VerdictAsk, "命令会删除文件，执行前需要人工确认"
 				}
+			case "grant_access":
+				dir, err := policy.Arg(call, "path")
+				if err != nil {
+					return policy.VerdictDeny, "参数解析失败：" + err.Error()
+				}
+				return policy.VerdictAsk, fmt.Sprintf("模型申请访问新目录 %s——授权会扩大可访问范围，需要人工确认", dir)
 			}
 			return policy.VerdictAllow, ""
 		},

@@ -62,6 +62,7 @@ type Config struct {
     Compactor   agent.Compactor       // 上下文压缩（nil = 不压缩）
     Truncator   agent.Truncator       // 工具结果截断（nil = 不截断）
     Persistence session.Persistence   // 会话落盘后端（nil = 内存会话）
+    Roots       *filesystem.RootSet   // 运行期可变的根集合（nil = 运行期不能改边界）
 
     // ── 策略（结构体，零值 = 框架默认）──
     Policy *policy.Config   // 名字级 Allow/Deny（nil = 不收紧）
@@ -126,6 +127,7 @@ MoS chat 已就绪（provider=anthropic model=agnes-2.5-flash session=chat 已�
   上下文压缩: 已装配（窗口 131072 / 预留 16384 / 保留 20000 tokens）
   结果截断: 32768 字节（全文落 /path/to/workdir/.mos-trunc，read_file 可回读）
   人工审批: 未装配（需确认的调用一律拒绝，fail-closed）
+  文件根（运行期可变）: 读 1 个 / 写 1 个   ← 未装配时写「未装配（运行期加根不可用）」
 ```
 
 未装配的能力**显式写出来**（"未装配" / "一律拒绝"），不让宿主用沉默代替事实。
@@ -182,6 +184,7 @@ REPL 循环、事件落盘的落盘位置。
 | 宿主实现内部可变 | 注入接口（`approval.Answerer`、`sandbox.Local.Budget`、自备 `Compactor`） | 立即（宿主自己保证并发安全） |
 | 工具/钩子/守卫动态增删 | `tool.Registry`、`HookBus.On`、`GuardBus.Add` 都带锁并返回移除函数 | 下一轮 |
 | **装配层旋钮** | `SetConcurrency` / `SetMaxDecisionRounds` / `SetPolicy` / `SetRules` | **下一轮** |
+| **根集合**（`Config.Roots`） | `AddRoot` / `AddReadRoot` / `AddWriteRoot` / `RemoveRoot` | **下一次工具调用**（边界每次调用现判，见 §8.1） |
 
 **为什么"下一轮生效"**：一轮里工具载荷已冻结、守卫已判过，中途换策略会让本轮历史
 与下一轮不一致；轮边界（`turn/start` / `turn/end`）是天然的一致点。
@@ -194,6 +197,71 @@ REPL 循环、事件落盘的落盘位置。
 
 **不落审计事件**：会话日志记的是"发生了什么"，不是"配置长什么样"；策略是宿主
 策略，换了值从 `Describe()` 能查到。
+
+### 8.1 运行期加根（智能体从"只有 A"变成"A + B"）
+
+**需求**：用户在会话中途授权另一个目录，智能体不必重建就能访问它。
+
+**机制**：`filesystem.RootSet` 是活根集合（并发安全、锚点稳定、变更留痕），
+文件 jail 与 shell 沙箱共用**同一份**它。边界是**每次调用现判**的，所以加根对
+**下一次工具调用**立即生效（同一轮内也生效）。
+
+```go
+// ① 宿主建一份活根集合：初始只有 A
+roots := filesystem.NewRootSet([]string{a}, []string{a})
+
+// ② 文件工具用它（写前观察门一并装上）
+fileTools, err := builtin.FileToolsInRoots(roots)
+for _, tl := range fileTools { reg.Register(tl) }
+
+// ③ 沙箱也用它（否则"工具能读、命令写不了"，两层边界错位）
+sb := &sandbox.Local{WorkDir: a, Scope: sandbox.ScopeFunc(
+    func() []string { return roots.RootsFor(filesystem.OpRead) },
+    func() []string { return roots.RootsFor(filesystem.OpWrite) },
+)}
+
+// ④ 装配（把同一份集合交进去）
+a, err := mos.New(mos.Config{Model: model, Tools: reg, Sandbox: sb, Roots: roots})
+
+// ⑤ 运行期：用户授权了 B
+a.AddRoot(b)          // 读+写都加；或 AddReadRoot(b) / AddWriteRoot(b)
+a.RemoveRoot(b)       // 收窄
+```
+
+**要点**：
+
+| 点 | 说明 |
+| --- | --- |
+| 生效时机 | **下一次工具调用**（边界每次调用现判）；不像策略旋钮要等下一轮 |
+| 锚点 | 加根是**追加** → 相对路径的落点（第一个根）不变，模型手里的相对路径不会悄悄指向别处 |
+| 权力 | 加根是**宿主**的权力；模型参数里的路径范围只能**收窄** |
+| 审计 | `roots.History()` 记变更；框架不新增会话事件类型，宿主自己落盘 |
+| 未装配 | `Config.Roots == nil` → `AddRoot` 报错（不静默无效）；`Describe()` 会写明"未装配" |
+
+**会话中途授权（用户在对话里说"B 目录你也可以看"）**：不要让宿主去拦消息——
+用 `builtin.NewGrantRoot(roots)` 给模型一个"申请"的入口，把批准权留在 ask 规则 +
+人工审批上：
+
+```go
+// ① 注册授权入口（模型只能申请，不能直接改边界）
+reg.Register(builtin.NewGrantRoot(roots))
+
+// ② 宿主的参数级规则：申请授权 → ask 档（转人工）
+rules := []policy.Check{ func(ctx context.Context, call policy.Call) (policy.Verdict, string) {
+    if call.Tool == "grant_access" {
+        dir, _ := policy.Arg(call, "path")
+        return policy.VerdictAsk, "模型申请访问新目录 " + dir + "，需要人工确认"
+    }
+    return policy.VerdictAllow, ""
+}}
+```
+
+流程：模型调 `grant_access{path:B}` → ask → 人在终端/弹窗同意 → 工具把 B 加进
+根集合 → **下一次工具调用**即可访问 B（jail 与 shell 两层同时生效）。全程留痕：
+`tool/call` / `tool/result` / `approval/asked` / `approval/decided`。
+
+不要把 `grant_access` 注册成无审批的普通工具：那等于允许模型自己扩边界。
+不想要这个通道就不注册（模型看不到，被拒时会把"允许的根"报给用户）。
 
 ## 9. S7b：把"每个宿主都要写一遍"的样板也收进框架
 
@@ -249,6 +317,9 @@ func Open(dir, id string) (*Session, error)
 //   - 写前观察门开启（没读过的文件不许覆盖）。
 // root 为空 → 当前目录。要定制的宿主用 FileTools(fsys, gate) 自己拼。
 func FileToolsIn(root string) ([]Tool, error)
+
+// FileToolsInRoots 同上，但根来自**活集合**（运行期可增删，见 §8.1）。
+func FileToolsInRoots(rs *filesystem.RootSet) ([]Tool, error)
 ```
 
 ### 9.4 示例侧：删死代码 + 瘦身

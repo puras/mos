@@ -373,3 +373,41 @@ func TestFileToolsInJailsAndObserves(t *testing.T) {
 		t.Fatal("没读过的文件应被写前观察门拒绝")
 	}
 }
+
+// 运行期加根：同一套文件工具，边界跟着活根集合变（初始只有 A，加根后 B 也行）。
+func TestFileToolsInRootsRuntimeAdd(t *testing.T) {
+	root := t.TempDir()
+	extra := t.TempDir()
+	outFile := filepath.Join(extra, "secret.txt")
+	if err := os.WriteFile(outFile, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	roots := filesystem.NewRootSet([]string{root}, []string{root})
+	tools, err := FileToolsInRoots(roots)
+	if err != nil {
+		t.Fatalf("FileToolsInRoots: %v", err)
+	}
+	var read tool.Tool
+	for _, tl := range tools {
+		if tl.Name() == "read_file" {
+			read = tl
+		}
+	}
+
+	// 加根前：越界读被拒。
+	if _, err := read.Execute(context.Background(), json.RawMessage(`{"path":`+strconv.Quote(outFile)+`}`)); err == nil {
+		t.Fatal("加根前越界读应被拒绝")
+	}
+
+	// 运行期加根 → 立刻可读（边界每次调用现判）。
+	roots.Add(extra)
+	if _, err := read.Execute(context.Background(), json.RawMessage(`{"path":`+strconv.Quote(outFile)+`}`)); err != nil {
+		t.Fatalf("加根后应可读: %v", err)
+	}
+
+	// 根集合为 nil：报错（没有根就没有边界）。
+	if _, err := FileToolsInRoots(nil); err == nil {
+		t.Fatal("nil 根集合应报错")
+	}
+}

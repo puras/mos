@@ -342,3 +342,18 @@ func FileToolsIn(root string) ([]tool.Tool, error) {
 	})
 	return FileTools(fsys, NewObserveGate()), nil
 }
+
+// FileToolsInRoots 用**可变的根集合**装一套文件工具：宿主可在运行期增删根
+// （典型场景：用户在会话中授权另一个目录），无需重建智能体。
+//
+// 返回的工具与 FileToolsIn 一致（jail + 写前观察门），差别只在根的来源是
+// 活集合——Resolve 每次调用现读集合，所以加根对**后续调用**立即生效。
+//
+// rs 为 nil → 报错（fail-closed：没有根就没有边界）。
+func FileToolsInRoots(rs *filesystem.RootSet) ([]tool.Tool, error) {
+	if rs == nil {
+		return nil, errors.New("builtin: 根集合为 nil（没有根就没有边界）")
+	}
+	fsys := filesystem.NewSandboxedWithRoots(rs)
+	return FileTools(fsys, NewObserveGate()), nil
+}

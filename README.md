@@ -40,6 +40,7 @@ S1–S7 完成即覆盖 PRD G1–G6 的最小闭环；此后按 PRD §5/§7 逐�
 ## 示例
 
 - [examples/chat](examples/chat/) — 直连 LLM 多轮对话 Demo：流式输出、多协议切换、会话日志持久化与重启恢复（`cp .env.example .env` 后 `go run .`）
+  - **会话中途授权目录**：用户说"B 目录你也可以看"时，模型调 `grant_access` 申请 → 终端审批 → 立即可访问（文件 jail 与 shell 两层同步生效，全程留痕）
   - `-allow-shell` 开启**验证回路**：agent 能改代码后自己跑 `go build` / `go test` 看真实输出再改（配套 `lab/` 练手项目：修好一个故意留 bug 的测试）
   - `-context-window` 开启**上下文压缩**（PI 同款：超过窗口-预留时模型生成结构化摘要落日志，投影遮蔽旧历史；`-reserve-tokens`/`-keep-recent-tokens` 调预算）、`-trim` 结果截断（全文落盘可回读，默认 32KB）
 - [examples/minimal](examples/minimal/) — **装配层的最小可跑示例**：`mos.NewModel` + `mos.New` + `session.Open` 十几行装出一个真能跑的智能体（证明"一行装配"不是空话）

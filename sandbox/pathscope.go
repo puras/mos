@@ -42,13 +42,9 @@ func deriveScope(workDir string) (*PathScope, error) {
 // effectiveScope 解析一次调用的有效范围：Request 显式给的优先（但只能收窄），
 // 否则用 Runner 默认。
 func (s *Local) effectiveScope(reqScope *PathScope) (*PathScope, error) {
-	def := s.DefaultScope
-	if def == nil {
-		d, err := deriveScope(s.WorkDir)
-		if err != nil {
-			return nil, err
-		}
-		def = d
+	def, err := s.defaultScope()
+	if err != nil {
+		return nil, err
 	}
 	if err := validateScope(def); err != nil {
 		return nil, fmt.Errorf("sandbox: 默认路径范围不合法: %w", err)
@@ -64,6 +60,49 @@ func (s *Local) effectiveScope(reqScope *PathScope) (*PathScope, error) {
 		return nil, fmt.Errorf("sandbox: 路径范围不能比默认更宽（放宽请在装配期声明 DefaultScope）: %w", err)
 	}
 	return reqScope, nil
+}
+
+// defaultScope 解析 Runner 的默认范围（每次调用现取，所以是"活的"）：
+//
+//	Scope（动态来源）→ DefaultScope（静态声明）→ 从 WorkDir 派生。
+//
+// Scope 返回 nil = 没给出范围，回落到静态声明/派生（而不是"放开"）。
+func (s *Local) defaultScope() (*PathScope, error) {
+	if s.Scope != nil {
+		if sc := s.Scope(); sc != nil {
+			return sc, nil
+		}
+	}
+	if s.DefaultScope != nil {
+		return s.DefaultScope, nil
+	}
+	return deriveScope(s.WorkDir)
+}
+
+// ScopeFunc 把"读写根的动态来源"适配成 Local.Scope。
+//
+// 典型用法：宿主的文件 jail 与 shell 沙箱**共用同一份根集合**（用户在会话
+// 中授权新目录时，两层同时放宽，不会出现"工具能读、命令写不了"的错位）：
+//
+//	roots := filesystem.NewRootSet([]string{a}, []string{a})
+//	sb := &sandbox.Local{WorkDir: a, Scope: sandbox.ScopeFunc(
+//	    func() []string { return roots.RootsFor(filesystem.OpRead) },
+//	    func() []string { return roots.RootsFor(filesystem.OpWrite) },
+//	)}
+//
+// read / write 为 nil 时该侧不限制根（= 那一侧没有边界）——慎用：它会让
+// validateScope 拒绝空根，从而 fail-closed。
+func ScopeFunc(read, write func() []string) func() *PathScope {
+	return func() *PathScope {
+		sc := &PathScope{}
+		if read != nil {
+			sc.ReadRoots = read()
+		}
+		if write != nil {
+			sc.WriteRoots = write()
+		}
+		return sc
+	}
 }
 
 // validateScope 校验根的形态：必须是非空、绝对、干净的路径。

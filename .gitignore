@@ -16,3 +16,4 @@ examples/agentcli/data/
 examples/agentcli/mosagentcli
 examples/chat/moschat
 examples/chat/data/
+examples/chat/.mos-trunc/

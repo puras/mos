@@ -75,6 +75,13 @@ func TestHostPolicyVerdicts(t *testing.T) {
 	if got := verdict("read_file", `{"path":"/tmp/notes.md"}`); got != policy.VerdictAllow {
 		t.Fatalf("普通文件应放行, got %v", got)
 	}
+	// 申请访问新目录 → ask（授权扩大边界，批不批由人决定）。
+	if got := verdict("grant_access", `{"path":"/tmp/B"}`); got != policy.VerdictAsk {
+		t.Fatalf("grant_access 应 ask, got %v", got)
+	}
+	if got := verdict("grant_access", `{坏 JSON}`); got != policy.VerdictDeny {
+		t.Fatalf("grant_access 参数坏掉应 deny, got %v", got)
+	}
 	// 参数坏掉 → fail-closed
 	if got := verdict("shell", `{坏 JSON}`); got != policy.VerdictDeny {
 		t.Fatalf("参数坏掉应 deny, got %v", got)

@@ -21,7 +21,14 @@ const maxSymlinkDepth = 32
 // 读同样走 Realpath——只做词法校验的话，根内一个指向 /etc/passwd 的链接就能
 // 把内容读出边界，那不是 jail。
 type Sandboxed struct {
+	// Policy 是静态根策略。与 Roots 二选一（Roots 非 nil 时优先）。
 	Policy *FileAccessPolicy
+	// Roots 是**根来源**（可选）。非 nil 时优先于 Policy——运行期可变的根
+	// 集合（*RootSet）走这里：宿主在会话中授权新目录后，无需重建智能体。
+	//
+	// 每次 Resolve 都现读一次来源（拿一份快照），所以加根对**后续调用**
+	// 立即生效（同一轮内也生效）——边界是每次调用现判的，不是冻结的。
+	Roots RootProvider
 }
 
 // NewSandboxed 构造 jail 实现。Policy 为 nil 或对应根集合为空时，
@@ -30,20 +37,57 @@ func NewSandboxed(p *FileAccessPolicy) *Sandboxed {
 	return &Sandboxed{Policy: p}
 }
 
+// NewSandboxedWithRoots 用**根来源**构造 jail 实现（运行期可变的根集合走这里）。
+//
+// rp 为 nil 时一律拒绝（fail-closed）。
+func NewSandboxedWithRoots(rp RootProvider) *Sandboxed {
+	return &Sandboxed{Roots: rp}
+}
+
 var _ FileSystem = (*Sandboxed)(nil)
+
+// rootsFor 取本次请求适用的根集合（快照）。
+func (s *Sandboxed) rootsFor(op Op) []string {
+	if s.Roots != nil {
+		return s.Roots.RootsFor(op)
+	}
+	if s.Policy != nil {
+		return s.Policy.RootsFor(op)
+	}
+	return nil
+}
+
+// anchorFor 取相对路径的锚点：显式锚点优先，否则用该类操作的第一个根。
+func (s *Sandboxed) anchorFor(op Op, roots []string) string {
+	if s.Roots != nil {
+		if ap, ok := s.Roots.(AnchorProvider); ok {
+			if a := ap.Anchor(); a != "" {
+				return a
+			}
+		}
+	}
+	if s.Roots == nil && s.Policy != nil && s.Policy.Anchor != "" {
+		return normRoot(s.Policy.Anchor)
+	}
+	if len(roots) > 0 {
+		return roots[0]
+	}
+	return ""
+}
 
 // Resolve 实现 FileSystem.Resolve。
 func (s *Sandboxed) Resolve(_ context.Context, req Request) (*Resolved, error) {
-	roots := s.Policy.RootsFor(req.Op)
+	roots := s.rootsFor(req.Op)
 	if len(roots) == 0 {
 		// 未声明允许的根：拒绝，而不是没有边界。
 		return nil, s.denied(req, req.Path, roots)
 	}
 
-	// ① Lexical：相对路径以第一个允许根为锚点；规范化后必须落在某个允许根内。
+	// ① Lexical：相对路径以锚点为落点（默认 = 第一个根）；规范化后必须落在
+	// 某个允许根内。
 	abs := req.Path
 	if !filepath.IsAbs(abs) {
-		abs = filepath.Join(roots[0], abs)
+		abs = filepath.Join(s.anchorFor(req.Op, roots), abs)
 	}
 	abs, err := filepath.Abs(abs)
 	if err != nil {

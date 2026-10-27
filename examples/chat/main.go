@@ -36,6 +36,7 @@ import (
 	"github.com/puras/mos/agent/hook"
 	"github.com/puras/mos/agent/policy"
 	"github.com/puras/mos/agent/prompt"
+	"github.com/puras/mos/filesystem"
 	"github.com/puras/mos/llm"
 	"github.com/puras/mos/sandbox"
 	"github.com/puras/mos/session"
@@ -85,15 +86,24 @@ func main() {
 
 	// 文件沙箱：文件工具的路径先经 Lexical + Realpath 双层校验，越界拒绝。
 	// 宿主装配层决定 jail 根（这里是 -workdir，默认当前目录）。
+	// 根集合是**活**的：会话中途用户授权新目录（模型调 grant_access、人在终端
+	// 批准）后，加根对下一次工具调用立即生效——文件工具与 shell 沙箱共用
+	// 这一份（装配层会把根集合接到沙箱的动态范围上，两层不会错位）。
 	jailRoot, err := filepath.Abs(*workdir)
 	check(err)
-	// FileToolsIn 一套给齐：jail 根 + 写前观察门（没读过的文件不许覆盖）。
-	fileTools, err := builtin.FileToolsIn(jailRoot)
+	roots := filesystem.NewRootSet([]string{jailRoot}, []string{jailRoot})
+	// FileToolsInRoots 一套给齐：jail（活根集合）+ 写前观察门（没读过的文件不许覆盖）。
+	fileTools, err := builtin.FileToolsInRoots(roots)
 	check(err)
 	for _, tl := range fileTools {
 		if err := reg.Register(tl); err != nil {
 			check(fmt.Errorf("注册工具 %q: %w", tl.Name(), err))
 		}
+	}
+	// 授权入口：模型只能"申请"（grant_access），批不批由人决定（hostRules 里的
+	// ask 档 → 终端审批）。不注册这个工具 = 不给模型申请授权的通道。
+	if err := reg.Register(builtin.NewGrantRoot(roots)); err != nil {
+		check(fmt.Errorf("注册工具 grant_access: %w", err))
 	}
 
 	// shell 工具：默认**不装配**——不给模型这个能力，比给它一个必然失败的工具
@@ -171,6 +181,7 @@ func main() {
 		Sandbox:           sb,          // 仅 -allow-shell 时非 nil（能力即证据）
 		Policy:            cfg,         // 名字级名单（宿主解析 YAML 得到）
 		Rules:             hostRules(), // 参数级规则（宿主业务判断）
+		Roots:             roots,       // 活根集合：文件工具与 shell 共用，运行期可加根
 		SystemPrompt:      sysPrompt,
 		WorkDir:           jailRoot,
 		ContextWindow:     *contextWindow,

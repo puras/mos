@@ -161,6 +161,48 @@ reg.Register(builtin.NewWriteFile(fsys))
 - **诚实的边界**：本实现是「解析期校验 + 使用实体路径打开」，把校验与使用之间的窗口压到最小；它**不是**真正的 TOCTOU 消除——那需要 `openat2`/`O_NOFOLLOW` 之类的系统调用，Go 标准库给不了。它是纵深防御的一层，不是强隔离的替代品。
 - **jail 限制路径，不限制后果**：根内的密钥（`.env`、`~/.git-credentials`）照样读得到；根内的可执行位置（`.git/hooks/*`）照样能写。所以 jail 是纵深的一层，S5f 进程 sandbox 与部署侧容器化不可省。
 
+### 3.5.1 运行期可变的根集合（宿主授权新目录）
+
+**问题**：边界是会变的——用户在会话中途说"另一个目录你也可以看"。静态 `FileAccessPolicy` 只能靠重建智能体来改；而"直接改 slice"这条路更糟：工具调用默认 4 路并发，改 slice 是数据竞争，且相对路径的锚点 = 第一个根，追加根会让锚点漂移（模型手里的相对路径悄悄指向别处）。
+
+**机制**：`filesystem.RootSet` 是**活根集合**——并发安全（RWMutex）、锚点稳定、变更留痕。
+
+```go
+roots := filesystem.NewRootSet([]string{a}, []string{a})   // 初始只有 A
+fsys := filesystem.NewSandboxedWithRoots(roots)             // 文件工具用它
+reg.Register(builtin.NewReadFile(fsys))
+
+roots.Add(b)   // 运行期加根：读+写都加
+roots.AddRead(b) / roots.AddWrite(b) / roots.Remove(b)      // 读写分开授权；移除 = 收窄
+```
+
+- **每次调用现读**：jail 的边界不是冻结的快照——`Resolve` 每次取一次当前根的快照，所以加根对**下一次工具调用**立即生效（同一轮内也生效），不必等下一轮、不必重建智能体。
+- **加根是追加，锚点不变**：锚点 = 相对路径的落点，默认取第一个根；追加根不改变它。想换锚点请显式 `SetAnchor(dir)`（或 `FileAccessPolicy.Anchor`）——锚点漂移比"新根只能用绝对路径访问"更危险。锚点不是逃逸口：相对路径解析结果仍须落在允许根内。
+- **并发安全**：`RootsFor` 返回**快照副本**，调用方拿到的切片不受后续修改影响；集合的读写用 RWMutex 保护（`-race` 下有测试守着）。
+- **留痕**：加根/删根是安全事件（边界变了），`RootSet.History()` 记变更历史供宿主审计。框架**不新增会话事件类型**（事件目录是预算制的），审计落盘归宿主。
+- **fail-closed 不变**：空根 = 该类操作一律拒绝；根集合为 nil 构造的 jail 一律拒绝（不是"等于放开"）。
+- **权力归属**：加根是**宿主**的权力。模型不能自己扩边界——`sandbox.Request.PathScope` 只能收窄（见 §3.10）。
+
+### 3.5.2 会话中途授权目录（用户说"你也可以看 B"）
+
+§3.5.1 回答了"怎么加根"，这一节回答"**谁在什么时候加**"。对话进行到一半，用户
+提到一个尚未授权的目录，分两个分支：
+
+| 分支 | 用户说的话 | 正确流程 |
+| --- | --- | --- |
+| **明确授权** | "B 目录你也可以看" | 模型调 `grant_access{path:B}` → 宿主的参数级规则给 **ask** 档 → 人工审批 → 人同意 → 工具把 B 加进活根集合 → **下一次工具调用**即可访问 B（jail 与 shell 两层同时生效） |
+| **只是要求查看** | "看看 B 目录里有什么" | 模型**不应**申请授权。`grant_access` 的 Guideline 明确教了这一点；即便模型申请了，ask 档也会把决定交给人——人拒绝就是拒绝（fail-closed，批准不缓存） |
+
+**为什么做成工具（`builtin.NewGrantRoot`），而不是宿主在消息层拦截后自己调 `AddRoot`**：
+
+- **留痕完整**：申请落 `tool/call`、结果落 `tool/result`、人的决定落 `approval/asked` + `approval/decided`——谁在什么时候授权了什么，全在会话日志里；
+- **审批通道复用 S5g**：问人由宿主注入（终端/弹窗/另一个进程都行），框架不画界面；
+- **语义单一**：模型没有"直接改边界"的能力，只有"**申请**"的能力——授权的判断权始终在人手里。
+
+**纪律**：`grant_access` 不自己判"能不能加"（授权是宿主的政策）。宿主应当用
+参数级规则（`policy.Check` 的 ask 档）把它接到人工审批；没接审批就注册它 =
+明确允许模型自己扩边界——宿主的选择，框架不越界，但要说清楚。
+
 ### 3.6 文件工具（read / write / edit）
 
 三个工具，各自参照不同的对位实现：**read / write 参照 DSH**（`packages/fs/tool-fs`），
@@ -287,14 +329,26 @@ svc := approval.NewService(rt.Answerer, sessionAudit{sess: sess})
 **默认语义（fail-closed）**：
 
 - `Local.DefaultScope`：nil 时从 WorkDir 派生（读 = 写 = WorkDir）——**忘了配置 = 只有工作区**，不是全盘。"忘记声明"这个最常见的错误，后果必须是最小权限；
-- `Request.PathScope` 只能**收窄**（默认范围的子集）；放宽是宿主**装配期**的权力，运行期拒绝——放宽是宿主的政策，不是模型（调用方）的权力；
+- `Local.Scope func() *PathScope`：**动态范围来源**，每次执行前解析一次（与 `Local.Budget` 同款“函数读背后状态”的写法）。宿主据此在运行期改自己的默认范围（§3.5.1 的加根场景）——范围是**宿主**的政策，运行期可改；非 nil 时优先于 `DefaultScope`，返回 nil 则回落；
+- `Request.PathScope` 只能**收窄**（默认范围的子集）；放宽是**调用方（模型）**没有的权力——放宽是宿主的政策，模型说了不算；
 - 写根含 `/` = **显式全开**：不套约束直接跑（容器场景的正当逃生门——"/" 是一次性容器的根）。危险写在配置里，审查看得见；框架不替宿主判断"你的机器是不是一次性的"。
+
+**运行期加根在进程层怎么落地**：强制是**每次调用现生成**的（Seatbelt profile 按当次范围生成），所以只要默认范围跟着变，内核约束就跟着变——加根对**下一次执行**立即生效。典型接法是让文件 jail 与 shell 沙箱**共用同一份根集合**，避免"工具能读、命令写不了"的错位：
+
+```go
+roots := filesystem.NewRootSet([]string{a}, []string{a})
+sb := &sandbox.Local{WorkDir: a, Scope: sandbox.ScopeFunc(
+    func() []string { return roots.RootsFor(filesystem.OpRead) },
+    func() []string { return roots.RootsFor(filesystem.OpWrite) },
+)}
+roots.Add(b)   // 运行期加根：文件工具与 shell 同时生效
+```
 
 **macOS 后端（Seatbelt）**：SBPL profile 只收窄**写**——`(allow default)` → `(deny file-write*)` → 放行 `/dev/null` 与写根（DSH `profiles.ts` 同款，实战验证过的最小集）。读强制不做：`deny file-read*` 会碎掉动态链接器与系统缓存，成本远超收益，且事故威胁模型全在写侧；`ReadRoots` 参与收窄校验但此后端暂不强制（强制待 Landlock）。SBPL 按**内核解析后**的路径匹配，写根先过 `EvalSymlinks` 规范化（`/var` → `/private/var` 不规范化会让工作区写被自己拦住）。
 
 **fail-closed 纪律**：sandbox-exec 不可用 → `ErrPathScopeUnsupported`；非 darwin 平台尚无后端 → 非全开的调用明确报错。**绝不退化成"没隔离的假装隔离"**——"假装有边界"比"没有边界"更危险。
 
-**与文件 jail 的分工**：jail 管**工具**（read_file/write_file/edit_file）的路径；`PathScope` 管**子进程**能碰到的路径——命令可以绕过工具直接 `cat /etc/passwd`，jail 管不着。两层都要。
+**与文件 jail 的分工**：jail 管**工具**（read_file/write_file/edit_file）的路径；`PathScope` 管**子进程**能碰到的路径——命令可以绕过工具直接 `cat /etc/passwd`，jail 管不着。两层都要。**两层共用一份根集合**（§3.5.1 的 `RootSet`）时，加根一次两层同时生效；不共用就要接受两层边界不一致（那就得由宿主自己保证一致）。
 
 ### 3.11 模型调用的重试（S2b）
 
