@@ -33,6 +33,7 @@ import (
 
 	"github.com/puras/mos"
 	"github.com/puras/mos/agent/approval"
+	"github.com/puras/mos/agent/contextfile"
 	"github.com/puras/mos/agent/hook"
 	"github.com/puras/mos/agent/policy"
 	"github.com/puras/mos/agent/prompt"
@@ -63,6 +64,7 @@ func main() {
 	retryAttempts := flag.Int("retry-attempts", 3, "模型调用总尝试次数（含首次）；1 = 不重试")
 	retryDelay := flag.Int("retry-delay", 1, "首次退避基数（秒），之后指数增长（带抖动）")
 	approvalFlag := flag.Bool("approval", true, "装配人工审批（需确认时在终端问 y/N；关掉则一律拒绝）")
+	agentsFlag := flag.Bool("agents", true, "加载上下文文件（AGENTS.md / CLAUDE.md 等，从工作目录向上递归，注入系统提示词的「项目约定」节）")
 	flag.Parse()
 
 	loadDotEnv(".env")
@@ -151,7 +153,7 @@ func main() {
 	// 系统提示词：分节装配（agent/prompt）——默认节 + 工具自带指引 + 部署事实，
 	// 三类贡献方一处汇合；MOS_SYSTEM_PROMPT 仍可整段替换（Complete 语义：
 	// 宿主最懂就全听宿主的）。组装一次、静态不变，利于服务商 prompt cache。
-	sysPrompt, promptKind, err := buildSystemPrompt(reg, jailRoot, *allowShell)
+	sysPrompt, promptKind, err := buildSystemPrompt(reg, jailRoot, *allowShell, *agentsFlag)
 	check(err)
 
 	// 输入读取器：主循环与人工审批共用（审批发生在驱动阻塞期间，同一
@@ -359,10 +361,11 @@ func mustModel(retryAttempts, retryDelay int) llm.ChatModel {
 // buildSystemPrompt 装配系统提示词（agent/prompt 分节 Builder）：
 //   - prompt.Default()  框架默认节（身份 + 简洁约定）；
 //   - reg.Guidelines()  工具自带的跨调用指引（文案归工具包，tool.Guideline 接口）；
+//   - contextfile       项目上下文文件（AGENTS.md / CLAUDE.md 等）的正文；
 //   - shellRuntimeGuide 部署事实（工作目录、验证回路）——只有宿主知道的事。
 //
 // MOS_SYSTEM_PROMPT 仍整段替换（对齐 Complete 语义：宿主最懂就全听宿主的）。
-func buildSystemPrompt(reg *tool.Registry, jailRoot string, allowShell bool) (string, string, error) {
+func buildSystemPrompt(reg *tool.Registry, jailRoot string, allowShell, loadAgents bool) (string, string, error) {
 	if custom := os.Getenv("MOS_SYSTEM_PROMPT"); custom != "" {
 		return custom, "自定义（MOS_SYSTEM_PROMPT，整段替换）", nil
 	}
@@ -371,6 +374,24 @@ func buildSystemPrompt(reg *tool.Registry, jailRoot string, allowShell bool) (st
 		return "", "", fmt.Errorf("装配工具指引: %w", err)
 	}
 	kind := "分节装配（默认 + 工具指引"
+	if loadAgents {
+		// 项目上下文文件：从工作目录向上递归（由外到内合并），同目录里的
+		// AGENTS.override.md 替换该目录的 AGENTS.md / CLAUDE.md。
+		// 宿主自决开不开（这里是 -agents）；全局目录本演示没有——那是宿主的部署事实。
+		res, err := contextfile.NewLoader(contextfile.Options{MaxDepth: -1}).Load(jailRoot)
+		if err != nil {
+			return "", "", fmt.Errorf("加载上下文文件: %w", err)
+		}
+		for _, w := range res.Warnings {
+			fmt.Fprintf(os.Stderr, "[context] %s\n", w)
+		}
+		if err := pb.AddProjectContext(res.Text); err != nil {
+			return "", "", fmt.Errorf("装配项目约定: %w", err)
+		}
+		if len(res.Files) > 0 {
+			kind += " + 项目约定"
+		}
+	}
 	if allowShell {
 		err := pb.Add(prompt.Section{
 			Name:  "runtime:shell",

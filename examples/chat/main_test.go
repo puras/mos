@@ -127,7 +127,7 @@ func TestBuildSystemPromptGolden(t *testing.T) {
 	}
 
 	// 不开 shell：默认节 + 工具指引（内置默认工具集都不带指引）
-	got, kind, err := buildSystemPrompt(reg, "/ws", false)
+	got, kind, err := buildSystemPrompt(reg, "/ws", false, false)
 	if err != nil {
 		t.Fatalf("buildSystemPrompt: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestBuildSystemPromptGolden(t *testing.T) {
 	if err := reg.Register(builtin.NewShell(nil)); err != nil {
 		t.Fatalf("注册 shell: %v", err)
 	}
-	got, kind, err = buildSystemPrompt(reg, "/ws", true)
+	got, kind, err = buildSystemPrompt(reg, "/ws", true, false)
 	if err != nil {
 		t.Fatalf("buildSystemPrompt(shell): %v", err)
 	}
@@ -166,5 +166,39 @@ func TestBuildSystemPromptGolden(t *testing.T) {
 	// 指引在部署事实之前（OrderToolBase < OrderRuntime）
 	if strings.Index(got, "[exit code: N]") > strings.Index(got, "工作目录固定为") {
 		t.Fatalf("工具指引应先于部署事实：\n%s", got)
+	}
+}
+
+// 上下文文件（AGENTS.md 等）装进系统提示词：位置固定在「约定之后、工具指引之前」，
+// 正文带来源路径（模型据此知道每条约定来自哪个文件）。
+func TestBuildSystemPromptWithContextFiles(t *testing.T) {
+	reg := tool.NewRegistry()
+	for _, tl := range builtin.Default() {
+		if err := reg.Register(tl); err != nil {
+			t.Fatalf("注册 %s: %v", tl.Name(), err)
+		}
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "AGENTS.md")
+	if err := os.WriteFile(path, []byte("项目里的一条约定"), 0o644); err != nil {
+		t.Fatalf("写 AGENTS.md: %v", err)
+	}
+
+	got, kind, err := buildSystemPrompt(reg, dir, false, true)
+	if err != nil {
+		t.Fatalf("buildSystemPrompt: %v", err)
+	}
+	if !strings.Contains(kind, "项目约定") {
+		t.Fatalf("kind = %q", kind)
+	}
+	if !strings.Contains(got, "项目里的一条约定") {
+		t.Fatalf("缺少上下文正文：\n%s", got)
+	}
+	if !strings.Contains(got, path) {
+		t.Fatalf("缺少来源路径 %q：\n%s", path, got)
+	}
+	// 位置：项目约定在框架约定之后
+	if strings.Index(got, "回答简洁直接") > strings.Index(got, "项目里的一条约定") {
+		t.Fatalf("项目约定应排在框架约定之后：\n%s", got)
 	}
 }

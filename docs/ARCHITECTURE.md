@@ -39,6 +39,7 @@
 | `filesystem` | 文件 jail：宿主声明可读/可写根 + Lexical/Realpath 双层校验 | 移植裁剪 | S5d ✅ |
 | `sandbox` | 进程隔离：超时 + 进程组击杀 + 输出上限 + 资源限制 + 环境裁剪 | 移植裁剪 | S5f-1 ✅ |
 | `agent/prompt` | 系统提示词分节装配：`Section`/`Builder`（Add 严格插入 / Set 覆写 / Complete 整段替换 / Clone 派生）+ 中心顺序常量；`tool.Guideline` 可选接口让工具自带跨调用指引（文案归工具包，位置归本包）——PI 紧凑模板 × DSH 顺序中心化的中间态 | 新增 | S7 前置 ✅ |
+| `agent/contextfile` | 上下文文件（AGENTS.md / CLAUDE.md 等）发现与合并：候选名优先级 + 向上递归 + 同目录 override + 真实路径去重 + 字节预算裁剪；**I/O 以 Reader 接口注入**（框架不碰文件系统） | 新增 | S6 ✅ |
 | `agent`（上下文件） | 截断、压缩、Auditor | 重写瘦身 | S6 ✅ |
 | `mos`（根包） | 一行装配 `mos.New(Config)` + 运行期旋钮 + 装配快照 | 重写 | S7 ✅ |
 
@@ -430,6 +431,18 @@ llm.WithRetry(model, llm.RetryPolicy{
 **TaskState/Auditor**（`session.DeriveTaskState` / `agent.Auditor`）：PRD M2.1/M2.2 基线（状态外置、审计门），作为独立基础设施落地，**不参与压缩**（PI/DSH 均无审计门；M3 多智能体与宿主消费）。审计不变式不变：只有环境自证的只读工具（`current_time`/`read`）的输出可进 TaskState，模型自述不算数。
 
 **决策路径顺序固定**：压缩检查 → `History` 投影（含压缩遮蔽）→ `pre-step` 瀑布（宿主钩子）→ 决策器。均零开销降级。轮次默认不限（压缩接管上下文增长）。
+
+### 3.14 上下文文件（AGENTS.md / CLAUDE.md）
+
+包 `agent/contextfile`：发现并合并**上下文文件**，把正文作为「项目约定」节拼进系统提示词（`prompt.Builder.AddProjectContext`，位置 `OrderProjectContext`——约定之后、工具指引之前）。机制对齐 PI 的 context files（`core/resource-loader.ts` + `core/system-prompt.ts`），不自创文件名与优先级：
+
+- **候选名按序取第一个命中**：`AGENTS.override.md` > `AGENTS.md` > `AGENTS.MD` > `CLAUDE.md` > `CLAUDE.MD`。同一目录里的 override 因此**替换**该目录的 `AGENTS.md` / `CLAUDE.md`，**不影响**其它目录的上下文文件（override 的语义由候选顺序表达，不另设分支）。
+- **扫描顺序**：全局目录（宿主传入）→ 各级祖先（由外向内）→ 工作目录。越靠近工作目录的约定排在**后面**（更具体的在后生效）。
+- **同一份文件只算一次**：按真实路径（软链解析）去重——PI 用「worktree 遮蔽」专门处理 git worktree 的重复加载，这里用真实路径去重覆盖同一类问题（少一个 git 依赖，语义更宽）。
+- **渲染**：每份文件包成 `<project_instructions path="绝对路径">…</project_instructions>`（PI 同款），模型据此知道每条约定来自哪个文件。
+- **字节预算**（默认 32KB，`Options.MaxBytes`）：上下文文件是**静态**内容——它进系统提示词，工具结果那道截断网兜不住它。超出时裁当前文件（行边界优先、Rune 边界兜底）并标注保留了多少字节；预算用完则更具体的文件不再加载。**降级如实记进 `Result.Warnings`**，不静默丢内容。
+- **框架不碰文件系统**（§4 治理规则 5）：读文件以 `Reader` 接口注入，宿主选实现（默认 `OSReader`）；要 jail 语义就注入宿主自己的 Reader。全局目录也由宿主显式传入（`Options.GlobalDirs`）——框架不猜路径，但 **MoS 自己的全局目录名是定的：`~/.mos`**（`contextfile.DefaultGlobalDir()`，与产品层的 `~/.mos-web`、PI 的 `~/.pi/agent` 都不是一回事）；路径可写 `~/.mos`（自动展开）。
+- **策略归宿主**：要不要读、读哪些目录、上限多少，都是宿主的决定（`Options.MaxDepth` 默认 0 = 只看工作目录，最保守）。
 
 ## 4. 治理规则（防再膨胀）
 

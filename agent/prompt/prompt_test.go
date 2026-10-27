@@ -198,3 +198,43 @@ func TestAddToolGuidelinesRejectsCollision(t *testing.T) {
 		t.Fatal("与宿主手写节撞名应报错")
 	}
 }
+
+func TestAddProjectContextLandsBetweenPolicyAndTools(t *testing.T) {
+	b := New()
+	if err := b.Add(Section{Name: "identity", Order: OrderIdentity, Text: "身份"}); err != nil {
+		t.Fatalf("Add(identity): %v", err)
+	}
+	if err := b.Add(Section{Name: "rules", Order: OrderPolicy, Text: "约定"}); err != nil {
+		t.Fatalf("Add(rules): %v", err)
+	}
+	if err := b.AddProjectContext("项目约定正文"); err != nil {
+		t.Fatalf("AddProjectContext: %v", err)
+	}
+	if err := b.Add(Section{Name: "tool:read", Order: OrderToolBase, Text: "工具指引"}); err != nil {
+		t.Fatalf("Add(tool:read): %v", err)
+	}
+	want := strings.Join([]string{"身份", "约定", "项目约定正文", "工具指引"}, "\n\n")
+	if got := b.Render(); got != want {
+		t.Fatalf("Render =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestAddProjectContextEmptyTextAddsNothing(t *testing.T) {
+	b := New()
+	if err := b.AddProjectContext("   \n\t"); err != nil {
+		t.Fatalf("AddProjectContext: %v", err)
+	}
+	if got := b.Render(); got != "" {
+		t.Fatalf("空正文不该留下分节：%q", got)
+	}
+}
+
+func TestAddProjectContextRejectsDuplicate(t *testing.T) {
+	b := New()
+	if err := b.AddProjectContext("第一份"); err != nil {
+		t.Fatalf("AddProjectContext: %v", err)
+	}
+	if err := b.AddProjectContext("第二份"); err == nil {
+		t.Fatal("重复注入项目上下文应报错（装配错误当场暴露）")
+	}
+}

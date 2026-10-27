@@ -37,6 +37,10 @@ const (
 	OrderPersona = 0
 	// OrderPolicy 是行为约定的位置（简洁、路径标注这类跨工具约定）。
 	OrderPolicy = 500
+	// OrderProjectContext 是项目上下文文件（AGENTS.md / CLAUDE.md 等）的位置：
+	// 紧跟行为约定之后、工具指引之前——项目约定是对框架约定的特化补充，
+	// 紧接着讲最自然；工具指引是能力说明，排在约定之后。
+	OrderProjectContext = 750
 	// OrderToolBase 是工具指引的起点：AddToolGuidelines 按注册序依次 +1。
 	OrderToolBase = 1000
 	// OrderRuntime 是易变部署事实的位置（工作目录、审批模式等，宿主自决是否加入）。
@@ -55,6 +59,9 @@ type Section struct {
 	// Text 是分节正文；空文本不参与渲染（剔除而非留空洞）。
 	Text string
 }
+
+// SectionProjectContext 是项目上下文分节的名字（宿主用 contextfile 装配正文后注入）。
+const SectionProjectContext = "project_context"
 
 // Builder 收集分节并渲染最终字符串。零值可直接用；非并发安全——
 // 装配发生在启动期（或每个智能体实例各自装配），渲染结果随后只读。
@@ -117,6 +124,22 @@ func (b *Builder) Set(s Section) error {
 		}
 	}
 	return b.Add(s)
+}
+
+// AddProjectContext 注入项目上下文文件正文（AGENTS.md / CLAUDE.md 等，
+// 由 agent/contextfile 发现合并）：位置固定在 OrderProjectContext。
+//
+// 正文为空 = 没有上下文文件：不加分节（不留空洞）。
+// 重名即报错——同一个 Builder 注入两次是装配错误，当场暴露。
+func (b *Builder) AddProjectContext(text string) error {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	return b.Add(Section{
+		Name:  SectionProjectContext,
+		Order: OrderProjectContext,
+		Text:  text,
+	})
 }
 
 // Complete 声明整段替换（PRD FR-D3 子智能体「提示词正文」的落点；
