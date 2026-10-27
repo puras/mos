@@ -448,3 +448,106 @@ func TestDescribeSaysContextFilesNotWired(t *testing.T) {
 		t.Fatalf("装配快照应区分「没装」与「装了没找到」：\n%s", a2.Describe())
 	}
 }
+
+// 多模型模式：目录装上后，运行期能换模型（下一轮生效，不用重建智能体）。
+func TestModelCatalogSwap(t *testing.T) {
+	a, err := mos.New(mos.Config{
+		Models: []mos.ModelOption{
+			{ID: "fast", Label: "快模型", Chat: &stubModel{reply: "快"}},
+			{ID: "smart", Label: "聪明模型", Chat: &stubModel{reply: "聪明"}},
+		},
+		DefaultModelID: "smart",
+		SystemPrompt:   "你是助手",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := a.ModelID(); got != "smart" {
+		t.Fatalf("当前模型 = %q，want smart", got)
+	}
+	if got := len(a.Models()); got != 2 {
+		t.Fatalf("目录项数 = %d，want 2", got)
+	}
+	sess := session.New("t", nil)
+	reply, err := a.Run(context.Background(), sess, "hi")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if reply != "聪明" {
+		t.Fatalf("reply = %q，want 聪明（默认模型）", reply)
+	}
+	// 换模型：下一轮用新模型。
+	if err := a.SetModel("fast"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+	if got := a.ModelID(); got != "fast" {
+		t.Fatalf("换后当前模型 = %q，want fast", got)
+	}
+	reply, err = a.Run(context.Background(), sess, "hi again")
+	if err != nil {
+		t.Fatalf("Run(2): %v", err)
+	}
+	if reply != "快" {
+		t.Fatalf("reply = %q，want 快（换后的模型）", reply)
+	}
+	// 目录里没有的 ID → 报错（不静默无效）。
+	if err := a.SetModel("nope"); err == nil {
+		t.Fatal("换到目录外的模型应报错")
+	}
+}
+
+// 单模型模式：没有目录可换（报错而不是静默无效）。
+func TestSingleModelHasNoCatalog(t *testing.T) {
+	a, err := mos.New(mos.Config{Model: &stubModel{reply: "ok"}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := a.SetModel("x"); err == nil {
+		t.Fatal("单模型模式换模型应报错")
+	}
+	if a.Models() != nil {
+		t.Fatal("单模型模式不应有目录")
+	}
+	if a.ModelID() != "" {
+		t.Fatalf("单模型模式 ModelID = %q，want 空", a.ModelID())
+	}
+}
+
+// 模型的装配校验：二选一、目录项完整、默认 ID 在目录里——半截的目录比没有目录难查。
+func TestModelConfigValidation(t *testing.T) {
+	m := &stubModel{reply: "ok"}
+	cases := []struct {
+		name string
+		cfg  mos.Config
+	}{
+		{"都没给", mos.Config{}},
+		{"Model 与 Models 都给", mos.Config{Model: m, Models: []mos.ModelOption{{ID: "a", Chat: m}}}},
+		{"目录项没有 ID", mos.Config{Models: []mos.ModelOption{{Chat: m}}}},
+		{"目录项没有 Chat", mos.Config{Models: []mos.ModelOption{{ID: "a"}}}},
+		{"ID 重复", mos.Config{Models: []mos.ModelOption{{ID: "a", Chat: m}, {ID: "a", Chat: m}}}},
+		{"默认 ID 不在目录里", mos.Config{Models: []mos.ModelOption{{ID: "a", Chat: m}}, DefaultModelID: "b"}},
+	}
+	for _, c := range cases {
+		if _, err := mos.New(c.cfg); err == nil {
+			t.Fatalf("%s：应当报错", c.name)
+		}
+	}
+}
+
+// 压缩器要能被宿主拿到（宿主要「立刻压一次」时用）。
+func TestCompactorAccessor(t *testing.T) {
+	a, err := mos.New(mos.Config{Model: &stubModel{reply: "ok"}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if a.Compactor() == nil {
+		t.Fatal("默认应装配压缩器")
+	}
+	off, err := mos.New(mos.Config{Model: &stubModel{reply: "ok"}, DisableCompaction: true})
+	if err != nil {
+		t.Fatalf("New(off): %v", err)
+	}
+	if off.Compactor() != nil {
+		t.Fatal("显式关掉压缩时不应有压缩器")
+	}
+}

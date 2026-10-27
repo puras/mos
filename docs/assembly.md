@@ -34,6 +34,33 @@ reply, err := a.Run(ctx, sess, "读一下 README")
 
 宿主自备时优先用宿主的（想换摘要提示词、想换截断策略时）。
 
+### 多模型：目录 + 运行期换
+
+单模型模式给 `Config.Model` 就够；会话里要能换模型（Web 控制台的模型下拉）
+就给**目录**：
+
+```go
+a, _ := mos.New(mos.Config{
+    Models: []mos.ModelOption{
+        {ID: "fast",   Label: "快模型", Chat: fastModel},
+        {ID: "smart",  Label: "聪明模型", Chat: smartModel},
+    },
+    DefaultModelID: "smart",
+})
+a.SetModel("fast")   // 下一轮生效；目录里没有该 ID → 报错
+a.ModelID()          // "fast"
+```
+
+- **Model 与 Models 二选一**：都给 = 装配错误（不知道听谁的）；都没给 = 缺模型
+  （fail-closed）。
+- 装配层把**转发壳**接进决策器与压缩器：换模型只换壳里的目标，不重建智能体
+  （换完下一轮就生效，正在跑的那一轮不受影响——它已经取过目标）。
+- 压缩器跟着换模型走：摘要由**当前**模型生成，不该用旧模型续写新对话的摘要。
+- 目录项校验 fail-closed：ID 为空 / Chat 为 nil / ID 重复 / 默认 ID 不在目录里
+  → 装配报错（「半截的目录」比「没有目录」难查）。
+- `Capabilities()` 按**当前目标**报告：换到不支持流式的模型后，驱动下一次决策
+  如实看到「不支持流式」——不撒谎。
+
 ### 宿主自己的钩子：装配之后挂
 
 装配层把「审批钩子」放在 `pre-execute` 的**最前**（ask 决策要短路后面的钩子——
@@ -52,8 +79,10 @@ package mos
 
 // Config 是装配层配置：全字段可选，零值 = 框架默认（见 §3）。
 type Config struct {
-    // ── 必填 ──
-    Model llm.ChatModel // nil → New 报错（A2）
+    // ── 必填（模型：二选一）──
+    Model  llm.ChatModel  // 单模型模式（与 Models 二选一）
+    Models []ModelOption  // 多模型模式：目录 + 运行期换（与 Model 二选一）
+    DefaultModelID string // 默认模型 ID（空 = 目录第一项）
 
     // ── 能力（nil = 不提供，A1）──
     Tools       *tool.Registry        // 工具注册表（nil = 无工具）
@@ -96,6 +125,18 @@ type Agent struct{ /* ... */ }
 // Run 执行一次任务（驱动自行决定流式/非流式路径）。会话由调用方持有——
 // 多会话/并行场景（Web 控制台）不被单会话 API 卡住。
 func (a *Agent) Run(ctx context.Context, sess *session.Session, input string) (string, error)
+
+// SetModel 运行期换模型（下一轮生效）。目录里没有该 ID → 报错。
+func (a *Agent) SetModel(id string) error
+
+// ModelID 返回当前模型 ID（单模型模式 = 空串）。
+func (a *Agent) ModelID() string
+
+// Models 返回模型目录（保序；单模型模式 = nil）。
+func (a *Agent) Models() []ModelOption
+
+// Compactor 返回上下文压缩器（nil = 没装这个能力）：宿主要「立刻压一次」时用。
+func (a *Agent) Compactor() agent.Compactor
 
 // Describe 返回装配快照（多行文本），供宿主直接打印。
 func (a *Agent) Describe() string
@@ -143,6 +184,7 @@ MoS chat 已就绪（provider=anthropic model=agnes-2.5-flash session=chat 已�
   结果截断: 32768 字节（全文落 /path/to/workdir/.mos-trunc，read 可回读）
   人工审批: 未装配（需确认的调用一律拒绝，fail-closed）
   文件根（运行期可变）: 读 1 个 / 写 1 个   ← 未装配时写「未装配（运行期加根不可用）」
+  模型: smart（目录 3 个，可运行期切换）   ← 单模型模式写「单模型（未装目录，运行期不能换）」
   上下文文件: 2 个（1834 字节）: /path/to/proj/AGENTS.md, /Users/x/.mos/AGENTS.md
     ⚠ 上下文文件 /path/to/proj/AGENTS.md 超出字节预算，已截断（保留前 1200 字节 / 共 2400 字节）
   上下文文件: 未装配（宿主没要求）   ← 装了但没找到文件时写「已装配，但没找到文件」

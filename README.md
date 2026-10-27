@@ -28,6 +28,7 @@ MoS（取自 Sapient）是基于 Go 的智能体基础框架（Agent Base SDK）
 | S5i | 系统提示词装配 `agent/prompt`：分节 Builder（Add 严格 / Set 覆写 / Complete 整段替换 / Clone 派生）+ 工具自带指引通道（`tool.Guideline`，文案归工具包、顺序归中心常量）+ chat 示例接线 | ✅ |
 | S5i.1 | 上下文文件 `agent/contextfile`（AGENTS.md / CLAUDE.md 等）：候选名优先级 + 向上递归 + 同目录 override + 真实路径去重 + 字节预算裁剪；I/O 以 `Reader` 注入（框架不碰文件系统）+ 提示词「项目约定」节 | ✅ |
 | S5i.2 | 装配层入口：`mos.Config.Context`（目录 + 发现参数，全局目录默认 `~/.mos`）+ `mos.Config.Prompt` 分节装配器（项目约定进正确槽位；与 `SystemPrompt` 二选一）+ `Describe()` 写明装了什么/降级警告 | ✅ |
+| S7.2 | 多模型目录 `mos.Config.Models`（ID/Label/Chat）+ 运行期换模型 `Agent.SetModel`（转发壳，下一轮生效）+ `Agent.Compactor()` 取回压缩器（宿主可主动压一次） | ✅ |
 | S6 | 上下文工程（截断 + 压缩，逐项对齐 PI/DSH：token 预算触发、模型生成结构化摘要、摘要落日志投影遮蔽、切割点不切断工具对；TaskState/Auditor 基础设施；轮次默认不限） | ✅ |
 | S7 | 装配层（根包 `mos`：`mos.New(Config)` 一行装配 + 运行期旋钮 + `Describe()` 装配快照；能力即证据、缺能力 fail-closed） | ✅ |
 | S7.1 | 工具名对齐 PI/DSH（`read`/`write`/`edit`）+ 搜索三件套（`grep`/`glob`/`ls`：只读、走同一份 jail、可并发、结果有上限） | ✅ |

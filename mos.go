@@ -63,7 +63,16 @@ type Config struct {
 	//
 	// Model 是对话模型。nil 时 New 直接报错：没有模型就装配不出能跑的
 	// 智能体（fail-closed，不降级成空转）。
+	//
+	// **单模型模式**：与 Models 二选一（都给 = 不知道听谁的，装配报错）。
 	Model llm.ChatModel
+	// Models 是模型目录（**多模型模式**）：会话里可切换的候选，运行期能换
+	// （a.SetModel，下一轮生效，不用重建智能体）。与 Model 二选一。
+	//
+	// 目录项：ID（稳定标识，同一目录内唯一）+ Label（展示名）+ Chat（模型）。
+	Models []ModelOption
+	// DefaultModelID 是默认模型 ID（空 = 目录第一项）。不在目录里 → 装配报错。
+	DefaultModelID string
 
 	// ── 能力（nil = 不提供该能力）──
 	//
@@ -187,6 +196,9 @@ type Agent struct {
 	contextBytes   int
 	contextWarning []string
 
+	// catalog 是模型目录（多模型模式；nil = 单模型模式）。
+	catalog *modelCatalog
+
 	// 运行期旋钮（原子；下一轮生效）。
 	concurrency atomic.Int64
 	maxRounds   atomic.Int64
@@ -212,8 +224,24 @@ type ContextConfig struct {
 //
 // 装配出来的 Agent 无状态：会话由调用方持有并传入 Run。
 func New(cfg Config) (*Agent, error) {
-	if cfg.Model == nil {
-		return nil, errors.New("mos: 未装配模型（Config.Model 必填）")
+	// 模型：单模型模式（Config.Model）或目录模式（Config.Models），**二选一**。
+	// 都没给 = 没装配模型（fail-closed）；都给 = 不知道听谁的（报错，不静默挑）。
+	var catalog *modelCatalog
+	var model llm.ChatModel
+	switch {
+	case len(cfg.Models) > 0 && cfg.Model != nil:
+		return nil, errors.New("mos: Model 与 Models 二选一（两个都给，不知道听谁的）")
+	case len(cfg.Models) > 0:
+		cat, err := newModelCatalog(cfg.Models, cfg.DefaultModelID)
+		if err != nil {
+			return nil, err
+		}
+		catalog = cat
+		model = cat.shell // 转发壳：运行期换模型只换壳里的目标
+	case cfg.Model != nil:
+		model = cfg.Model
+	default:
+		return nil, errors.New("mos: 未装配模型（Config.Model 或 Config.Models 必填其一）")
 	}
 	if err := cfg.applyDefaults(); err != nil {
 		return nil, err
@@ -321,6 +349,8 @@ func New(cfg Config) (*Agent, error) {
 		contextFiles:   contextFiles,
 		contextBytes:   contextBytes,
 		contextWarning: contextWarning,
+
+		catalog: catalog,
 	}
 	a.SetPolicy(cfg.Policy) // 装初始策略（挂守卫 + 设可见性）
 	a.rules.set(cfg.Rules)
@@ -349,7 +379,7 @@ func New(cfg Config) (*Agent, error) {
 		compactor = nil
 	}
 	if compactor == nil && !cfg.DisableCompaction {
-		compactor = agent.NewLLMCompactor(cfg.Model, agent.CompactorConfig{
+		compactor = agent.NewLLMCompactor(model, agent.CompactorConfig{
 			ContextWindow:    cfg.ContextWindow,
 			ReserveTokens:    cfg.ReserveTokens,
 			KeepRecentTokens: cfg.KeepRecentTokens,
@@ -379,7 +409,7 @@ func New(cfg Config) (*Agent, error) {
 	}
 
 	a.rt = &driver.RunContext{
-		Planner:           planner.NewReAct(cfg.Model),
+		Planner:           planner.NewReAct(model),
 		Tools:             reg,
 		Hooks:             hooks,
 		Guards:            guards,
@@ -417,6 +447,38 @@ func (a *Agent) Run(ctx context.Context, sess *session.Session, input string) (s
 //
 // 模板的字段改动只在没有运行中的轮次时才有意义：每轮跑的是模板的浅拷贝。
 func (a *Agent) RunContext() *driver.RunContext { return a.rt }
+
+// SetModel 运行期换模型（**下一轮生效**，正在跑的那一轮不受影响——它已经
+// 取过目标）。目录里没有这个 ID 直接报错（不静默无效）。
+//
+// 单模型模式没有目录可换 → 报错（宿主要用换模型，就该装目录）。
+func (a *Agent) SetModel(id string) error {
+	if a.catalog == nil {
+		return errors.New("mos: 未装配模型目录（单模型模式不能换模型）")
+	}
+	return a.catalog.set(id)
+}
+
+// ModelID 返回当前模型 ID（单模型模式 = 空串）。
+func (a *Agent) ModelID() string {
+	if a.catalog == nil {
+		return ""
+	}
+	return a.catalog.currentID()
+}
+
+// Models 返回模型目录（保序；单模型模式 = nil）。
+func (a *Agent) Models() []ModelOption {
+	if a.catalog == nil {
+		return nil
+	}
+	return a.catalog.list()
+}
+
+// Compactor 返回上下文压缩器（nil = 没装这个能力）。
+//
+// 宿主要主动压缩（“立刻压一次”）时用它；框架不替宿主决定什么时候压。
+func (a *Agent) Compactor() agent.Compactor { return a.compactor }
 
 // SetConcurrency 设置并发上限（运行期旋钮）。**下一轮生效**，不打断当前轮。
 func (a *Agent) SetConcurrency(n int) {
@@ -546,6 +608,11 @@ func (a *Agent) Describe() string {
 		b.WriteString("  决策轮次上限: 不限（上下文增长由压缩接管）\n")
 	}
 	fmt.Fprintf(&b, "  工作目录: %s\n", a.workDir)
+	if a.catalog != nil {
+		fmt.Fprintf(&b, "  模型: %s（目录 %d 个，可运行期切换）\n", a.catalog.currentID(), len(a.catalog.list()))
+	} else {
+		b.WriteString("  模型: 单模型（未装目录，运行期不能换）\n")
+	}
 	if a.roots != nil {
 		snap := a.roots.Snapshot()
 		fmt.Fprintf(&b, "  文件根（运行期可变）: 读 %d 个 / 写 %d 个\n", len(snap.ReadRoots), len(snap.WriteRoots))

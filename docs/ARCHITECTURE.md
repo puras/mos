@@ -41,7 +41,7 @@
 | `agent/prompt` | 系统提示词分节装配：`Section`/`Builder`（Add 严格插入 / Set 覆写 / Complete 整段替换 / Clone 派生）+ 中心顺序常量；`tool.Guideline` 可选接口让工具自带跨调用指引（文案归工具包，位置归本包）——PI 紧凑模板 × DSH 顺序中心化的中间态 | 新增 | S7 前置 ✅ |
 | `agent/contextfile` | 上下文文件（AGENTS.md / CLAUDE.md 等）发现与合并：候选名优先级 + 向上递归 + 同目录 override + 真实路径去重 + 字节预算裁剪；**I/O 以 Reader 接口注入**（框架不碰文件系统） | 新增 | S6 ✅ |
 | `agent`（上下文件） | 截断、压缩、Auditor | 重写瘦身 | S6 ✅ |
-| `mos`（根包） | 一行装配 `mos.New(Config)` + 运行期旋钮 + 装配快照 | 重写 | S7 ✅ |
+| `mos`（根包） | 一行装配 `mos.New(Config)` + 运行期旋钮（并发/策略/规则/加根/**换模型**）+ 装配快照 | 重写 | S7 ✅ |
 
 > S3 边界：`tool/builtin` 只带 `current_time`（无安全副作用）。涉及文件与命令执行的
 > 内置工具（read / write / grep / glob / ls / shell）等 S5 的 filesystem jail
