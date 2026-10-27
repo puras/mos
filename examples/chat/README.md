@@ -7,15 +7,15 @@ S4b 里程碑示例——智能体经**驱动层循环**与模型对话，模型
 - **重试策略是宿主的**（`-retry-attempts` / `-retry-delay`，默认 3 次 / 1 秒基数）：只重试**瞬时**错误（限流 429、5xx、连接失败、空响应），4xx、鉴权失败、用户取消一律**快速失败**——重试确定性的错误只是浪费配额。退避是**有界指数 + 抖动**；流式只在还没吐出内容时才重试
 - `llm.WithLogging` 演示调用观测：每次模型调用在 stderr 打一行（模式 / 耗时 / msgs & tools / finish_reason / token），`MOS_LOG_LLM=0` 关闭；日志套在重试之外，重试几次就见几行
 - **重试也要看得见**：每次重试前在 stderr 打一行 `[llm] 第 N 次重试（…后）：<错误>`——静默重试是查不出问题的
-- 内置工具（`builtin.Default()`）登记后模型即可调用；当前可用 `current_time`；文件工具（`read_file`/`write_file`/`edit_file`）挂在**活根集合**上（`-workdir` 为初始根，见下一条）
+- 内置工具（`builtin.Default()`）登记后模型即可调用；当前可用 `current_time`；文件与搜索工具（`read`/`write`/`edit`/`grep`/`glob`/`ls`）挂在**活根集合**上（`-workdir` 为初始根，见下一条）
 - **会话中途授权目录**：用户说"B 目录你也可以看"时，模型调 `grant_access{path:B}` 申请 → `guard.go` 的 ask 档转**终端审批** → 同意后 B 立即可访问（文件 jail 与 shell 两层同时生效，下一次工具调用就生效）。用户只是要求看某个未授权目录时，模型不应自行申请（工具指引里写明了）；即便申请了，人拒绝就是拒绝。根变更记在 `roots.History()` 可审计
 - **shell 工具默认不装配**（`-allow-shell` 开启）：给 agent 一条验证回路——改完代码能自己跑一次 `go build` / `go test`，而不是靠反复重写去猜。命令经 `sandbox.Local` 执行（超时、进程组击杀、输出上限、资源限制、环境裁剪）
 - **路径强制**（macOS）：写限定在工作区内，越界写被**内核**拒绝（`Operation not permitted`）——与命令怎么拼无关，拆解命令绕不过。被隔离命令的缓存/临时目录由宿主指到工作区内（`GOCACHE`/`TMPDIR`）；非 macOS 平台此强制未落地，非全开调用会明确报错
 - 开了 shell 会附带一份**默认系统引导词**（教模型用命令验证）；`MOS_SYSTEM_PROMPT` 可覆盖
-- **写前观察**（S5h）：`write_file` 覆盖没读过的文件、或读后文件已被修改（shell/人改的）→ **拒绝并要求重读**——防丢失更新。新建文件不需要先读
+- **写前观察**（S5h）：`write` 覆盖没读过的文件、或读后文件已被修改（shell/人改的）→ **拒绝并要求重读**——防丢失更新。新建文件不需要先读
 - **上下文工程**（S6，对齐 PI）：
   - **压缩**（`-context-window`，默认 128K；<=0 关）：超过窗口-预留时，从投影定切割点（永不切断工具调用对），**模型生成结构化摘要**（Goal/Progress/Key Decisions/Next Steps）作为 compaction 事件落会话日志；投影从此遮蔽旧历史，被遮蔽内容留在日志可审计。**确切窗口更小的模型必须显式配置**（否则会在溢出后才触发）。`-reserve-tokens`（默认 16384）/ `-keep-recent-tokens`（默认 20000）调预算
-  - **结果截断**（`-trim` 字节，**默认 32768**，0 = 关）：工具结果过大时就地瘦身（read_file 留头、shell 留尾、其余两头各半，说明带保留区间），全文落 `.mos-trunc/`（在工作区内，`read_file` 可回读）。默认 32KB ≈ 8K token：一次工具结果只占 128K 窗口可用预算的 ~7%
+  - **结果截断**（`-trim` 字节，**默认 32768**，0 = 关）：工具结果过大时就地瘦身（read 留头、shell 留尾、其余两头各半，说明带保留区间），全文落 `.mos-trunc/`（在工作区内，`read` 可回读）。默认 32KB ≈ 8K token：一次工具结果只占 128K 窗口可用预算的 ~7%
 - **人工审批**（`approval.go`）：pre-execute 的「需人工确认」会在终端问 `[审批] 是否允许执行 shell？[y/N]`——**空回车 = 拒绝**（默认答案必须是安全的那个）。未装配时（`-approval=false`）一律拒绝（fail-closed）。批准只对**本次调用**生效，不缓存
 - **宿主侧参数级规则**（`guard.go`）：按参数判定——敏感文件（`.env` / `id_rsa` / `*.pem`）不读不写（deny），**删除命令**（`rm` / `unlink` / `git rm`，无论带什么 flag）与**申请访问新目录**（`grant_access`）需人工确认（ask）。**规则键在语义上，不在字母形状上**（曾键在"含 r 的 flag"上：`git status --short` 误触发、逐个 `git rm` 漏过，被拒后模型拆解命令绕过了拦截）。诚实边界：`find -delete`、脚本语言仍绕得过——这只是业务规则，真正的边界是路径强制隔离
 - 流式打字机输出（协议不支持时自动回退非流式）；思维链以暗色文本透出
@@ -84,7 +84,7 @@ go run . -new -allow-shell -shell-spill /tmp/mos  # 输出落盘目录（截断�
 
 - **超时的缺省与上界都由宿主定**（两个旋钮）：`-shell-timeout` 是缺省（默认 120s），`-shell-max-timeout` 是上界（默认 300s）。模型可以在调用里要求更短，**要求更长会被夹到上界**——超时是资源预算，预算的宽窄由宿主定，不由模型定；
 - **路径范围不受限**（诚实边界）：命令仍能访问运行用户权限内的任意路径——Go 标准库给不了强制隔离，需要 bwrap / Landlock / Seatbelt / 容器后端（`sandbox.Runner` 是留给它们的接缝）；
-- **输出截断有逃生通道**：完整输出落盘（`-shell-spill` 指定目录），回执给模型 `output_path`，它可以 `read_file` 读全文；
+- **输出截断有逃生通道**：完整输出落盘（`-shell-spill` 指定目录），回执给模型 `output_path`，它可以 `read` 读全文；
 - **非零退出码是事实不是故障**：命令跑了但没成功 → **正常结果**（回执带 `exit_code`，输出末尾有 `[exit code: N]` 标记）；只有"命令根本没起来"（超时/被拒）才报错。对齐 DSH——这么分是因为把非零退出当失败会逼模型自己写 hack 绕开（它会拼 `; echo "exit=$?"` 让整条命令以 0 退出）；
 - **默认不装配**：不给模型这个能力，比给它一个必然失败的工具干净。
 
@@ -93,8 +93,8 @@ go run . -new -allow-shell -shell-spill /tmp/mos  # 输出落盘目录（截断�
 策略的判定是**真在跑**的，不是装饰。启动横幅会同时列出两份清单：
 
 ```text
-已注册工具: current_time, read_file, write_file
-模型可见工具: read_file, write_file          ← 被策略禁掉的 current_time 消失了
+已注册工具: current_time, read, write, edit, grep, glob, ls
+模型可见工具: read, write          ← 被策略禁掉的 current_time 消失了
 ```
 
 **被禁的工具不出现在模型的工具清单里**（可见性过滤，对齐 PI / DSH 的可见性层）——不给模型一个它注定调不成的工具。运行时守卫仍在：模型幻觉出的名字、策略中途变更、非模型路径的直接调用，都会被拦下并留下 `tool/result{isError}`。
@@ -111,11 +111,13 @@ go run . -new -deny current_time        # 命令行快捷方式
 ```yaml
 deny:
   - current_time
-# allow: [read_file, write_file]   # 配了就只剩这些可见
+# allow: [read, write]   # 配了就只剩这些可见
 # allow: []                        # 配了空列表 = 全禁
 ```
 
-**并发读的正解**（同一批多个调用）：`read_file` 声明了可并发，所以让模型读多个文件时它可以一次发多个调用；`next_offset` 指向下一段的起始行号。
+**并发读的正解**（同一批多个调用）：`read` 声明了可并发，所以让模型读多个文件时它可以一次发多个调用；`next_offset` 指向下一段的起始行号。搜索三件套（`grep`/`glob`/`ls`）同样只读可并发。
+
+**搜索不用退化成 shell**：`grep`（内容，RE2 正则）、`glob`（文件名，支持 `**`/`[]`/`{}`）、`ls`（列目录）是结构化参数化的一等工具——同一份 jail 边界、结果有上限、没有命令拼接的注入面。
 
 会话日志 `data/chat-*.jsonl` 是唯一事实来源：
 

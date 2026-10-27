@@ -75,7 +75,7 @@ type Request struct {
 
 // PathScope 是路径范围要求：本次执行允许读/写的根。
 //
-// 与 filesystem 的文件 jail 是两件事：jail 管**工具**（read_file/write_file）
+// 与 filesystem 的文件 jail 是两件事：jail 管**工具**（read/write）
 // 的路径，PathScope 管**子进程**能碰到的路径——命令可以绕过工具直接
 // `cat /etc/passwd`，jail 管不着。
 type PathScope struct {
@@ -100,7 +100,7 @@ type Result struct {
 	// Truncated 标记输出是否因超限被截断。
 	Truncated bool
 	// OutputPath 是完整输出的落盘路径（仅当截断且配置了 SpillDir 时非空）。
-	// 内存里只留前 MaxOutput 字节，全文在这里——模型可以 read_file 读它
+	// 内存里只留前 MaxOutput 字节，全文在这里——模型可以 read 读它
 	// （PI 的 full_output_path 对位，PRD 的"落盘逃生通道"）。
 	OutputPath string
 	// Duration 是实际耗时。
@@ -400,7 +400,7 @@ func exitCodeOf(err error) int {
 // 后续内容并标记截断。
 //
 // 丢弃而非阻塞，避免子进程因管道写满而挂死。若配置了 spillDir，完整输出会
-// 另存一份到文件——截断丢掉的内容因此**还能找回**（模型可 read_file 读它）。
+// 另存一份到文件——截断丢掉的内容因此**还能找回**（模型可 read 读它）。
 type limitedBuffer struct {
 	buf       bytes.Buffer
 	max       int64

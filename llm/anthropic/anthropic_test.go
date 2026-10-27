@@ -384,7 +384,7 @@ func TestChatStreamThinking(t *testing.T) {
 }
 
 // 流被掐断（没收到 stop_reason 就结束）必须报错，不能把半截聚合当正常响应。
-// （2026-10 事故：半截文本 + 空 args 的 write_file 被当成完整消息处理。）
+// （2026-10 事故：半截文本 + 空 args 的 write 被当成完整消息处理。）
 func TestChatStreamTruncatedErrors(t *testing.T) {
 	sse := strings.Join([]string{
 		`data: {"type":"message_start","message":{"role":"assistant"}}`,

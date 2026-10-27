@@ -66,9 +66,9 @@ func prefillSessions(t *testing.T, sess *session.Session, turns int) {
 			{Kind: session.EventTurnStart, Turn: turn},
 			{Kind: session.EventUser, Turn: turn, Text: fmt.Sprintf("第 %d 个问题", turn)},
 			{Kind: session.EventAssistant, Turn: turn, ToolCalls: []llm.ToolCall{
-				{ID: fmt.Sprintf("call-%d", turn), Name: "read_file", Args: `{}`},
+				{ID: fmt.Sprintf("call-%d", turn), Name: "read", Args: `{}`},
 			}},
-			{Kind: session.EventToolCall, Turn: turn, ToolCall: &llm.ToolCall{ID: fmt.Sprintf("call-%d", turn), Name: "read_file", Args: `{}`}},
+			{Kind: session.EventToolCall, Turn: turn, ToolCall: &llm.ToolCall{ID: fmt.Sprintf("call-%d", turn), Name: "read", Args: `{}`}},
 			{Kind: session.EventToolResult, Turn: turn, ToolResult: &session.ToolResult{
 				CallID: fmt.Sprintf("call-%d", turn), Content: fmt.Sprintf("环境证据 %d", turn),
 			}},
@@ -247,11 +247,11 @@ func TestUnlimitedRoundsByDefault(t *testing.T) {
 	sess := session.New("t", nil)
 	acts := []planner.Action{}
 	for i := 0; i < 60; i++ {
-		acts = append(acts, toolCallAction("read_file"))
+		acts = append(acts, toolCallAction("read"))
 	}
 	acts = append(acts, answer("完成"))
 	p := &scriptedPlanner{acts: acts}
-	ft := &fakeTool{name: "read_file"}
+	ft := &fakeTool{name: "read"}
 	rt := &driver.RunContext{Planner: p, Tools: registryOf(t, ft)}
 	reply, err := driver.New(rt, New()).Run(context.Background(), sess, "慢慢来")
 	if err != nil {
@@ -267,10 +267,10 @@ func TestExplicitRoundLimitStillFuse(t *testing.T) {
 	sess := session.New("t", nil)
 	acts := []planner.Action{}
 	for i := 0; i < 10; i++ {
-		acts = append(acts, toolCallAction("read_file"))
+		acts = append(acts, toolCallAction("read"))
 	}
 	p := &scriptedPlanner{acts: acts}
-	rt := &driver.RunContext{Planner: p, Tools: registryOf(t, &fakeTool{name: "read_file"}), MaxDecisionRounds: 3}
+	rt := &driver.RunContext{Planner: p, Tools: registryOf(t, &fakeTool{name: "read"}), MaxDecisionRounds: 3}
 	_, err := driver.New(rt, New()).Run(context.Background(), sess, "q")
 	if err == nil || !strings.Contains(err.Error(), "决策次数超出上限") {
 		t.Fatalf("应报 ErrMaxDecisionRounds: %v", err)

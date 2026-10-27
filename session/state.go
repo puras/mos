@@ -68,7 +68,7 @@ type Fact struct {
 //   - Status = 见 TaskStatus 注释。
 //
 // trusted 由宿主经审计门（agent.Auditor）给出：只有"输出本身就是环境回答"
-// 的只读工具可信；变更类工具（shell / write_file）的输出是"未核实声明"，
+// 的只读工具可信；变更类工具（shell / write）的输出是"未核实声明"，
 // 要进状态需先用只读工具二次取证。
 func DeriveTaskState(events []Event, trusted func(toolName string) bool) *TaskState {
 	st := &TaskState{}

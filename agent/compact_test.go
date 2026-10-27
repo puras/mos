@@ -116,7 +116,7 @@ func TestSummarizePromptShape(t *testing.T) {
 	msgs := []llm.Message{
 		u("问题"),
 		a("回答"),
-		{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{Name: "read_file", Args: `{"path":"a.go"}`}}},
+		{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{Name: "read", Args: `{"path":"a.go"}`}}},
 		toolMsg(strings.Repeat("结果", 100)),
 	}
 	text, usage, err := c.Summarize(context.Background(), msgs, "")
@@ -137,7 +137,7 @@ func TestSummarizePromptShape(t *testing.T) {
 	body := req.Messages[1].Content
 	for _, want := range []string{
 		"<conversation>", "[User]: 问题", "[Assistant]: 回答",
-		"[Assistant tool calls]: read_file(", "[Tool result]: 结果",
+		"[Assistant tool calls]: read(", "[Tool result]: 结果",
 		"chars truncated]", "## Goal",
 	} {
 		if !strings.Contains(body, want) {

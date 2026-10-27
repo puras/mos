@@ -92,8 +92,13 @@ func main() {
 	jailRoot, err := filepath.Abs(*workdir)
 	check(err)
 	roots := filesystem.NewRootSet([]string{jailRoot}, []string{jailRoot})
-	// FileToolsInRoots 一套给齐：jail（活根集合）+ 写前观察门（没读过的文件不许覆盖）。
-	fileTools, err := builtin.FileToolsInRoots(roots)
+	// ToolsInRoots 一套给齐：文件三件套（read/write/edit）+ 搜索三件套
+	//（grep/glob/ls），同一份 jail（活根集合）+ 写前观察门（没读过的文件不许覆盖）。
+	//
+	// WithExclude：敏感文件（.env / 私钥）既不让 read 读，也不让 grep 搜到
+	//——否则“凭据不进模型上下文”的保证会被按内容搜的工具绕过去（宿主策略，
+	// 框架只提供挂点）。
+	fileTools, err := builtin.ToolsInRoots(roots, builtin.WithExclude(sensitivePath))
 	check(err)
 	for _, tl := range fileTools {
 		if err := reg.Register(tl); err != nil {
@@ -162,7 +167,7 @@ func main() {
 
 	// 上下文工程（S6，对齐 PI）：
 	//   - 截断：工具结果过大时就地瘦身（行/字节双限），全文落工作区内
-	//     （read_file 可回读）；
+	//     （read 可回读）；
 	//   - 压缩：超过 token 预算（窗口 − 预留）时，模型生成结构化摘要
 	//     落会话日志，投影从此遮蔽旧历史。窗口默认 128K；确切窗口更小的
 	//     模型必须用 -context-window 显式配置，否则会在溢出后才触发。

@@ -91,7 +91,7 @@ func (e *echoTool) Execute(context.Context, json.RawMessage) (any, error) {
 }
 
 func TestPolicyBlocksToolThroughExecChannel(t *testing.T) {
-	ok, bad, other := &echoTool{name: "current_time"}, &echoTool{name: "shell"}, &readTool{echoTool{name: "read_file"}}
+	ok, bad, other := &echoTool{name: "current_time"}, &echoTool{name: "shell"}, &readTool{echoTool{name: "read"}}
 	reg := tool.NewRegistry()
 	for _, tl := range []tool.Tool{ok, bad, other} {
 		if err := reg.Register(tl); err != nil {
@@ -105,7 +105,7 @@ func TestPolicyBlocksToolThroughExecChannel(t *testing.T) {
 	out := execpath.ExecuteBatch(context.Background(), reg, []llm.ToolCall{
 		{ID: "c1", Name: "current_time", Args: `{}`},
 		{ID: "c2", Name: "shell", Args: `{}`},
-		{ID: "c3", Name: "read_file", Args: `{}`}, // 策略未提及 → 放行（收窄层语义）
+		{ID: "c3", Name: "read", Args: `{}`}, // 策略未提及 → 放行（收窄层语义）
 	}, execpath.Options{Turn: 1, Guards: gb})
 
 	if len(out) != 3 {

@@ -51,8 +51,8 @@ func TestFileJailDeniesThroughDriver(t *testing.T) {
 	sess := session.New("t", nil)
 	p := &scriptedPlanner{acts: []planner.Action{
 		{Content: "读两个文件", ToolCalls: []llm.ToolCall{
-			{ID: "c1", Name: "read_file", Args: `{"path":"../../etc/passwd"}`},
-			{ID: "c2", Name: "read_file", Args: `{"path":"link.txt"}`},
+			{ID: "c1", Name: "read", Args: `{"path":"../../etc/passwd"}`},
+			{ID: "c2", Name: "read", Args: `{"path":"link.txt"}`},
 		}, FinishReason: "tool_calls"},
 		answer("都在 jail 里，不给读"),
 	}}
@@ -122,7 +122,7 @@ func TestFileJailAllowsInsideThroughDriver(t *testing.T) {
 	sess := session.New("t", nil)
 	p := &scriptedPlanner{acts: []planner.Action{
 		{Content: "读", ToolCalls: []llm.ToolCall{
-			{ID: "c1", Name: "read_file", Args: `{"path":"ok.txt"}`},
+			{ID: "c1", Name: "read", Args: `{"path":"ok.txt"}`},
 		}, FinishReason: "tool_calls"},
 		answer("读到了"),
 	}}

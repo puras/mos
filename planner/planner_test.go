@@ -76,7 +76,7 @@ func TestReActToolCallsAndReasoning(t *testing.T) {
 			Role:             llm.RoleAssistant,
 			Content:          "我需要读文件",
 			ReasoningContent: "用户要看文件",
-			ToolCalls:        []llm.ToolCall{{ID: "c1", Name: "read_file", Args: `{"path":"a"}`}},
+			ToolCalls:        []llm.ToolCall{{ID: "c1", Name: "read", Args: `{"path":"a"}`}},
 		},
 		FinishReason: "tool_calls",
 	}}
@@ -84,7 +84,7 @@ func TestReActToolCallsAndReasoning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NextAction: %v", err)
 	}
-	if !act.HasToolCalls() || act.ToolCalls[0].Name != "read_file" {
+	if !act.HasToolCalls() || act.ToolCalls[0].Name != "read" {
 		t.Fatalf("工具调用应完整保留: %+v", act)
 	}
 	if act.ReasoningContent != "用户要看文件" {

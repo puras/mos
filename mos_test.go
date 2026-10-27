@@ -81,7 +81,7 @@ func TestTruncateMaxBytes(t *testing.T) {
 // 名字级策略：被 deny 的工具**不出现在模型可见清单里**。
 func TestPolicyVisibility(t *testing.T) {
 	reg := tool.NewRegistry()
-	if err := reg.Register(stubTool{name: "read_file"}); err != nil {
+	if err := reg.Register(stubTool{name: "read"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := reg.Register(stubTool{name: "shell"}); err != nil {
@@ -96,10 +96,10 @@ func TestPolicyVisibility(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	d := a.Describe()
-	if !strings.Contains(d, "已注册工具: read_file, shell") {
+	if !strings.Contains(d, "已注册工具: read, shell") {
 		t.Fatalf("注册表应含全部工具:\n%s", d)
 	}
-	if !strings.Contains(d, "模型可见工具: read_file") || strings.Contains(d, "模型可见工具: read_file, shell") {
+	if !strings.Contains(d, "模型可见工具: read") || strings.Contains(d, "模型可见工具: read, shell") {
 		t.Fatalf("被 deny 的工具不该对模型可见:\n%s", d)
 	}
 }
@@ -110,7 +110,7 @@ func TestParamRulesWired(t *testing.T) {
 		Model: &stubModel{reply: "ok"},
 		Rules: []policy.Check{
 			func(ctx context.Context, call policy.Call) (policy.Verdict, string) {
-				if call.Tool == "read_file" {
+				if call.Tool == "read" {
 					return policy.VerdictDeny, "不读这个文件"
 				}
 				return policy.VerdictAllow, ""
@@ -126,7 +126,7 @@ func TestParamRulesWired(t *testing.T) {
 	// deny 档：守卫应拒绝（单调，工具不会执行）。
 	ev := &hook.HookEvent{
 		Kind:     hook.HookToolPreExecute,
-		ToolCall: llm.ToolCall{ID: "c1", Name: "read_file", Args: `{"path":"a.txt"}`},
+		ToolCall: llm.ToolCall{ID: "c1", Name: "read", Args: `{"path":"a.txt"}`},
 	}
 	if err := a.RunContext().Guards.Allow(context.Background(), ev); err == nil {
 		t.Fatal("deny 档应被守卫拒绝")
@@ -156,7 +156,7 @@ func TestParamRuleAskGoesToApprovalHook(t *testing.T) {
 	}
 	ev := &hook.HookEvent{
 		Kind:     hook.HookToolPreExecute,
-		ToolCall: llm.ToolCall{ID: "c1", Name: "read_file", Args: `{"path":"a.txt"}`},
+		ToolCall: llm.ToolCall{ID: "c1", Name: "read", Args: `{"path":"a.txt"}`},
 	}
 	out, err := a.RunContext().Hooks.Waterfall(context.Background(), ev)
 	if err != nil {
@@ -256,19 +256,19 @@ func TestRootsWiredToSandboxScope(t *testing.T) {
 // 策略热替换：换策略后可见性跟着换，旧守卫撤下。
 func TestSetPolicyHotSwap(t *testing.T) {
 	reg := tool.NewRegistry()
-	if err := reg.Register(stubTool{name: "read_file"}); err != nil {
+	if err := reg.Register(stubTool{name: "read"}); err != nil {
 		t.Fatal(err)
 	}
 	a, err := mos.New(mos.Config{Model: &stubModel{reply: "ok"}, Tools: reg})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if !strings.Contains(a.Describe(), "模型可见工具: read_file") {
+	if !strings.Contains(a.Describe(), "模型可见工具: read") {
 		t.Fatalf("初始应可见:\n%s", a.Describe())
 	}
-	a.SetPolicy(&policy.Config{Deny: []string{"read_file"}})
+	a.SetPolicy(&policy.Config{Deny: []string{"read"}})
 	if !strings.Contains(a.Describe(), "模型可见工具: ") &&
-		strings.Contains(a.Describe(), "模型可见工具: read_file") {
+		strings.Contains(a.Describe(), "模型可见工具: read") {
 		t.Fatalf("换策略后不该再可见:\n%s", a.Describe())
 	}
 	a.SetPolicy(nil)

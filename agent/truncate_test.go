@@ -26,21 +26,21 @@ func lines(n int) string {
 
 func TestTruncateNoOp(t *testing.T) {
 	tr := NewDefaultTruncator(TruncatorConfig{})
-	out, truncated := tr.Truncate("read_file", lines(10))
+	out, truncated := tr.Truncate("read", lines(10))
 	if truncated || !strings.Contains(out, "line") {
 		t.Fatalf("未超限不该截断: %v", truncated)
 	}
 }
 
-func TestTruncateHeadForReadFile(t *testing.T) {
+func TestTruncateHeadForRead(t *testing.T) {
 	tr := NewDefaultTruncator(TruncatorConfig{MaxLines: 10})
-	out, truncated := tr.Truncate("read_file", lines(100))
+	out, truncated := tr.Truncate("read", lines(100))
 	if !truncated {
 		t.Fatal("应发生截断")
 	}
 	// 头部保留：开头在场、结尾不在；说明带保留区间（PI 续读提示同款信息）
 	if !strings.HasPrefix(out, "line 1\n") {
-		t.Fatalf("read_file 应保留头部: %.40s", out)
+		t.Fatalf("read 应保留头部: %.40s", out)
 	}
 	if strings.Contains(out, "line 100") {
 		t.Fatalf("尾部不该保留: %.80s", out)
@@ -78,7 +78,7 @@ func TestTruncateBothDefault(t *testing.T) {
 func TestTruncateByteLimitUTF8Safe(t *testing.T) {
 	tr := NewDefaultTruncator(TruncatorConfig{MaxBytes: 100})
 	content := strings.Repeat("汉", 300) // 多字节：1800 字节
-	out, truncated := tr.Truncate("read_file", content)
+	out, truncated := tr.Truncate("read", content)
 	if !truncated {
 		t.Fatal("应发生截断")
 	}
@@ -98,7 +98,7 @@ func TestTruncateSpillEscapeHatch(t *testing.T) {
 	if !truncated {
 		t.Fatal("应发生截断")
 	}
-	if !strings.Contains(out, "全文已保存至 ") || !strings.Contains(out, "read_file(path=") {
+	if !strings.Contains(out, "全文已保存至 ") || !strings.Contains(out, "read(path=") {
 		t.Fatalf("应给出落盘路径与回读方式: %s", out)
 	}
 	// 提取路径（到中文逗号为止）并确认文件真的写了全文

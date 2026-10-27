@@ -27,7 +27,7 @@ func TestGrantRootOpensDirectory(t *testing.T) {
 	}
 	var read tool.Tool
 	for _, tl := range tools {
-		if tl.Name() == "read_file" {
+		if tl.Name() == "read" {
 			read = tl
 		}
 	}
@@ -46,7 +46,7 @@ func TestGrantRootOpensDirectory(t *testing.T) {
 	}
 
 	for _, tl := range tools {
-		if tl.Name() == "read_file" {
+		if tl.Name() == "read" {
 			if _, err := tl.Execute(context.Background(), json.RawMessage(`{"path":`+quote(filepath.Join(b, "note.txt"))+`}`)); err != nil {
 				t.Fatalf("授权后应可读: %v", err)
 			}

@@ -269,7 +269,7 @@ func TestEditRejectsBinary(t *testing.T) {
 	}
 }
 
-// edit 是写操作 → 独占（不声明可并发），与 write_file 同一规矩。
+// edit 是写操作 → 独占（不声明可并发），与 write 同一规矩。
 func TestEditIsExclusive(t *testing.T) {
 	_, e := editTool(t)
 	if _, ok := interface{}(e).(tool.ConcurrencySafe); ok {

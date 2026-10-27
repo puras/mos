@@ -23,7 +23,7 @@ import (
 //     isError 只留给 spawn 错误与中断）。这个区分很重要：把非零退出当失败，
 //     模型就得自己写 hack 绕开（实测：它会拼 `; echo "exit=$?"` 让整条命令
 //     以 0 退出，把失败塞进输出里）。
-//   - **输出截断有逃生通道**：超限时全文落盘并回传路径，模型可以 read_file 读
+//   - **输出截断有逃生通道**：超限时全文落盘并回传路径，模型可以 read 读
 //     全文（PI 的 full_output_path 对位，PRD 的"落盘逃生通道"）。
 //
 // 工作目录由宿主在 sandbox.Runner 上配置，**不由模型指定**——那等于给了一个
@@ -64,7 +64,7 @@ func (Shell) Parameters() any { return &shellParams{} }
 func (Shell) Guideline() string {
 	return "shell 回执末尾的 [exit code: N] 是命令的真实结局：非零退出码是正常结果，" +
 		"照着输出修就是，不要拼 `; echo \"exit=$?\"` 之类的 hack 把失败掩进输出。" +
-		"回执带 output_path 时说明输出被截断，用 read_file 读它拿全文。"
+		"回执带 output_path 时说明输出被截断，用 read 读它拿全文。"
 }
 
 // Execute 实现 tool.Tool.Execute。
@@ -103,7 +103,7 @@ func (s *Shell) Execute(ctx context.Context, args json.RawMessage) (any, error) 
 		"duration_ms": res.Duration.Milliseconds(),
 		"description": p.Description,
 	}
-	// 截断时 Runner 会把完整输出落盘，给模型一条逃生通道（它可以 read_file
+	// 截断时 Runner 会把完整输出落盘，给模型一条逃生通道（它可以 read
 	// 读全文——内存里那份已经被截断了）。
 	if res.OutputPath != "" {
 		out["output_path"] = res.OutputPath

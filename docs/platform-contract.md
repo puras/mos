@@ -38,10 +38,10 @@
   "text": "...",                   // user / assistant 的正文
   "reasoning": "...",              // assistant 的思维链（thinking 模式）
   "toolCalls": [                   // assistant 发起的工具调用
-    {"id": "call_1", "name": "read_file", "args": "{\"path\":\"a.txt\"}"}
+    {"id": "call_1", "name": "read", "args": "{\"path\":\"a.txt\"}"}
   ],
   "toolCall": {                    // tool/call 的载荷
-    "id": "call_1", "name": "read_file", "args": "{\"path\":\"a.txt\"}"
+    "id": "call_1", "name": "read", "args": "{\"path\":\"a.txt\"}"
   },
   "toolResult": {                  // tool/result 的载荷
     "callId": "call_1",
@@ -59,7 +59,7 @@
   "error": "...",                  // turn/end 的失败详情（分类之外的诊断信息）
   "approval": {                    // approval/* 的载荷
     "id": "ap-xxx",                // 审批请求 id（asked 与 decided 配对）
-    "toolName": "write_file",
+    "toolName": "write",
     "callId": "call_1",            // 对应 tool/call 事件的 CallID
     "reason": "...",               // asked 才有：为什么要人工确认
     "outcome": "approved"          // decided 才有：approved|rejected|cancelled|unavailable

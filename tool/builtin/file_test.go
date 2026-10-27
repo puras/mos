@@ -27,12 +27,12 @@ func jail(t *testing.T) (string, filesystem.FileSystem) {
 }
 
 // 正常读：内容回填。
-func TestReadFileInsideJail(t *testing.T) {
+func TestReadInsideJail(t *testing.T) {
 	root, fsys := jail(t)
 	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("hello"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, err := NewReadFile(fsys).Execute(context.Background(), []byte(`{"path":"a.txt"}`))
+	out, err := NewRead(fsys).Execute(context.Background(), []byte(`{"path":"a.txt"}`))
 	if err != nil {
 		t.Fatalf("读取 jail 内文件: %v", err)
 	}
@@ -46,9 +46,9 @@ func TestReadFileInsideJail(t *testing.T) {
 }
 
 // 越界读：返回 *PathDeniedError，且拒绝理由可回填给模型。
-func TestReadFileOutsideJailDenied(t *testing.T) {
+func TestReadOutsideJailDenied(t *testing.T) {
 	_, fsys := jail(t)
-	_, err := NewReadFile(fsys).Execute(context.Background(), []byte(`{"path":"../../etc/passwd"}`))
+	_, err := NewRead(fsys).Execute(context.Background(), []byte(`{"path":"../../etc/passwd"}`))
 	if err == nil {
 		t.Fatal("越界读应被拒绝")
 	}
@@ -59,8 +59,8 @@ func TestReadFileOutsideJailDenied(t *testing.T) {
 }
 
 // 未装配文件能力：fail-closed 拒绝，不放行。
-func TestReadFileWithoutFilesystemFailsClosed(t *testing.T) {
-	_, err := NewReadFile(nil).Execute(context.Background(), []byte(`{"path":"a.txt"}`))
+func TestReadWithoutFilesystemFailsClosed(t *testing.T) {
+	_, err := NewRead(nil).Execute(context.Background(), []byte(`{"path":"a.txt"}`))
 	if err == nil {
 		t.Fatal("未装配文件能力应拒绝")
 	}
@@ -71,9 +71,9 @@ func TestReadFileWithoutFilesystemFailsClosed(t *testing.T) {
 }
 
 // 正常写：落盘。
-func TestWriteFileInsideJail(t *testing.T) {
+func TestWriteInsideJail(t *testing.T) {
 	root, fsys := jail(t)
-	out, err := NewWriteFile(fsys).Execute(context.Background(),
+	out, err := NewWrite(fsys).Execute(context.Background(),
 		[]byte(`{"path":"sub/b.txt","content":"data"}`))
 	if err != nil {
 		t.Fatalf("写入 jail 内文件: %v", err)
@@ -91,10 +91,10 @@ func TestWriteFileInsideJail(t *testing.T) {
 }
 
 // 越界写：拒绝且**不落盘**（不能只看错误，还得看副作用没发生）。
-func TestWriteFileOutsideJailDenied(t *testing.T) {
+func TestWriteOutsideJailDenied(t *testing.T) {
 	root, fsys := jail(t)
 	outside := filepath.Join(t.TempDir(), "evil.txt")
-	_, err := NewWriteFile(fsys).Execute(context.Background(),
+	_, err := NewWrite(fsys).Execute(context.Background(),
 		[]byte(`{"path":"`+outside+`","content":"pwn"}`))
 	if err == nil {
 		t.Fatal("越界写应被拒绝")
@@ -110,13 +110,13 @@ func TestWriteFileOutsideJailDenied(t *testing.T) {
 }
 
 // 经越界 symlink 写：拒绝且不落盘。
-func TestWriteFileThroughSymlinkDenied(t *testing.T) {
+func TestWriteThroughSymlinkDenied(t *testing.T) {
 	root, fsys := jail(t)
 	outsideDir := t.TempDir()
 	if err := os.Symlink(outsideDir, filepath.Join(root, "escape")); err != nil {
 		t.Skipf("不支持 symlink: %v", err)
 	}
-	_, err := NewWriteFile(fsys).Execute(context.Background(),
+	_, err := NewWrite(fsys).Execute(context.Background(),
 		[]byte(`{"path":"escape/new.txt","content":"pwn"}`))
 	if err == nil {
 		t.Fatal("经越界 symlink 写应被拒绝")
@@ -137,7 +137,7 @@ func TestFileTools(t *testing.T) {
 	for _, tl := range tools {
 		names[tl.Name()] = true
 	}
-	if !names["read_file"] || !names["write_file"] || !names["edit_file"] {
+	if !names["read"] || !names["write"] || !names["edit"] {
 		t.Fatalf("工具名 = %v", names)
 	}
 }
@@ -145,23 +145,23 @@ func TestFileTools(t *testing.T) {
 // 工具描述是模型唯一的使用指南（MoS 暂未提供“工具自带的系统提示贡献”通道），
 // 所以分段读的正解必须留在描述里：调大 limit 一次读完，或一次发出多个 offset
 // 的调用并行读完。描述被改写时这条会失败——防止指南被无意丢掉。
-func TestReadFileDescriptionKeepsUsageGuide(t *testing.T) {
-	desc := NewReadFile(nil).Description()
+func TestReadDescriptionKeepsUsageGuide(t *testing.T) {
+	desc := NewRead(nil).Description()
 	for _, want := range []string{"limit", "offset", "并行", "行"} {
 		if !strings.Contains(desc, want) {
-			t.Fatalf("read_file 描述应包含 %q（使用指南），实际：%s", want, desc)
+			t.Fatalf("read 描述应包含 %q（使用指南），实际：%s", want, desc)
 		}
 	}
 }
 
 // 默认上限 2000 行：中等文件一次读完（往返少），不再一小段一小段地磨。
-func TestReadFileDefaultLimitReadsMediumFileWhole(t *testing.T) {
+func TestReadDefaultLimitReadsMediumFileWhole(t *testing.T) {
 	root, fsys := jail(t)
 	body := strings.Repeat("0123456789\n", 500) // 500 行 < 2000 行
 	if err := os.WriteFile(filepath.Join(root, "mid.txt"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, err := NewReadFile(fsys).Execute(context.Background(), []byte(`{"path":"mid.txt"}`))
+	out, err := NewRead(fsys).Execute(context.Background(), []byte(`{"path":"mid.txt"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,13 +181,13 @@ func TestReadFileDefaultLimitReadsMediumFileWhole(t *testing.T) {
 }
 
 // 行寻址：offset 是行号（1 起），limit 是行数。
-func TestReadFileLineAddressing(t *testing.T) {
+func TestReadLineAddressing(t *testing.T) {
 	root, fsys := jail(t)
 	if err := os.WriteFile(filepath.Join(root, "a.txt"),
 		[]byte("l1\nl2\nl3\nl4\nl5\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, err := NewReadFile(fsys).Execute(context.Background(),
+	out, err := NewRead(fsys).Execute(context.Background(),
 		[]byte(`{"path":"a.txt","offset":2,"limit":2}`))
 	if err != nil {
 		t.Fatal(err)
@@ -215,25 +215,25 @@ func TestReadFileLineAddressing(t *testing.T) {
 }
 
 // offset 越界 → 报错（PI 同）。
-func TestReadFileOffsetBeyondEnd(t *testing.T) {
+func TestReadOffsetBeyondEnd(t *testing.T) {
 	root, fsys := jail(t)
 	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("l1\nl2\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewReadFile(fsys).Execute(context.Background(),
+	if _, err := NewRead(fsys).Execute(context.Background(),
 		[]byte(`{"path":"a.txt","offset":99}`)); err == nil {
 		t.Fatal("offset 越界应报错")
 	}
 }
 
 // next_offset：下一段的起始**行号**；读完为 0（模型不用自己算）。
-func TestReadFileNextOffset(t *testing.T) {
+func TestReadNextOffset(t *testing.T) {
 	root, fsys := jail(t)
 	if err := os.WriteFile(filepath.Join(root, "big.txt"),
 		[]byte(strings.Repeat("line\n", 100)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, err := NewReadFile(fsys).Execute(context.Background(),
+	out, err := NewRead(fsys).Execute(context.Background(),
 		[]byte(`{"path":"big.txt","limit":40}`))
 	if err != nil {
 		t.Fatal(err)
@@ -245,7 +245,7 @@ func TestReadFileNextOffset(t *testing.T) {
 	if m["total_lines"].(int) != 100 {
 		t.Fatalf("total_lines = %v, want 100", m["total_lines"])
 	}
-	out2, err := NewReadFile(fsys).Execute(context.Background(),
+	out2, err := NewRead(fsys).Execute(context.Background(),
 		[]byte(`{"path":"big.txt","offset":41,"limit":40}`))
 	if err != nil {
 		t.Fatal(err)
@@ -253,7 +253,7 @@ func TestReadFileNextOffset(t *testing.T) {
 	if out2.(map[string]any)["next_offset"].(int) != 81 {
 		t.Fatalf("next_offset = %v, want 81", out2.(map[string]any)["next_offset"])
 	}
-	out3, err := NewReadFile(fsys).Execute(context.Background(),
+	out3, err := NewRead(fsys).Execute(context.Background(),
 		[]byte(`{"path":"big.txt","offset":81,"limit":40}`))
 	if err != nil {
 		t.Fatal(err)
@@ -265,9 +265,9 @@ func TestReadFileNextOffset(t *testing.T) {
 
 // write 的结果要告诉模型「新建还是覆盖、覆盖掉了多少」——没有这个信息，模型
 // 只能读回来确认，反复重写就容易空转（DSH 区分 Created/Updated，PI 报告改了几处）。
-func TestWriteFileReportsCreatedAndReplaced(t *testing.T) {
+func TestWriteReportsCreatedAndReplaced(t *testing.T) {
 	root, fsys := jail(t)
-	w := NewWriteFile(fsys)
+	w := NewWrite(fsys)
 
 	// 新建
 	out, err := w.Execute(context.Background(), []byte(`{"path":"new.txt","content":"hello"}`))
@@ -318,12 +318,12 @@ func TestWriteFileReportsCreatedAndReplaced(t *testing.T) {
 }
 
 // 单行超长保护：minified 文件的一行可能有几百 KB，只靠总量上限会把预算吃光。
-func TestReadFileTruncatesLongLine(t *testing.T) {
+func TestReadTruncatesLongLine(t *testing.T) {
 	root, fsys := jail(t)
 	if err := os.WriteFile(filepath.Join(root, "min.js"), []byte(strings.Repeat("y", 10000)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, err := NewReadFile(fsys).Execute(context.Background(), []byte(`{"path":"min.js"}`))
+	out, err := NewRead(fsys).Execute(context.Background(), []byte(`{"path":"min.js"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,9 +352,9 @@ func TestFileToolsInJailsAndObserves(t *testing.T) {
 	var read, write tool.Tool
 	for _, tl := range tools {
 		switch tl.Name() {
-		case "read_file":
+		case "read":
 			read = tl
-		case "write_file":
+		case "write":
 			write = tl
 		}
 	}
@@ -390,7 +390,7 @@ func TestFileToolsInRootsRuntimeAdd(t *testing.T) {
 	}
 	var read tool.Tool
 	for _, tl := range tools {
-		if tl.Name() == "read_file" {
+		if tl.Name() == "read" {
 			read = tl
 		}
 	}

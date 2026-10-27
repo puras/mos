@@ -28,7 +28,7 @@ type TruncatorConfig struct {
 	MaxLines int
 	// Dir 是逃生通道的落盘目录。**空 = 不落盘**：提示里只说截断了多少，
 	// 不给路径。给目录时截断即写全文，提示带路径——但宿主必须把该目录
-	// 放进文件 jail 的可读根，模型才真的读得到（read_file 走 jail）；
+	// 放进文件 jail 的可读根，模型才真的读得到（read 走 jail）；
 	// 放在 jail 外的路径是一个模型永远兑现不了的承诺。
 	Dir string
 }
@@ -37,7 +37,7 @@ type TruncatorConfig struct {
 // sandbox 的进程输出上限是另一层——这里管所有工具的回填文本）。
 //
 // 32KB ≈ 8K token：一次工具结果占 128K 窗口可用预算的 ~7%（64KB 就是 14%，
-// 几次叠加就过半）。截断只是瘦身，**全文落盘**（read_file 可回读），
+// 几次叠加就过半）。截断只是瘦身，**全文落盘**（read 可回读），
 // 代价只是多一次回读。
 const (
 	DefaultTruncateMaxBytes = 32 * 1024
@@ -49,8 +49,11 @@ const (
 // （表随内置工具集生长；宿主自定义工具默认走两头各半。）
 var (
 	headTools = map[string]bool{
-		"read_file":    true, // 文件开头是结构；shell 的报错却在尾部
+		"read":         true, // 文件开头是结构；shell 的报错却在尾部
 		"current_time": true,
+		"grep":         true, // 匹配行在前，尾部多为重复命中
+		"glob":         true,
+		"ls":           true,
 	}
 	tailTools = map[string]bool{
 		"shell": true, // 编译/测试的报错与摘要几乎总在输出末尾
@@ -117,14 +120,14 @@ func (d *defaultTruncator) note(toolName string, clip lineClip, content string) 
 		if path := d.spill(toolName, content); path != "" {
 			b.WriteString("全文已保存至 ")
 			b.WriteString(path)
-			b.WriteString("，需要细节时用 read_file(path=\"")
+			b.WriteString("，需要细节时用 read(path=\"")
 			b.WriteString(path)
 			b.WriteString("\") 分段读取。]")
 			return b.String()
 		}
 		b.WriteString("全文落盘失败，")
 	}
-	b.WriteString("请改用分次读取（如 read_file 的 offset/limit）或更精确的查询获取细节。]")
+	b.WriteString("请改用分次读取（如 read 的 offset/limit）或更精确的查询获取细节。]")
 	return b.String()
 }
 

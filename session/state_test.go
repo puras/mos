@@ -29,15 +29,15 @@ func always(string) bool { return true }
 func TestDeriveTaskStateGoalAndFacts(t *testing.T) {
 	events := []Event{
 		userEv(1, "统计 lab 下的测试数"),
-		callEv(1, "c1", "read_file"),
+		callEv(1, "c1", "read"),
 		resultEv(1, "c1", "{\"path\":\"lab/a_test.go\"}\n第二行证据", false),
 		callEv(1, "c2", "shell"),
 		resultEv(1, "c2", "ok", false),
-		callEv(1, "c3", "write_file"),
+		callEv(1, "c3", "write"),
 		resultEv(1, "c3", "{\"created\":true}", false),
 	}
-	// 只信 read_file：shell（变更类）与 write_file 的输出都不配进状态。
-	st := DeriveTaskState(events, func(name string) bool { return name == "read_file" })
+	// 只信 read：shell（变更类）与 write 的输出都不配进状态。
+	st := DeriveTaskState(events, func(name string) bool { return name == "read" })
 
 	if st.Goal != "统计 lab 下的测试数" {
 		t.Fatalf("Goal = %q", st.Goal)
@@ -46,10 +46,10 @@ func TestDeriveTaskStateGoalAndFacts(t *testing.T) {
 		t.Fatalf("Facts = %d 条, want 1（未信任工具的输出不是事实）: %+v", len(st.Facts), st.Facts)
 	}
 	f := st.Facts[0]
-	if f.Tool != "read_file" {
+	if f.Tool != "read" {
 		t.Fatalf("Fact.Tool = %q", f.Tool)
 	}
-	if !strings.HasPrefix(f.Summary, "read_file → ") || strings.Contains(f.Summary, "\n") {
+	if !strings.HasPrefix(f.Summary, "read → ") || strings.Contains(f.Summary, "\n") {
 		t.Fatalf("Summary 应为单行且带工具名前缀: %q", f.Summary)
 	}
 	if !strings.Contains(f.Evidence, "第二行证据") {
@@ -60,7 +60,7 @@ func TestDeriveTaskStateGoalAndFacts(t *testing.T) {
 func TestDeriveTaskStateErrorResultIsNotFact(t *testing.T) {
 	events := []Event{
 		userEv(1, "g"),
-		callEv(1, "c1", "read_file"),
+		callEv(1, "c1", "read"),
 		resultEv(1, "c1", "被守卫拒绝", true),
 	}
 	st := DeriveTaskState(events, always)
@@ -72,11 +72,11 @@ func TestDeriveTaskStateErrorResultIsNotFact(t *testing.T) {
 func TestDeriveTaskStateDedup(t *testing.T) {
 	events := []Event{
 		userEv(1, "g"),
-		callEv(1, "c1", "read_file"),
+		callEv(1, "c1", "read"),
 		resultEv(1, "c1", "same", false),
-		callEv(2, "c2", "read_file"),
+		callEv(2, "c2", "read"),
 		resultEv(2, "c2", "same", false), // 同工具 + 同证据：去重
-		callEv(3, "c3", "read_file"),
+		callEv(3, "c3", "read"),
 		resultEv(3, "c3", "different", false),
 	}
 	st := DeriveTaskState(events, always)
@@ -93,7 +93,7 @@ func TestDeriveTaskStateStatus(t *testing.T) {
 	}{
 		{"空会话", nil, StatusPending},
 		{"只有输入", []Event{userEv(1, "g")}, StatusPending},
-		{"末轮未收尾", []Event{userEv(1, "g"), callEv(1, "c", "read_file")}, StatusRunning},
+		{"末轮未收尾", []Event{userEv(1, "g"), callEv(1, "c", "read")}, StatusRunning},
 		{"正常收尾", []Event{userEv(1, "g"), turnEnd(1, "completed")}, StatusCompleted},
 		{"出错收尾不算完成", []Event{userEv(1, "g"), turnEnd(1, "error")}, StatusRunning},
 		{"前轮完成本轮开着", []Event{userEv(1, "g"), turnEnd(1, "completed"), userEv(2, "继续")}, StatusRunning},
@@ -111,7 +111,7 @@ func TestDeriveTaskStateStatus(t *testing.T) {
 func TestDeriveTaskStateNilTrusted(t *testing.T) {
 	events := []Event{
 		userEv(1, "g"),
-		callEv(1, "c1", "read_file"),
+		callEv(1, "c1", "read"),
 		resultEv(1, "c1", "x", false),
 	}
 	st := DeriveTaskState(events, nil)
@@ -126,10 +126,10 @@ func TestTaskStateSnapshot(t *testing.T) {
 		Status:  StatusRunning,
 		Pending: []string{"跑 go test"},
 		Blocked: []string{"等审批"},
-		Facts:   []Fact{{Tool: "read_file", Summary: "read_file → 40 行"}},
+		Facts:   []Fact{{Tool: "read", Summary: "read → 40 行"}},
 	}
 	s := st.Snapshot()
-	for _, want := range []string{"任务目标: 修复测试", "任务状态: running", "待办: 跑 go test", "阻塞: 等审批", "- read_file → 40 行"} {
+	for _, want := range []string{"任务目标: 修复测试", "任务状态: running", "待办: 跑 go test", "阻塞: 等审批", "- read → 40 行"} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("Snapshot 缺 %q:\n%s", want, s)
 		}

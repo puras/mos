@@ -44,7 +44,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// ② 工具：一套文件工具（jail 根 = 当前目录，写前观察门开启）。
+	// ② 工具：一套文件 + 搜索工具（jail 根 = 当前目录，写前观察门开启）。
 	reg := tool.NewRegistry()
 	for _, tl := range builtin.Default() {
 		if err := reg.Register(tl); err != nil {
@@ -52,7 +52,7 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	fileTools, err := builtin.FileToolsIn(".")
+	fileTools, err := builtin.ToolsIn(".")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

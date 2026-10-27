@@ -21,7 +21,7 @@
 //		Model:    model,
 //		Tools:    reg,
 //		Approval: answerer, // 问人：宿主实现
-//		Policy:   &policy.Config{Allow: []string{"read_file"}},
+//		Policy:   &policy.Config{Allow: []string{"read"}},
 //		Rules:    hostRules, // 参数级规则：deny→守卫 / ask→审批
 //	})
 //	reply, err := a.Run(ctx, sess, "读一下 README")
@@ -83,7 +83,7 @@ type Config struct {
 	// 显式关；审批/沙箱是**能力**（只有宿主有）→ 给了才有，nil 就没有。
 	DisableCompaction bool
 	// Truncator 是工具结果截断器。nil = 按 TruncateMaxBytes 建默认的
-	// （全文落盘，read_file 可回读）。
+	// （全文落盘，read 可回读）。
 	Truncator agent.ResultTruncator
 	// Persistence 是会话落盘后端。nil = 内存会话（不落盘）。
 	Persistence session.Persistence
@@ -466,7 +466,7 @@ func (a *Agent) Describe() string {
 		b.WriteString("  上下文压缩: 未装配\n")
 	}
 	if a.truncator != nil {
-		fmt.Fprintf(&b, "  结果截断: %d 字节（全文落 %s，read_file 可回读）\n", a.truncateMax, a.spillDir)
+		fmt.Fprintf(&b, "  结果截断: %d 字节（全文落 %s，read 可回读）\n", a.truncateMax, a.spillDir)
 	} else {
 		b.WriteString("  结果截断: 未开启\n")
 	}

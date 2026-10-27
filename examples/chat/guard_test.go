@@ -38,10 +38,10 @@ func TestHostPolicyVerdicts(t *testing.T) {
 		return policy.VerdictAllow
 	}
 
-	if got := verdict("read_file", `{"path":"/tmp/.env"}`); got != policy.VerdictDeny {
+	if got := verdict("read", `{"path":"/tmp/.env"}`); got != policy.VerdictDeny {
 		t.Fatalf("读 .env 应 deny, got %v", got)
 	}
-	if got := verdict("write_file", `{"path":"/tmp/id_rsa","content":"x"}`); got != policy.VerdictDeny {
+	if got := verdict("write", `{"path":"/tmp/id_rsa","content":"x"}`); got != policy.VerdictDeny {
 		t.Fatalf("写 id_rsa 应 deny, got %v", got)
 	}
 	// 删除命令一律 ask——不看 flag 里有没有字母 r。
@@ -72,7 +72,7 @@ func TestHostPolicyVerdicts(t *testing.T) {
 	if got := verdict("shell", `{"command":"go test ./..."}`); got != policy.VerdictAllow {
 		t.Fatalf("普通命令应放行, got %v", got)
 	}
-	if got := verdict("read_file", `{"path":"/tmp/notes.md"}`); got != policy.VerdictAllow {
+	if got := verdict("read", `{"path":"/tmp/notes.md"}`); got != policy.VerdictAllow {
 		t.Fatalf("普通文件应放行, got %v", got)
 	}
 	// 申请访问新目录 → ask（授权扩大边界，批不批由人决定）。
@@ -91,7 +91,7 @@ func TestHostPolicyVerdicts(t *testing.T) {
 // 端到端：deny 档拦住工具，理由经 tool/result 回填给模型。
 func TestHostPolicyDenyBlocksTool(t *testing.T) {
 	reg := tool.NewRegistry()
-	ft := &fakeTool{name: "read_file"}
+	ft := &fakeTool{name: "read"}
 	if err := reg.Register(ft); err != nil {
 		t.Fatalf("注册: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestHostPolicyDenyBlocksTool(t *testing.T) {
 	sess := session.New("t", nil)
 	p := &scriptPlanner{acts: []planner.Action{{
 		ToolCalls: []llm.ToolCall{{
-			ID: "c1", Name: "read_file", Args: `{"path":"/tmp/.env"}`,
+			ID: "c1", Name: "read", Args: `{"path":"/tmp/.env"}`,
 		}},
 		FinishReason: "tool_use",
 	}, {Content: "好"}}}

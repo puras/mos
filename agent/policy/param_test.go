@@ -33,13 +33,13 @@ func TestParamPolicyTwoDoors(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "宿主规则") {
 		t.Fatalf("理由应带策略名: %v", err)
 	}
-	if err := p.Guard()(context.Background(), callEv("read_file", "{}")); err != nil {
+	if err := p.Guard()(context.Background(), callEv("read", "{}")); err != nil {
 		t.Fatalf("守卫不应拦 ask 档: %v", err)
 	}
 
 	// 钩子：只认 ask
 	var got *hook.HookEvent
-	out, err := p.Approval()(context.Background(), callEv("read_file", "{}"),
+	out, err := p.Approval()(context.Background(), callEv("read", "{}"),
 		func(ctx context.Context, ev *hook.HookEvent) (*hook.HookEvent, error) {
 			got = ev
 			return ev, nil

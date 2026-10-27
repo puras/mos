@@ -22,8 +22,8 @@ package agent
 // Auditor 是审计门（Audit Gate）：裁定某工具的输出能否作为已验证事实
 // 进入 TaskState。
 //
-// 只读/自证类工具（current_time、read_file）的输出本身就是环境的回答，
-// 可信；变更类工具（shell、write_file）的输出属于"未核实声明"——它描述
+// 只读/自证类工具（current_time、read）的输出本身就是环境的回答，
+// 可信；变更类工具（shell、write）的输出属于"未核实声明"——它描述
 // 的世界状态可能是这次变更造出来的假象，要进状态需先用只读工具二次取证。
 // 宿主确信某变更类工具的输出可作证据时（如结构化的测试运行器），用
 // Trust 显式扩名单——决策在宿主，机制在框架。
@@ -43,10 +43,13 @@ type DefaultAuditor struct {
 }
 
 // 内置只读白名单：输出即环境回答的工具。S5d/S5f 之后本仓库的内置工具
-// 就这几个；find_files / grep / web_* 等随切片加入后在此登记。
+// 就这几个；web_* 等随切片加入后在此登记。
 var defaultTrusted = map[string]bool{
 	"current_time": true,
-	"read_file":    true,
+	"read":         true,
+	"grep":         true,
+	"glob":         true,
+	"ls":           true,
 }
 
 // NewDefaultAuditor 创建默认审计器（内置只读白名单）。

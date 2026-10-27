@@ -31,7 +31,7 @@ func hostRules() []policy.Check {
 	return []policy.Check{
 		func(ctx context.Context, call policy.Call) (policy.Verdict, string) {
 			switch call.Tool {
-			case "read_file", "write_file", "edit_file":
+			case "read", "write", "edit":
 				p, err := policy.Arg(call, "path")
 				if err != nil {
 					// 参数读不懂 → 拒绝（fail-closed）。

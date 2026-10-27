@@ -152,7 +152,7 @@ func TestToolCallsFailClosed(t *testing.T) {
 	sess := session.New("t", nil)
 	p := &scriptedPlanner{acts: []planner.Action{{
 		Content:   "我来读文件",
-		ToolCalls: []llm.ToolCall{{ID: "c1", Name: "read_file"}},
+		ToolCalls: []llm.ToolCall{{ID: "c1", Name: "read"}},
 	}}}
 	a := driver.New(&driver.RunContext{Planner: p}, New())
 

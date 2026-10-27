@@ -58,27 +58,27 @@ func (g *ObserveGate) CheckWrite(targetKey, display string) error {
 		return fmt.Errorf("探测文件状态失败: %w", err)
 	}
 	if present && !isRegular(targetKey) {
-		return fmt.Errorf("write_file 拒绝：%q 不是常规文件", display)
+		return fmt.Errorf("write 拒绝：%q 不是常规文件", display)
 	}
 
 	switch {
 	case !seen:
 		// 没见过：createIfAbsent——已存在就是"盲覆盖"，先读再写。
 		if present {
-			return fmt.Errorf("write_file 拒绝：%q 已存在但未被读取过。先 read_file 读取当前内容，再决定是否覆盖", display)
+			return fmt.Errorf("write 拒绝：%q 已存在但未被读取过。先 read 读取当前内容，再决定是否覆盖", display)
 		}
 	case rec.present:
 		// 见过且存在：replaceIfVersion——按观察到的版本做 CAS。
 		if !present {
-			return fmt.Errorf("write_file 拒绝：%q 自读取后已被删除", display)
+			return fmt.Errorf("write 拒绝：%q 自读取后已被删除", display)
 		}
 		if cur != rec.version {
-			return fmt.Errorf("write_file 拒绝：%q 自读取后已被修改。请重新 read_file 获取最新内容后再写入", display)
+			return fmt.Errorf("write 拒绝：%q 自读取后已被修改。请重新 read 获取最新内容后再写入", display)
 		}
 	default:
 		// 见过但当时不存在：现在却存在了——它是在观察之后出现的，内容未知。
 		if present {
-			return fmt.Errorf("write_file 拒绝：%q 在读取时不存在、现在却存在了。请重新 read_file 确认内容后再决定", display)
+			return fmt.Errorf("write 拒绝：%q 在读取时不存在、现在却存在了。请重新 read 确认内容后再决定", display)
 		}
 	}
 	return nil
@@ -100,13 +100,13 @@ func (g *ObserveGate) CheckEdit(targetKey, display string) error {
 
 	switch {
 	case !seen:
-		return fmt.Errorf("edit_file 拒绝：编辑前必须先 read_file 读取 %q 的当前内容", display)
+		return fmt.Errorf("edit 拒绝：编辑前必须先 read 读取 %q 的当前内容", display)
 	case !rec.present:
-		return fmt.Errorf("edit_file 拒绝：%q 不存在（此前观察到它不存在；如需创建请用 write_file）", display)
+		return fmt.Errorf("edit 拒绝：%q 不存在（此前观察到它不存在；如需创建请用 write）", display)
 	case !present:
-		return fmt.Errorf("edit_file 拒绝：%q 自读取后已被删除", display)
+		return fmt.Errorf("edit 拒绝：%q 自读取后已被删除", display)
 	case cur != rec.version:
-		return fmt.Errorf("edit_file 拒绝：%q 自读取后已被修改。请重新 read_file 获取最新内容后再编辑", display)
+		return fmt.Errorf("edit 拒绝：%q 自读取后已被修改。请重新 read 获取最新内容后再编辑", display)
 	}
 	return nil
 }
@@ -121,7 +121,7 @@ func (g *ObserveGate) Record(targetKey, version string, present bool) {
 	g.seen[targetKey] = observation{present: present, version: version}
 }
 
-// ObserveRead 供 read_file 调用：读成功记"存在"，文件不存在记"不存在"。
+// ObserveRead 供 read 调用：读成功记"存在"，文件不存在记"不存在"。
 // 其余错误（无权限等）不记录——那不是对文件存在性的权威回答。
 func (g *ObserveGate) ObserveRead(targetKey string) {
 	if g == nil {
@@ -162,7 +162,7 @@ func versionOf(info os.FileInfo) (version string, present bool) {
 	return v, true
 }
 
-// isRegular 判断目标是否常规文件（目录/设备文件不该被 write_file 覆盖）。
+// isRegular 判断目标是否常规文件（目录/设备文件不该被 write 覆盖）。
 func isRegular(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.Mode().IsRegular()

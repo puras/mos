@@ -9,7 +9,7 @@ a, err := mos.New(mos.Config{
     Tools:     reg,
     Approval:  answerer,      // 问人：宿主实现
     Sandbox:   &sandbox.Local{WorkDir: dir},
-    Policy:    &policy.Config{Allow: []string{"read_file"}},
+    Policy:    &policy.Config{Allow: []string{"read"}},
     Rules:     hostRules,     // 参数级规则：deny→守卫 / ask→审批
 })
 reply, err := a.Run(ctx, sess, "读一下 README")
@@ -120,12 +120,12 @@ option 函数适合「字段爆炸 + 想藏顺序」，MoS 的配置分组清晰
 
 ```
 MoS chat 已就绪（provider=anthropic model=agnes-2.5-flash session=chat 已有 0 条事件 / 累计 0 tokens）
-  已注册工具: current_time, read_file, write_file, edit_file
-  模型可见工具: current_time, read_file, write_file, edit_file
+  已注册工具: current_time, read, write, edit, grep, glob, ls
+  模型可见工具: current_time, read, write, edit, grep, glob, ls
   文件沙箱: /path/to/workdir（越界路径会被拒绝，工具不会执行）
   并发上限: 4（仅对声明可并发的工具生效）
   上下文压缩: 已装配（窗口 131072 / 预留 16384 / 保留 20000 tokens）
-  结果截断: 32768 字节（全文落 /path/to/workdir/.mos-trunc，read_file 可回读）
+  结果截断: 32768 字节（全文落 /path/to/workdir/.mos-trunc，read 可回读）
   人工审批: 未装配（需确认的调用一律拒绝，fail-closed）
   文件根（运行期可变）: 读 1 个 / 写 1 个   ← 未装配时写「未装配（运行期加根不可用）」
 ```
@@ -309,10 +309,10 @@ func APIKeyEnv(provider string) string
 func Open(dir, id string) (*Session, error)
 ```
 
-### 9.3 `builtin.FileToolsIn`
+### 9.3 `builtin.FileToolsIn` / `builtin.ToolsIn`
 
 ```go
-// FileToolsIn 返回一套文件工具（read_file/write_file/edit_file）：
+// FileToolsIn 返回一套文件工具（read/write/edit）：
 //   - jail 根 = root（越界路径被拒：Lexical + Realpath 双校验）；
 //   - 写前观察门开启（没读过的文件不许覆盖）。
 // root 为空 → 当前目录。要定制的宿主用 FileTools(fsys, gate) 自己拼。
@@ -320,6 +320,14 @@ func FileToolsIn(root string) ([]Tool, error)
 
 // FileToolsInRoots 同上，但根来自**活集合**（运行期可增删，见 §8.1）。
 func FileToolsInRoots(rs *filesystem.RootSet) ([]Tool, error)
+
+// ToolsIn 一行装齐文件三件套 + 搜索三件套（read/write/edit + grep/glob/ls），
+// 同一份 jail 与观察门；ToolsInRoots 同上但根来自活集合。
+func ToolsIn(root string) ([]Tool, error)
+func ToolsInRoots(rs *filesystem.RootSet) ([]Tool, error)
+
+// SearchTools 只要搜索三件套（grep/glob/ls，只读）。
+func SearchTools(fsys filesystem.FileSystem) []Tool
 ```
 
 ### 9.4 示例侧：删死代码 + 瘦身

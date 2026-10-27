@@ -16,7 +16,7 @@ import (
 	"github.com/puras/mos/tool"
 )
 
-// read_file 的上限（参照 PI 的 read 工具：DEFAULT_MAX_LINES / DEFAULT_MAX_BYTES）。
+// read 的上限（参照 PI 的 read 工具：DEFAULT_MAX_LINES / DEFAULT_MAX_BYTES）。
 const (
 	// defaultReadLines 是默认读取行数（PI：2000 行）。
 	defaultReadLines = 2000
@@ -28,49 +28,53 @@ const (
 	maxLineChars = 2000
 )
 
-// ReadFile 读取文件内容，支持偏移与长度限制。
+// Read 读取文件内容，支持偏移与长度限制。
 //
 // 路径先经 filesystem 能力解析（Lexical + Realpath 双层），越界返回
 // *filesystem.PathDeniedError；未装配文件能力时返回 *filesystem.NotConfiguredError
 // （fail-closed：拒绝而不是放行）。
-type ReadFile struct {
+type Read struct {
 	FS filesystem.FileSystem
 	// Gate 是写前观察门（可选，nil = 不记录）。读取成功（或确认不存在）后
-	// 记录观察，供 write_file / edit_file 做新鲜度校验（S5h）。
+	// 记录观察，供 write / edit 做新鲜度校验（S5h）。
 	Gate *ObserveGate
 }
 
-// NewReadFile 构造读文件工具。
-func NewReadFile(fsys filesystem.FileSystem) *ReadFile { return &ReadFile{FS: fsys} }
+// NewRead 构造读文件工具。
+func NewRead(fsys filesystem.FileSystem) *Read { return &Read{FS: fsys} }
 
-// NewReadFileObserved 构造带观察门的读文件工具（S5h：写前观察需要读侧记录）。
-func NewReadFileObserved(fsys filesystem.FileSystem, gate *ObserveGate) *ReadFile {
-	return &ReadFile{FS: fsys, Gate: gate}
+// NewReadObserved 构造带观察门的读文件工具（S5h：写前观察需要读侧记录）。
+func NewReadObserved(fsys filesystem.FileSystem, gate *ObserveGate) *Read {
+	return &Read{FS: fsys, Gate: gate}
 }
 
-type readFileParams struct {
+type readParams struct {
 	Path   string `json:"path" mos:"desc=文件路径（相对路径以工作目录为锚点）"`
 	Offset int    `json:"offset,omitempty" mos:"desc=起始行号（1 起），默认 1；续读时直接用上一段结果里的 next_offset"`
 	Limit  int    `json:"limit,omitempty" mos:"desc=读取行数，默认 2000（另有 50KB 总量上限，先到先算）"`
 }
 
-func (ReadFile) Name() string { return "read_file" }
+func (Read) Name() string { return "read" }
 
-func (ReadFile) Description() string {
-	// 跨调用约定（先读后写）走 tool.Guideline 通道（WriteFile.Guideline），
+func (Read) Description() string {
+	// 跨调用约定（先读后写）走 tool.Guideline 通道（Write.Guideline），
 	// 这里只讲单次调用怎么用：分段读的正解是先试一次读完，不够再**并行**补齐。
 	return "读取文件内容（受工作目录沙箱限制）。按行寻址：offset 是起始行号（从 1 起），" +
 		"limit 是读取行数（默认 2000，另有 50KB 总量上限，先到先算）。" +
 		"文件较大时优先调大 limit 一次读完；" +
-		"确需分段时，可在同一条消息里一次发出多个不同 offset 的 read_file 调用并行读取剩余部分" +
+		"确需分段时，可在同一条消息里一次发出多个不同 offset 的 read 调用并行读取剩余部分" +
 		"（结果里的 size 是文件总字节数，total_lines 是总行数，next_offset 是下一段的起始行号，0 表示已读完）。"
 }
 
-func (ReadFile) Parameters() any { return &readFileParams{} }
+func (Read) Parameters() any { return &readParams{} }
+
+// ConcurrencySafe 实现 tool.ConcurrencySafe：读是只读的，且可以并发
+// （观察门内部有锁，多个并发读互不干扰）。
+func (Read) ConcurrencySafe(json.RawMessage) bool { return true }
 
 // Execute 实现 tool.Tool.Execute。
-func (r *ReadFile) Execute(ctx context.Context, args json.RawMessage) (any, error) {
-	p, err := tool.Parse[readFileParams](args)
+func (r *Read) Execute(ctx context.Context, args json.RawMessage) (any, error) {
+	p, err := tool.Parse[readParams](args)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +101,7 @@ func (r *ReadFile) Execute(ctx context.Context, args json.RawMessage) (any, erro
 	f, err := os.Open(res.TargetKey)
 	if err != nil {
 		// 文件不存在是一次权威观察（确认了"没有"）：记 absent，模型随后可以
-		// 直接 write_file 创建（createIfAbsent 语义）。其余错误不记录。
+		// 直接 write 创建（createIfAbsent 语义）。其余错误不记录。
 		if r.Gate != nil && errors.Is(err, fs.ErrNotExist) {
 			r.Gate.Record(res.TargetKey, "", false)
 		}
@@ -199,59 +203,59 @@ func truncateLongLine(line string) string {
 	return string(runes[:maxLineChars]) + fmt.Sprintf("... (line truncated to %d chars)", maxLineChars)
 }
 
-// WriteFile 写入或追加文件内容。
+// Write 写入或追加文件内容。
 //
 // 路径先经 filesystem 能力以 OpWrite 解析（Lexical + Realpath 双层，防 symlink
 // 逃逸与经链接创建），越界返回 *filesystem.PathDeniedError。
-type WriteFile struct {
+type Write struct {
 	FS filesystem.FileSystem
 	// Gate 是写前观察门（可选，nil = 不启用）：write 前校验"读过才许覆盖、
 	// 读后变了要重读"，写后记录新版本（S5h）。
 	Gate *ObserveGate
 }
 
-// NewWriteFile 构造写文件工具。
-func NewWriteFile(fsys filesystem.FileSystem) *WriteFile { return &WriteFile{FS: fsys} }
+// NewWrite 构造写文件工具。
+func NewWrite(fsys filesystem.FileSystem) *Write { return &Write{FS: fsys} }
 
-// NewWriteFileObserved 构造带观察门的写文件工具（S5h）。
-func NewWriteFileObserved(fsys filesystem.FileSystem, gate *ObserveGate) *WriteFile {
-	return &WriteFile{FS: fsys, Gate: gate}
+// NewWriteObserved 构造带观察门的写文件工具（S5h）。
+func NewWriteObserved(fsys filesystem.FileSystem, gate *ObserveGate) *Write {
+	return &Write{FS: fsys, Gate: gate}
 }
 
-type writeFileParams struct {
+type writeParams struct {
 	Path    string `json:"path" mos:"desc=文件路径（相对路径以工作目录为锚点）"`
 	Content string `json:"content" mos:"desc=要写入的完整内容"`
 }
 
-func (WriteFile) Name() string { return "write_file" }
+func (Write) Name() string { return "write" }
 
-func (WriteFile) Description() string {
+func (Write) Description() string {
 	// 结果里带 created / replaced_bytes：模型据此知道自己是新建还是覆盖了已有
 	// 内容（DSH 的 write 区分 Created/Updated，PI 的 edit 报告改了几处）——
 	// 没有这个信息，模型只能读回来确认，反复重写就容易空转。
 	// 刻意**不做追加写**（DSH 也没有）：append 让「这次到底改了什么」变得含糊，
-	// 而追加场景用 edit_file 精确追加更可控。
+	// 而追加场景用 edit 精确追加更可控。
 	return "写入文本到文件（整体覆盖，自动创建父目录；受工作目录沙箱限制）。" +
-		"只改局部内容请优先用 edit_file。覆盖已有文件前建议先 read_file 确认——" +
+		"只改局部内容请优先用 edit。覆盖已有文件前建议先 read 确认——" +
 		"结果里的 created 表示本次是否新建，replaced_bytes 表示被覆盖丢弃的原有字节数。"
 }
 
-func (WriteFile) Parameters() any { return &writeFileParams{} }
+func (Write) Parameters() any { return &writeParams{} }
 
 // Guideline 实现 tool.Guideline：写前观察门（ObserveGate）开启时，把前置条件
 // 讲在系统提示词里，而不是让模型撞了拒绝才学会——每次拒绝都是一轮浪费的往返。
 // 门未开启时返回空串（不贡献）：没强制不了的事就别承诺。
-func (w *WriteFile) Guideline() string {
+func (w *Write) Guideline() string {
 	if w.Gate == nil {
 		return ""
 	}
-	return "覆盖已有文件前必须先 read_file：本会话没读过的文件不允许覆盖（写前观察门会拒绝），" +
+	return "覆盖已有文件前必须先 read：本会话没读过的文件不允许覆盖（写前观察门会拒绝），" +
 		"读过之后若文件又被改过，需重读后再写。新建文件不需要先读。"
 }
 
 // Execute 实现 tool.Tool.Execute。
-func (w *WriteFile) Execute(ctx context.Context, args json.RawMessage) (any, error) {
-	p, err := tool.Parse[writeFileParams](args)
+func (w *Write) Execute(ctx context.Context, args json.RawMessage) (any, error) {
+	p, err := tool.Parse[writeParams](args)
 	if err != nil {
 		return nil, err
 	}
@@ -299,7 +303,7 @@ func (w *WriteFile) Execute(ctx context.Context, args json.RawMessage) (any, err
 	}, nil
 }
 
-var _ tool.Tool = (*WriteFile)(nil)
+var _ tool.Tool = (*Write)(nil)
 
 // FileTools 返回受文件能力约束的工具集（读 + 写 + 精确编辑）。
 //
@@ -310,10 +314,10 @@ var _ tool.Tool = (*WriteFile)(nil)
 // 宿主没装配文件能力时可以不调用本函数——不给模型这个能力，比给它一个
 // 必然失败的工具更干净。
 func FileTools(fsys filesystem.FileSystem, gate *ObserveGate) []tool.Tool {
-	return []tool.Tool{NewReadFileObserved(fsys, gate), NewWriteFileObserved(fsys, gate), NewEditObserved(fsys, gate)}
+	return []tool.Tool{NewReadObserved(fsys, gate), NewWriteObserved(fsys, gate), NewEditObserved(fsys, gate)}
 }
 
-// FileToolsIn 返回一套**文件工具**（read_file / write_file / edit_file），
+// FileToolsIn 返回一套**文件工具**（read / write / edit），
 // 装好两件事：
 //
 //   - 文件 jail：根目录 = root，越界路径被拒（Lexical + Realpath 双校验，
@@ -356,4 +360,44 @@ func FileToolsInRoots(rs *filesystem.RootSet) ([]tool.Tool, error) {
 	}
 	fsys := filesystem.NewSandboxedWithRoots(rs)
 	return FileTools(fsys, NewObserveGate()), nil
+}
+
+// ToolsIn 返回**一整套文件与搜索工具**（read / write / edit / grep / glob / ls），
+// 装好同一件事：文件 jail（根 = root，越界路径被拒）+ 写前观察门。
+//
+// 便利入口：宿主说"我要一套以 root 为界的文件工具"，框架管 jail + 观察门。
+// 只想给文件三件套用 FileToolsIn；只想给搜索三件套用 SearchTools(fsys)。
+//
+// opts 可挂宿主策略（当前是 WithExclude：敏感文件不参与搜索）。
+//
+// root 为空 → 用当前目录。
+func ToolsIn(root string, opts ...Option) ([]tool.Tool, error) {
+	if root == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("builtin: 取工作目录: %w", err)
+		}
+		root = wd
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("builtin: 解析工具根 %q: %w", root, err)
+	}
+	fsys := filesystem.NewSandboxed(&filesystem.FileAccessPolicy{
+		ReadRoots:  []string{abs},
+		WriteRoots: []string{abs},
+	})
+	return append(FileTools(fsys, NewObserveGate()), SearchTools(fsys, opts...)...), nil
+}
+
+// ToolsInRoots 用**可变的根集合**装一整套文件与搜索工具（与 ToolsIn 同款，
+// 差别只在根的来源是活集合：加根对后续调用立即生效）。
+//
+// rs 为 nil → 报错（fail-closed：没有根就没有边界）。
+func ToolsInRoots(rs *filesystem.RootSet, opts ...Option) ([]tool.Tool, error) {
+	if rs == nil {
+		return nil, errors.New("builtin: 根集合为 nil（没有根就没有边界）")
+	}
+	fsys := filesystem.NewSandboxedWithRoots(rs)
+	return append(FileTools(fsys, NewObserveGate()), SearchTools(fsys, opts...)...), nil
 }

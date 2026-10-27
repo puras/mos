@@ -15,7 +15,7 @@ import (
 
 // Edit 精确替换文件中的文本片段——改代码类任务的正解。
 //
-// 为什么需要它（对照 write_file 的整文件重写）：
+// 为什么需要它（对照 write 的整文件重写）：
 //   - 整文件重写要求模型**重新产出整个文件**，它既怕改错别处、又无法确认自己
 //     改对了没，于是反复重写，容易空转；
 //   - 精确替换只要求模型给出**要改的那几行**，改动的意图与结果一一对应。
@@ -29,7 +29,7 @@ import (
 //   - **原子写**：先写同目录临时文件再 rename 覆盖，写一半失败不会留下半个文件；
 //   - **拒绝二进制**：含 NUL 字节的文件不是文本，不做编辑。
 //
-// 与 write_file 的分工：edit 改已有文件（精确），write_file 写整份内容（新建或
+// 与 write 的分工：edit 改已有文件（精确），write 写整份内容（新建或
 // 整体覆盖）。edit 不创建文件——文件不存在就报错。
 type Edit struct {
 	FS filesystem.FileSystem
@@ -60,7 +60,7 @@ type editChange struct {
 	NewString string `json:"new_string" mos:"desc=替换后的新文本（空字符串表示删除该片段）"`
 }
 
-func (Edit) Name() string { return "edit_file" }
+func (Edit) Name() string { return "edit" }
 
 func (Edit) Description() string {
 	// 措辞参照 PI 的 edit 工具说明（其 promptGuidelines 明确要求"一次调用改多处"）。
@@ -68,7 +68,7 @@ func (Edit) Description() string {
 		"改多处请在同一次调用里给出多个 edits——每处的 old_string 必须在文件里唯一出现，" +
 		"且各处的 old_string 互不重叠（改同一片区域就合并成一条）。" +
 		"所有 old_string 都按**原文件**匹配，不是按前一条改完的结果。" +
-		"改代码优先用本工具，而不是 write_file 整文件重写。"
+		"改代码优先用本工具，而不是 write 整文件重写。"
 }
 
 func (Edit) Parameters() any { return &editParams{} }
@@ -107,7 +107,7 @@ func (e *Edit) Execute(ctx context.Context, args json.RawMessage) (any, error) {
 	if e.FS == nil {
 		return nil, &filesystem.NotConfiguredError{}
 	}
-	// 写操作走写 jail（与 write_file 同一关卡）。
+	// 写操作走写 jail（与 write 同一关卡）。
 	res, err := e.FS.Resolve(ctx, filesystem.Request{Path: p.Path, Op: filesystem.OpWrite})
 	if err != nil {
 		return nil, err

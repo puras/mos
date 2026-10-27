@@ -11,14 +11,14 @@ import (
 )
 
 // newObservedTools 构造一组带观察门的文件工具 + jail。
-func newObservedTools(t *testing.T, root string) (rd *ReadFile, wr *WriteFile, ed *Edit) {
+func newObservedTools(t *testing.T, root string) (rd *Read, wr *Write, ed *Edit) {
 	t.Helper()
 	fsys := filesystem.NewSandboxed(&filesystem.FileAccessPolicy{
 		ReadRoots:  []string{root},
 		WriteRoots: []string{root},
 	})
 	gate := NewObserveGate()
-	return NewReadFileObserved(fsys, gate), NewWriteFileObserved(fsys, gate), NewEditObserved(fsys, gate)
+	return NewReadObserved(fsys, gate), NewWriteObserved(fsys, gate), NewEditObserved(fsys, gate)
 }
 
 // 正常流程：读 → 改 → 写 全链路不受影响；新建文件不需要先读。
@@ -106,7 +106,7 @@ func TestObserveEditRequiresRead(t *testing.T) {
 	if _, err := ed.Execute(context.Background(), []byte(
 		`{"path":"a.txt","edits":[{"old_string":"x","new_string":"y"}]}`)); err == nil {
 		t.Fatal("没读过的文件应拒绝编辑")
-	} else if !strings.Contains(err.Error(), "必须先 read_file") {
+	} else if !strings.Contains(err.Error(), "必须先 read") {
 		t.Fatalf("理由应可指导模型: %v", err)
 	}
 
@@ -170,7 +170,7 @@ func TestObserveNilGateIsLegacy(t *testing.T) {
 	fsys := filesystem.NewSandboxed(&filesystem.FileAccessPolicy{
 		ReadRoots: []string{root}, WriteRoots: []string{root},
 	})
-	wr := NewWriteFile(fsys) // 无门
+	wr := NewWrite(fsys) // 无门
 	if _, err := wr.Execute(context.Background(), []byte(`{"path":"existing.txt","content":"覆盖"}`)); err != nil {
 		t.Fatalf("nil 门 = 旧行为: %v", err)
 	}

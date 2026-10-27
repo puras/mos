@@ -24,14 +24,14 @@ go run . "只回答：1+1=?"
 
 ```
 MoS chat 已就绪
-  已注册工具: current_time, read_file, write_file, edit_file
-  模型可见工具: current_time, read_file, write_file, edit_file
+  已注册工具: current_time, read, write, edit, grep, glob, ls
+  模型可见工具: current_time, read, write, edit, grep, glob, ls
   并发上限: 4（仅对声明可并发的工具生效）
   决策轮次上限: 不限（上下文增长由压缩接管）
   工作目录: ...
   shell: 未装配（模型看不到这个能力）
   上下文压缩: 已装配（超预算时模型生成结构化摘要落日志）
-  结果截断: 32768 字节（全文落 .../.mos-trunc，read_file 可回读）
+  结果截断: 32768 字节（全文落 .../.mos-trunc，read 可回读）
   参数级规则: 无
   名字级策略: 未装配（名字级名单不收紧）
 ```

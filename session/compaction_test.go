@@ -71,7 +71,7 @@ func TestViewSeqs(t *testing.T) {
 func TestProjectOrphanKeepsPairUnderShadowing(t *testing.T) {
 	events := []Event{
 		{Seq: 1, Kind: EventUser, Text: "q1"},
-		{Seq: 2, Kind: EventAssistant, ToolCalls: []llm.ToolCall{{ID: "c1", Name: "read_file"}}},
+		{Seq: 2, Kind: EventAssistant, ToolCalls: []llm.ToolCall{{ID: "c1", Name: "read"}}},
 		// 进程硬杀：result 永远没落盘，直接来了下一轮输入
 		{Seq: 3, Kind: EventUser, Text: "q2"},
 		{Seq: 4, Kind: EventCompaction, Compaction: &Compaction{Summary: "摘要", FirstKeptSeq: 3}},

@@ -29,7 +29,7 @@ type RootProvider interface {
 
 // AnchorProvider 是可选接口：显式声明相对路径的锚点。
 //
-// 锚点是「相对路径的落点」：read_file("sub/a.txt") 里的 "sub/a.txt" 挂在
+// 锚点是「相对路径的落点」：read("sub/a.txt") 里的 "sub/a.txt" 挂在
 // 锚点下。默认锚点 = 该类操作的第一个根（既有行为）。
 //
 // 宿主显式声明锚点，是为了在**运行期加根**后仍让相对路径指向确定的目录：

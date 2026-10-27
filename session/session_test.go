@@ -47,9 +47,9 @@ func TestProjection(t *testing.T) {
 	s := New("t2", nil)
 	mustAppend(t, s, Event{Kind: EventTurnStart, Turn: 1})
 	mustAppend(t, s, Event{Kind: EventUser, Text: "看下文件"})
-	mustAppend(t, s, Event{Kind: EventAssistant, ToolCalls: []llm.ToolCall{{ID: "c1", Name: "read_file", Args: `{"path":"a.txt"}`}}})
+	mustAppend(t, s, Event{Kind: EventAssistant, ToolCalls: []llm.ToolCall{{ID: "c1", Name: "read", Args: `{"path":"a.txt"}`}}})
 	// tool/call 仅审计留痕，不投影
-	mustAppend(t, s, Event{Kind: EventToolCall, ToolCall: &llm.ToolCall{ID: "c1", Name: "read_file"}})
+	mustAppend(t, s, Event{Kind: EventToolCall, ToolCall: &llm.ToolCall{ID: "c1", Name: "read"}})
 	mustAppend(t, s, Event{Kind: EventToolResult, ToolResult: &ToolResult{CallID: "c1", Content: "文件内容"}})
 	mustAppend(t, s, Event{Kind: EventAssistant, Text: "内容是……"})
 	mustAppend(t, s, Event{Kind: EventTurnEnd, Turn: 1, Reason: "completed"})
@@ -72,7 +72,7 @@ func TestProjection(t *testing.T) {
 			t.Fatalf("msgs[%d] = %s/%q, want %s/%q", i, msgs[i].Role, msgs[i].Content, w.role, w.content)
 		}
 	}
-	if len(msgs[1].ToolCalls) != 1 || msgs[1].ToolCalls[0].Name != "read_file" {
+	if len(msgs[1].ToolCalls) != 1 || msgs[1].ToolCalls[0].Name != "read" {
 		t.Fatalf("assistant 消息应携带 ToolCalls: %+v", msgs[1])
 	}
 	if msgs[2].ToolCallID != "c1" {

@@ -31,7 +31,7 @@
 | --- | --- | --- | --- |
 | `session` | 会话事件日志、消息投影、TaskState、JSONL 持久化 | 重写瘦身 | S1 |
 | `llm`（+`llm/transport`） | ChatModel 抽象、协议适配、共享 HTTP envelope；**重试机制**（`WithRetry`）+ 策略结构体 | 移植归档 | S2 ✅ / S2b |
-| `tool`（+`tool/builtin`） | 工具接口、注册表、Schema 生成、`ConcurrencySafe` 并发分类器；`current_time` / `read_file` / `write_file` / `edit_file` | 移植裁剪 | S3 ✅ / S5e / S5d+ |
+| `tool`（+`tool/builtin`） | 工具接口、注册表、Schema 生成、`ConcurrencySafe` 并发分类器；`current_time` / `read` / `write` / `edit` / `grep` / `glob` / `ls` | 移植裁剪 | S3 ✅ / S5e / S5d+ |
 | `planner` + `driver` | Planner 接口 + ReAct 决策；LoopDriver + ReActDriver | planner 移植 / 驱动重写 | S4a ✅ |
 | `agent/execpath` | 工具调用统一执行通道：preflight 裁决 + 调度 + 按调用序回填 | 重写 | S5a ✅ |
 | `agent/hook` | 双轨制：HookBus（waterfall 可改写）+ GuardBus（serial 单调裁决） | 移植裁剪 | S5b ✅ |
@@ -43,7 +43,7 @@
 | `mos`（根包） | 一行装配 `mos.New(Config)` + 运行期旋钮 + 装配快照 | 重写 | S7 ✅ |
 
 > S3 边界：`tool/builtin` 只带 `current_time`（无安全副作用）。涉及文件与命令执行的
-> 内置工具（read_file / write_file / find_files / grep / shell）等 S5 的 filesystem jail
+> 内置工具（read / write / grep / glob / ls / shell）等 S5 的 filesystem jail
 > 与 sandbox 就位后再加入——不先发一版无防护的实现、再返工加锁。
 
 ### 3.1 循环契约（S4a 定型，S4b 落地工具循环）
@@ -115,7 +115,7 @@ ExecuteBatch(ctx, reg, calls, opts) []Outcome   // 结果与 calls 严格同序
 
 ```go
 // 框架的输入只有结构（格式与键名归宿主）
-policy.Config{Allow: []string{"read_file"}, Deny: []string{"shell", "write_*"}}
+policy.Config{Allow: []string{"read"}, Deny: []string{"shell", "write_*"}}
 ```
 
 **语义对齐 PI 与 DSH 的共识**（两家都是两份名单都可选）：
@@ -211,12 +211,13 @@ roots.AddRead(b) / roots.AddWrite(b) / roots.Remove(b)      // 读写分开授�
 
 | 工具 | 干什么 | 关键语义 |
 | --- | --- | --- |
-| `read_file` | 读内容 | **行寻址**（`offset` = 起始行号，1 起；`limit` = 行数，参照 PI）；**上限先到先算**：2000 行 **或** 50KB（PI 的 `DEFAULT_MAX_LINES`/`DEFAULT_MAX_BYTES`），显式给了 `limit` 就以它为准；**超长行单独截断并标记** `... (line truncated to 2000 chars)`（DSH 的 `maxLineLength` 对位）——minified 文件一行几百 KB，只靠总量上限会把预算吃光；**续读提示**参照 PI：`[Showing lines 12-31 of 40. Use offset=32 to continue.]` / `[End of file - total 40 lines]` |
-| `write_file` | 整体写 | **只覆盖，不追加**（DSH 也没有 append：追加让「这次改了什么」变含糊）；**原子写**（同目录临时文件 + rename，写一半失败不留半个文件）；回执 `{created, replaced_bytes}`——`created` 对应 DSH 的 `Created`/`Updated` 措辞，`replaced_bytes` 是被覆盖丢弃的原有字节数（PI 的 edit 会报「改了几处」，同一类信息） |
-| `edit_file` | 精确替换 | 参数 `{path, edits: [{old_string, new_string}]}`（**PI 形状**：一次调用改多处）；每处 `old_string` 在**原文件**里必须**唯一**命中，多处命中 → 报错并报出次数（让模型补足上下文）；各处的 `old_string` **互不重叠**（改同一片区域要合并成一条）；**不做 `replace_all`**——唯一性即安全；匹配前**行尾归一**（CRLF→LF）、写回时**还原原行尾**；**BOM 保留**；拒绝二进制；**原子写**（DSH 的 `writeFileAtomic`）；回执 `{replacements, first_changed_line, bytes}` |
+| `read` | 读内容 | **行寻址**（`offset` = 起始行号，1 起；`limit` = 行数，参照 PI）；**上限先到先算**：2000 行 **或** 50KB（PI 的 `DEFAULT_MAX_LINES`/`DEFAULT_MAX_BYTES`），显式给了 `limit` 就以它为准；**超长行单独截断并标记** `... (line truncated to 2000 chars)`（DSH 的 `maxLineLength` 对位）——minified 文件一行几百 KB，只靠总量上限会把预算吃光；**续读提示**参照 PI：`[Showing lines 12-31 of 40. Use offset=32 to continue.]` / `[End of file - total 40 lines]` |
+| `write` | 整体写 | **只覆盖，不追加**（DSH 也没有 append：追加让「这次改了什么」变含糊）；**原子写**（同目录临时文件 + rename，写一半失败不留半个文件）；回执 `{created, replaced_bytes}`——`created` 对应 DSH 的 `Created`/`Updated` 措辞，`replaced_bytes` 是被覆盖丢弃的原有字节数（PI 的 edit 会报「改了几处」，同一类信息） |
+| `edit` | 精确替换 | 参数 `{path, edits: [{old_string, new_string}]}`（**PI 形状**：一次调用改多处）；每处 `old_string` 在**原文件**里必须**唯一**命中，多处命中 → 报错并报出次数（让模型补足上下文）；各处的 `old_string` **互不重叠**（改同一片区域要合并成一条）；**不做 `replace_all`**——唯一性即安全；匹配前**行尾归一**（CRLF→LF）、写回时**还原原行尾**；**BOM 保留**；拒绝二进制；**原子写**（DSH 的 `writeFileAtomic`）；回执 `{replacements, first_changed_line, bytes}` |
 
+- **工具名对齐 PI/DSH**：`read` / `write` / `edit`（旧名 `read` / `write` / `edit` 已改）。模型见过的名字越短越不容易写错；名字是契约，改名即改契约（2026-10 一次性改到位）。
 - **为什么要有 edit**：整文件重写要求模型重新产出整个文件——它既怕改错别处、又无法确认自己改对了没，于是反复重写（实测：13 次写、8 次读同一批文件，直到单轮决策次数上限）。精确替换只要求给出要改的那几行，意图与结果一一对应。
-- **edit 不创建文件**：文件不存在就报错——创建是 `write_file` 的活。
+- **edit 不创建文件**：文件不存在就报错——创建是 `write` 的活。
 - **edit 是写操作**：走写 jail（`OpWrite`），且不声明 `tool.ConcurrencySafe` → 批内独占（屏障）。
 - **不做"静默改多处"**：多处命中一律报错。唯一性即安全（PI 的规则）。
 - **容错模型发来的怪形状**：有些模型把 `edits` 发成单个对象或 JSON 字符串（PI 源码点名过 Opus 4.6 / GLM-5.1），MoS 直接收下归一，而不是报错让模型重试。
@@ -224,6 +225,26 @@ roots.AddRead(b) / roots.AddWrite(b) / roots.Remove(b)      // 读写分开授�
   - **写前必须先读**（DSH 的 `fs-observation-policy`：按会话记录"已观察"状态，写/edit 前必须先读，且写时校验版本防丢失更新）。MoS 现在工具只有 `ctx`，拿不到会话身份，要做需要先给工具注入会话作用域——**排在 S5f 之后的单独一片**（S5h）。它是唯一能**根治**"模型覆盖别人文件"的机制：把"我是不是该先看一眼"从模型的自觉变成框架的保证。
   - **行号输出**（DSH 的 read 每行带行号 `12: code`；PI 不带）：MoS 只做行**寻址**，不带行号——行号会放大每个 token，将来 S6 做上下文预算时再一起定。
   - **图片读取**：MoS 的 `llm.ContentPart` 已支持多模态，但**工具结果通道只走 JSON 文本**，要支持得改 `execpath` 的结果通道。
+
+### 3.6.1 搜索工具（grep / glob / ls）
+
+模型要「找东西」只有两条路：挨个文件 `read`（线性试错），或退回去用 `shell` 跑
+`rg`（把搜索塞进命令字符串：参数注入面 + 噪声大 + 受沙箱策略限制）。搜索是
+**一等能力**，不该靠 shell 变通。对位 PI（`grep` / `find` / `ls`）与 DSH
+（`grep` / `glob`）：纯只读、结构化参数、结果有上限。
+
+| 工具 | 干什么 | 关键语义 |
+| --- | --- | --- |
+| `grep` | 内容搜索 | `pattern` = RE2 正则（非法正则直接报错，**不静默当字面量**）；`path` = 目录或单个文件；`glob` = 文件名过滤（如 `*.go`）；`limit` 默认 100（硬上限 1000）。回执 `path:行号:内容`（ripgrep 风格）+ `count` / `truncated` / `files_scanned`；二进制文件跳过；单文件最多扫 1MB；单次最多扫 2 万文件 |
+| `glob` | 文件名查找 | `pattern` 支持 `*` / `**` / `?` / `[...]` / `{a,b}`；不含 `/` 的模式按**文件名**匹配（任意层级，如 `*.go`），含 `/` 的按**相对搜索根的路径**匹配（`src/**/*.go`）；只返回文件；`limit` 默认 1000 |
+| `ls` | 列目录 | 含隐藏项、按名称排序；每项 `{name, type, size}`；`limit` 默认 500 |
+
+- **jail 不因「搜索」而放松**：搜索起点经 `Resolve(OpRead)`（Lexical + Realpath 双校验），拿到的是**实体路径**；随后只在实体路径下词法遍历——符号链接不是常规文件、天然被跳过，根内指向 `/etc/passwd` 的链接既不会被读到，也不会被跟随进目录。
+- **只读 = 可并发**：`grep` / `glob` / `ls`（以及 `read`）声明 `tool.ConcurrencySafe` → 批内可并发；写类工具（`write` / `edit` / `shell`）不声明 → 独占（屏障）。
+- **与 shell 的分工**：能用搜索解决的别退化成 shell——搜索是结构化参数化的，没有命令拼接的注入面；shell 留给编译、测试、管道这些真需要 shell 的事。
+- **审计门白名单**：三者的输出即环境回答，可进 `TaskState`（`agent.DefaultAuditor` 内置名单）。
+- **敏感文件是宿主策略，框架只给挂点**：`builtin.WithExclude(pred)` 让宿主把"哪些文件不许被搜到"挂进 grep/glob（谓词命中即跳过：不读、不报命中）。没有这个挂点，宿主在参数级规则里拒绝 read `.env`/私钥的保证会被**按内容搜**的工具绕过去——grep 的 path 参数通常是个目录，逐文件判定做不了。
+- **装配**：`builtin.SearchTools(fsys)`；`builtin.ToolsIn(root)` / `builtin.ToolsInRoots(rs)` 一行装齐文件三件套 + 搜索三件套（同一份 jail 与观察门）。
 
 ### 3.7 进程沙箱（S5f-1）
 
@@ -262,7 +283,7 @@ reg.Register(builtin.NewShell(sb))
 - **平台差异**：CPU 时间（`ulimit -t`）与单文件大小（`ulimit -f`）POSIX 平台都支持；**虚拟内存（`ulimit -v`）只有 Linux 等支持**，macOS 上会被跳过（每条限制都带 `|| true`，不支持的跳过而不是让命令失败）。
 - **fail-closed**：没装配 `sandbox.Runner` 的 shell 工具**拒绝执行**——不存在"没配沙箱就跑裸命令"的默认路径（归档曾有该缺陷，用兜底 Runner 修）。
 - **命令跑了但失败 ≠ 工具坏了**：非零退出码是**正常结果**——回执带 `exit_code`，输出末尾附 `[exit code: N]` 标记；只有"命令根本没起来"（启动失败 / 超时被杀 / 沙箱拒绝）才 `IsError`（对齐 DSH `packages/shell/tool-bash/src/render.ts`：那里非零退出同样不是 isError，isError 只留给 spawn 错误与中断）。这个区分不是洁癖：把非零退出当失败，**模型就得自己写 hack 绕开**（实测它会拼 `; echo "exit=$?"` 让整条命令以 0 退出，把失败塞进输出里）——"命令失败了"本来就该是事实，由模型判断要不要重试。
-- **输出截断有逃生通道**：超限时完整输出由 Runner 落盘（`Result.OutputPath`），回执给模型 `output_path`，它可以 `read_file` 读全文（PI 的 `full_output_path` 对位，PRD 的"落盘逃生通道"）。落盘目录由宿主指定——默认的 `os.TempDir()` 在文件 jail 的可写根之外。
+- **输出截断有逃生通道**：超限时完整输出由 Runner 落盘（`Result.OutputPath`），回执给模型 `output_path`，它可以 `read` 读全文（PI 的 `full_output_path` 对位，PRD 的"落盘逃生通道"）。落盘目录由宿主指定——默认的 `os.TempDir()` 在文件 jail 的可写根之外。
 - **默认不装配**：示例的 shell 工具默认**不注册**——不给模型这个能力，比给它一个必然失败的工具干净。
 - **开了 shell 就给默认系统引导词**：工具在清单里 ≠ 模型会主动用它。引导词说清三件事——有什么能力、工作目录在哪、为什么要用（"改 → 跑 → 看输出 → 再改"，别靠猜）。`MOS_SYSTEM_PROMPT` 可覆盖。
 - **配套练手项目 `examples/chat/lab/`**：独立的 go module，故意留一个逻辑 bug，让 agent 修好并跑测试。**嵌套 module 被根 module 忽略**——仓库自己的 `go build ./...` / `go test ./...` 始终是绿的。
@@ -348,7 +369,7 @@ roots.Add(b)   // 运行期加根：文件工具与 shell 同时生效
 
 **fail-closed 纪律**：sandbox-exec 不可用 → `ErrPathScopeUnsupported`；非 darwin 平台尚无后端 → 非全开的调用明确报错。**绝不退化成"没隔离的假装隔离"**——"假装有边界"比"没有边界"更危险。
 
-**与文件 jail 的分工**：jail 管**工具**（read_file/write_file/edit_file）的路径；`PathScope` 管**子进程**能碰到的路径——命令可以绕过工具直接 `cat /etc/passwd`，jail 管不着。两层都要。**两层共用一份根集合**（§3.5.1 的 `RootSet`）时，加根一次两层同时生效；不共用就要接受两层边界不一致（那就得由宿主自己保证一致）。
+**与文件 jail 的分工**：jail 管**工具**（read/write/edit）的路径；`PathScope` 管**子进程**能碰到的路径——命令可以绕过工具直接 `cat /etc/passwd`，jail 管不着。两层都要。**两层共用一份根集合**（§3.5.1 的 `RootSet`）时，加根一次两层同时生效；不共用就要接受两层边界不一致（那就得由宿主自己保证一致）。
 
 ### 3.11 模型调用的重试（S2b）
 
@@ -382,9 +403,9 @@ llm.WithRetry(model, llm.RetryPolicy{
 
 | 调用 | 无观察记录 | 记录=存在 | 记录=不存在 |
 | --- | --- | --- | --- |
-| `read_file` | 记录（存在→版本；不存在→absent） | 刷新版本 | 刷新 |
-| `write_file` | createIfAbsent（已存在→拒"先读再覆盖"） | CAS（变了/没了→拒"自读取后已被修改/删除"） | 现在却存在→拒（它读后出现了） |
-| `edit_file` | **拒**："编辑前必须先 read_file" | CAS | 拒："文件不存在，创建用 write_file" |
+| `read` | 记录（存在→版本；不存在→absent） | 刷新版本 | 刷新 |
+| `write` | createIfAbsent（已存在→拒"先读再覆盖"） | CAS（变了/没了→拒"自读取后已被修改/删除"） | 现在却存在→拒（它读后出现了） |
+| `edit` | **拒**："编辑前必须先 read" | CAS | 拒："文件不存在，创建用 write" |
 
 - **版本令牌** = `dev:ino:size:mtimeNs:ctimeNs`（身份+新鲜度；dev/ino 让"删了重建同名文件"也能被识别）。unix 取完整令牌，其他平台退化 `size:mtimeNs`（文档注明）。
 - **CAS 在写的时刻做**——读与写之间的任何改动都会被抓到，模型被迫重读，看到真实状态后再决定。shell 改了文件 → edit 被拒 → 模型重读，这正是 S5h 的核心价值。
@@ -396,7 +417,7 @@ llm.WithRetry(model, llm.RetryPolicy{
 
 包 `agent`（截断 / 压缩 / 审计门三件套）+ `session` 的 compaction 事件与投影遮蔽。规则逐项对齐 PI（`tools/truncate.ts` + `core/compaction/compaction.ts`）与 DSH（`dsh-compaction*` / `dsh-spill`），不自创机制：
 
-**截断**（`agent.ResultTruncator` → `TruncateHook` 挂 `tool/post-execute`）：行/字节双限（默认 2000 行 / **50KB**，PI 的 `DEFAULT_MAX_LINES/DEFAULT_MAX_BYTES` 同款），按工具定向保留——`read_file` 留头、`shell` 留尾、其余两头各半（PI 的 `truncateHead/Tail` 同构）；只保留整行，字节预算在行级保不住时落到 UTF-8 安全的字节截断（对位 PI 的 `truncateMiddle`）。截断说明带**保留区间**（"保留第 1–10 行（共 100 行）"，PI 续读提示同款信息）与全文落盘路径（逃生通道：宿主指定目录，必须在文件 jail 可读根内；落盘失败诚实降级）。
+**截断**（`agent.ResultTruncator` → `TruncateHook` 挂 `tool/post-execute`）：行/字节双限（默认 2000 行 / **50KB**，PI 的 `DEFAULT_MAX_LINES/DEFAULT_MAX_BYTES` 同款），按工具定向保留——`read` 留头、`shell` 留尾、其余两头各半（PI 的 `truncateHead/Tail` 同构）；只保留整行，字节预算在行级保不住时落到 UTF-8 安全的字节截断（对位 PI 的 `truncateMiddle`）。截断说明带**保留区间**（"保留第 1–10 行（共 100 行）"，PI 续读提示同款信息）与全文落盘路径（逃生通道：宿主指定目录，必须在文件 jail 可读根内；落盘失败诚实降级）。
 
 **压缩**（`agent.LLMCompactor`，PI compaction 的移植）：
 - **触发**：`contextTokens > contextWindow - reserveTokens`（默认预留 16384）。token 估算两段式：**基座是真实值**——最后一次模型调用的返回用量（total，或分项之和），其后新增事件按 chars/4 估算（要等下一次调用返回才有权威数字）；完全没有用量记录时（网关不给 usage）全量估算（PI 的 `calculateContextTokens` + `estimateTokens` 同款）。ContextWindow 未配置时取默认 **128K**（`DefaultContextWindow`）：现代模型普遍 ≥128K，宁早勿溢出；确切窗口更小的模型必须显式配置。
@@ -406,7 +427,7 @@ llm.WithRetry(model, llm.RetryPolicy{
 - **落库**：摘要作为 `compaction` 事件写入会话日志（Summary + FirstKeptSeq + tokensBefore + 摘要调用的 usage——计入会话总量，PI 同款）。投影从此遮蔽旧历史：LLM 看到 `[system, 摘要, 保留段...]`。**被遮蔽的事件留在日志里**——审计走全量日志（`Events()`），重放确定性地复现压缩后视图；旧摘要在迭代压缩中作为 previous-summary 折叠进新摘要，不重复出现。
 - **失败即终止本轮**（fail-fast）：静默超预算只会在下一次调用溢出，那种报错更难懂。溢出错误的"压缩后重试"（PI/DSH 都有）留作后续：需要跨协议识别溢出错误，不半做。
 
-**TaskState/Auditor**（`session.DeriveTaskState` / `agent.Auditor`）：PRD M2.1/M2.2 基线（状态外置、审计门），作为独立基础设施落地，**不参与压缩**（PI/DSH 均无审计门；M3 多智能体与宿主消费）。审计不变式不变：只有环境自证的只读工具（`current_time`/`read_file`）的输出可进 TaskState，模型自述不算数。
+**TaskState/Auditor**（`session.DeriveTaskState` / `agent.Auditor`）：PRD M2.1/M2.2 基线（状态外置、审计门），作为独立基础设施落地，**不参与压缩**（PI/DSH 均无审计门；M3 多智能体与宿主消费）。审计不变式不变：只有环境自证的只读工具（`current_time`/`read`）的输出可进 TaskState，模型自述不算数。
 
 **决策路径顺序固定**：压缩检查 → `History` 投影（含压缩遮蔽）→ `pre-step` 瀑布（宿主钩子）→ 决策器。均零开销降级。轮次默认不限（压缩接管上下文增长）。
 

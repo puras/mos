@@ -30,7 +30,7 @@ import (
 //     加了什么都在日志里）；根变更另记在 `RootSet.History()`。
 //
 // 生效时机：加根对**下一次工具调用**立即生效（边界每次调用现判）——所以
-// 模型拿到本工具的成功回执后，可以直接 read_file 那个目录。
+// 模型拿到本工具的成功回执后，可以直接 read 那个目录。
 type GrantRoot struct {
 	// Roots 是目标根集合（运行期可变的那一份）。
 	Roots *filesystem.RootSet

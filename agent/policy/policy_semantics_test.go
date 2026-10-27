@@ -9,7 +9,7 @@ import (
 // Allow 未配置 = 不限制（对齐 PI / DSH）。
 func TestUnconfiguredAllowDoesNotRestrict(t *testing.T) {
 	p := New(Config{Deny: []string{"shell"}})
-	if err := p.Check(context.Background(), event("read_file")); err != nil {
+	if err := p.Check(context.Background(), event("read")); err != nil {
 		t.Fatalf("Allow 未配置时不应限制: %v", err)
 	}
 	if err := p.Check(context.Background(), event("shell")); err == nil {
@@ -20,21 +20,21 @@ func TestUnconfiguredAllowDoesNotRestrict(t *testing.T) {
 // Allow 为空集 = 全禁（对齐 PI 的 "An empty list exposes no tools"）。
 func TestEmptyAllowDeniesEverything(t *testing.T) {
 	p := New(Config{Allow: []string{}})
-	if err := p.Check(context.Background(), event("read_file")); err == nil {
+	if err := p.Check(context.Background(), event("read")); err == nil {
 		t.Fatal("Allow 为空集应全禁")
 	}
-	if p.Visible("read_file") {
+	if p.Visible("read") {
 		t.Fatal("Allow 为空集时工具应不可见")
 	}
 }
 
 // Allow 非空 = 只有名单内可用。
 func TestAllowRestrictsToListed(t *testing.T) {
-	p := New(Config{Allow: []string{"read_file"}})
-	if err := p.Check(context.Background(), event("read_file")); err != nil {
+	p := New(Config{Allow: []string{"read"}})
+	if err := p.Check(context.Background(), event("read")); err != nil {
 		t.Fatalf("名单内应放行: %v", err)
 	}
-	if err := p.Check(context.Background(), event("write_file")); err == nil {
+	if err := p.Check(context.Background(), event("write")); err == nil {
 		t.Fatal("名单外应拒绝")
 	}
 }
@@ -53,13 +53,13 @@ func TestDenyWinsOverAllow(t *testing.T) {
 // 通配符：`*` 匹配任意字符（含分隔符），整串锚定（PI 语义）。
 func TestWildcardMatching(t *testing.T) {
 	p := New(Config{Deny: []string{"write_*", "mcp__*"}})
-	for _, name := range []string{"write_file", "write_a_b", "mcp__foo"} {
+	for _, name := range []string{"write_a_b", "mcp__foo"} {
 		if err := p.Check(context.Background(), event(name)); err == nil {
 			t.Fatalf("%q 应被通配符拒绝", name)
 		}
 	}
-	// 不匹配的名字放行
-	for _, name := range []string{"read_file", "writefile", "my_write_file"} {
+	// 不匹配的名字放行（"write" 本身不是 "write_*"：工具名不同，规则就不同）
+	for _, name := range []string{"read", "write", "writefile", "my_write"} {
 		if err := p.Check(context.Background(), event(name)); err != nil {
 			t.Fatalf("%q 不该被通配符命中: %v", name, err)
 		}
@@ -76,11 +76,11 @@ func TestWildcardMatching(t *testing.T) {
 
 // 可见性与运行时判定读同一份名单——不会出现"看不见却能调"的矛盾。
 func TestVisibleMatchesCheck(t *testing.T) {
-	p := New(Config{Allow: []string{"read_file", "web_*"}, Deny: []string{"read_file"}})
+	p := New(Config{Allow: []string{"read", "web_*"}, Deny: []string{"read"}})
 	cases := map[string]bool{
-		"read_file":  false, // 在 deny 里
-		"web_fetch":  true,  // 匹配 allow 的通配
-		"write_file": false, // 既不在 allow 也不在 deny → allow 非空时不许
+		"read":      false, // 在 deny 里
+		"web_fetch": true,  // 匹配 allow 的通配
+		"write":     false, // 既不在 allow 也不在 deny → allow 非空时不许
 	}
 	for name, want := range cases {
 		if got := p.Visible(name); got != want {

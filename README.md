@@ -17,7 +17,7 @@ MoS（取自 Sapient）是基于 Go 的智能体基础框架（Agent Base SDK）
 | S5a | 执行通道骨架 `agent/execpath`（preflight 空 + 串行执行 + 按调用序回填） | ✅ |
 | S5b | 双轨制 `agent/hook`（HookBus waterfall + GuardBus 单调裁决）+ 执行通道 preflight 接线 | ✅ |
 | S5c | Policy 规则层 `agent/policy`（fail-closed 黑白名单；框架只认结构，文件与格式归宿主） | ✅ |
-| S5d | `filesystem` 文件 jail（Lexical + Realpath 双校验 + symlink 逃逸防护）+ `read_file`/`write_file` 接入 | ✅ |
+| S5d | `filesystem` 文件 jail（Lexical + Realpath 双校验 + symlink 逃逸防护）+ `read`/`write` 接入 | ✅ |
 | S5e | 通道三阶段（守卫 preflight + 钩子三环节 + 屏障式有界并发 + 按序回填） | ✅ |
 | S5f-1 | `sandbox` 进程隔离（超时 + 进程组击杀 + 输出上限 + 资源限制 + 环境裁剪）+ `shell` 工具 | ✅ |
 | S2b | `llm` 层加固：类型化状态码（`StatusError`）+ 策略化重试（只重试瞬时错误 / 指数退避 + 抖动 / 取消终止 / 可观测） | ✅ |
@@ -28,6 +28,7 @@ MoS（取自 Sapient）是基于 Go 的智能体基础框架（Agent Base SDK）
 | S5i | 系统提示词装配 `agent/prompt`：分节 Builder（Add 严格 / Set 覆写 / Complete 整段替换 / Clone 派生）+ 工具自带指引通道（`tool.Guideline`，文案归工具包、顺序归中心常量）+ chat 示例接线 | ✅ |
 | S6 | 上下文工程（截断 + 压缩，逐项对齐 PI/DSH：token 预算触发、模型生成结构化摘要、摘要落日志投影遮蔽、切割点不切断工具对；TaskState/Auditor 基础设施；轮次默认不限） | ✅ |
 | S7 | 装配层（根包 `mos`：`mos.New(Config)` 一行装配 + 运行期旋钮 + `Describe()` 装配快照；能力即证据、缺能力 fail-closed） | ✅ |
+| S7.1 | 工具名对齐 PI/DSH（`read`/`write`/`edit`）+ 搜索三件套（`grep`/`glob`/`ls`：只读、走同一份 jail、可并发、结果有上限） | ✅ |
 
 S1–S7 完成即覆盖 PRD G1–G6 的最小闭环；此后按 PRD §5/§7 逐个回填后续里程碑（M2.8 挂起恢复 → M2.9/M2.10 → M3 多智能体 → M4 生产化）。
 
