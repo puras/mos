@@ -153,8 +153,19 @@ func main() {
 	// 系统提示词：分节装配（agent/prompt）——默认节 + 工具自带指引 + 部署事实，
 	// 三类贡献方一处汇合；MOS_SYSTEM_PROMPT 仍可整段替换（Complete 语义：
 	// 宿主最懂就全听宿主的）。组装一次、静态不变，利于服务商 prompt cache。
-	sysPrompt, promptKind, err := buildSystemPrompt(reg, jailRoot, *allowShell, *agentsFlag)
-	check(err)
+	//
+	// 上下文文件（AGENTS.md 等）由**根包装配**（Config.Context）：它进
+	// 「项目约定」节，位置在约定之后、工具指引之前——手工往字符串里塞就
+	// 只能追加到最后，位置定不下来。
+	var promptBuilder *prompt.Builder
+	promptKind := ""
+	customPrompt := os.Getenv("MOS_SYSTEM_PROMPT")
+	if customPrompt != "" {
+		promptKind = "自定义（MOS_SYSTEM_PROMPT，整段替换）"
+	} else {
+		promptBuilder, promptKind, err = buildSystemPrompt(reg, jailRoot, *allowShell)
+		check(err)
+	}
 
 	// 输入读取器：主循环与人工审批共用（审批发生在驱动阻塞期间，同一
 	// goroutine，所以直接读下一行即可）。
@@ -181,7 +192,7 @@ func main() {
 
 	// 装配层（mos.New）：把模型、工具、策略、安全、上下文工程一次装成可跑的
 	// 智能体。宿主只提供"要什么、允许什么"，接线与默认由框架做。
-	a, err := mos.New(mos.Config{
+	mosCfg := mos.Config{
 		Model:             model,
 		Tools:             reg,
 		Approval:          answerer,    // 问人：宿主实现（终端弹 y/N）
@@ -189,7 +200,6 @@ func main() {
 		Policy:            cfg,         // 名字级名单（宿主解析 YAML 得到）
 		Rules:             hostRules(), // 参数级规则（宿主业务判断）
 		Roots:             roots,       // 活根集合：文件工具与 shell 共用，运行期可加根
-		SystemPrompt:      sysPrompt,
 		WorkDir:           jailRoot,
 		ContextWindow:     *contextWindow,
 		ReserveTokens:     *reserveTokens,
@@ -200,7 +210,21 @@ func main() {
 		Stream:            true,
 		OnChunk:           render,
 		DisableCompaction: *contextWindow <= 0,
-	})
+	}
+	if promptBuilder != nil {
+		// 分节装配：根包渲染它，并把上下文文件装进「项目约定」节。
+		mosCfg.Prompt = promptBuilder
+		if *agentsFlag {
+			mosCfg.Context = &mos.ContextConfig{
+				Dir:     jailRoot,
+				Options: contextfile.Options{MaxDepth: -1}, // 向上递归到根（PI 同款）
+			}
+		}
+	} else {
+		// 宿主整段替换：上下文文件也不注入（宿主说了算，不偷偷加料）。
+		mosCfg.SystemPrompt = customPrompt
+	}
+	a, err := mos.New(mosCfg)
 	check(err)
 
 	// 宿主自己的观测钩子：装配层之后挂——审批钩子要留在 pre-execute 的**最前**
@@ -237,12 +261,14 @@ func main() {
 	} else {
 		fmt.Println("  人工审批: 未装配（需确认的调用一律拒绝，fail-closed）")
 	}
-	if sysPrompt != "" {
+	// 打印的是**实际送进模型的那份**系统提示词（从运行时取，不拿本地变量
+	// 充数——本地那份可能少了根包装的上下文文件）。
+	if finalPrompt := a.RunContext().SystemPrompt; finalPrompt != "" {
 		fmt.Printf("  系统引导: %s\n", promptKind)
 		// 把最终送进模型的系统提示词原文打出来：装配结果是否合意、金样例之外
-		// 的真实组合（宿主节 + 工具指引）一眼可验，也方便贴 issue 对照。
+		// 的真实组合（宿主节 + 工具指引 + 项目约定）一眼可验，也方便贴 issue 对照。
 		fmt.Println("  ───── 系统提示词 ─────")
-		for line := range strings.SplitSeq(sysPrompt, "\n") {
+		for line := range strings.SplitSeq(finalPrompt, "\n") {
 			if line == "" {
 				fmt.Println()
 			} else {
@@ -358,40 +384,19 @@ func mustModel(retryAttempts, retryDelay int) llm.ChatModel {
 	return model
 }
 
-// buildSystemPrompt 装配系统提示词（agent/prompt 分节 Builder）：
+// buildSystemPrompt 装配系统提示词的分节（agent/prompt Builder）：
 //   - prompt.Default()  框架默认节（身份 + 简洁约定）；
 //   - reg.Guidelines()  工具自带的跨调用指引（文案归工具包，tool.Guideline 接口）；
-//   - contextfile       项目上下文文件（AGENTS.md / CLAUDE.md 等）的正文；
 //   - shellRuntimeGuide 部署事实（工作目录、验证回路）——只有宿主知道的事。
 //
-// MOS_SYSTEM_PROMPT 仍整段替换（对齐 Complete 语义：宿主最懂就全听宿主的）。
-func buildSystemPrompt(reg *tool.Registry, jailRoot string, allowShell, loadAgents bool) (string, string, error) {
-	if custom := os.Getenv("MOS_SYSTEM_PROMPT"); custom != "" {
-		return custom, "自定义（MOS_SYSTEM_PROMPT，整段替换）", nil
-	}
+// 上下文文件（AGENTS.md 等）不在这里：它由根包装配（mos.Config.Context），
+// 进「项目约定」节，位置在约定之后、工具指引之前。
+func buildSystemPrompt(reg *tool.Registry, jailRoot string, allowShell bool) (*prompt.Builder, string, error) {
 	pb := prompt.Default()
 	if err := pb.AddToolGuidelines(reg.Guidelines()); err != nil {
-		return "", "", fmt.Errorf("装配工具指引: %w", err)
+		return nil, "", fmt.Errorf("装配工具指引: %w", err)
 	}
 	kind := "分节装配（默认 + 工具指引"
-	if loadAgents {
-		// 项目上下文文件：从工作目录向上递归（由外到内合并），同目录里的
-		// AGENTS.override.md 替换该目录的 AGENTS.md / CLAUDE.md。
-		// 宿主自决开不开（这里是 -agents）；全局目录本演示没有——那是宿主的部署事实。
-		res, err := contextfile.NewLoader(contextfile.Options{MaxDepth: -1}).Load(jailRoot)
-		if err != nil {
-			return "", "", fmt.Errorf("加载上下文文件: %w", err)
-		}
-		for _, w := range res.Warnings {
-			fmt.Fprintf(os.Stderr, "[context] %s\n", w)
-		}
-		if err := pb.AddProjectContext(res.Text); err != nil {
-			return "", "", fmt.Errorf("装配项目约定: %w", err)
-		}
-		if len(res.Files) > 0 {
-			kind += " + 项目约定"
-		}
-	}
 	if allowShell {
 		err := pb.Add(prompt.Section{
 			Name:  "runtime:shell",
@@ -399,11 +404,11 @@ func buildSystemPrompt(reg *tool.Registry, jailRoot string, allowShell, loadAgen
 			Text:  shellRuntimeGuide(jailRoot),
 		})
 		if err != nil {
-			return "", "", fmt.Errorf("装配 shell 部署事实: %w", err)
+			return nil, "", fmt.Errorf("装配 shell 部署事实: %w", err)
 		}
 		kind += " + shell 部署事实"
 	}
-	return pb.Render(), kind + "）", nil
+	return pb, kind + "）", nil
 }
 
 // shellRuntimeGuide 是 shell 的部署事实节（runtime 位置）：只有宿主知道的事——

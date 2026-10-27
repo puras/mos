@@ -27,6 +27,7 @@ MoS（取自 Sapient）是基于 Go 的智能体基础框架（Agent Base SDK）
 | S5h | 写前观察（`ObserveGate`：不许覆盖没读过的文件 + 版本 CAS 防丢失更新；能力由宿主决定） | ✅ |
 | S5i | 系统提示词装配 `agent/prompt`：分节 Builder（Add 严格 / Set 覆写 / Complete 整段替换 / Clone 派生）+ 工具自带指引通道（`tool.Guideline`，文案归工具包、顺序归中心常量）+ chat 示例接线 | ✅ |
 | S5i.1 | 上下文文件 `agent/contextfile`（AGENTS.md / CLAUDE.md 等）：候选名优先级 + 向上递归 + 同目录 override + 真实路径去重 + 字节预算裁剪；I/O 以 `Reader` 注入（框架不碰文件系统）+ 提示词「项目约定」节 | ✅ |
+| S5i.2 | 装配层入口：`mos.Config.Context`（目录 + 发现参数，全局目录默认 `~/.mos`）+ `mos.Config.Prompt` 分节装配器（项目约定进正确槽位；与 `SystemPrompt` 二选一）+ `Describe()` 写明装了什么/降级警告 | ✅ |
 | S6 | 上下文工程（截断 + 压缩，逐项对齐 PI/DSH：token 预算触发、模型生成结构化摘要、摘要落日志投影遮蔽、切割点不切断工具对；TaskState/Auditor 基础设施；轮次默认不限） | ✅ |
 | S7 | 装配层（根包 `mos`：`mos.New(Config)` 一行装配 + 运行期旋钮 + `Describe()` 装配快照；能力即证据、缺能力 fail-closed） | ✅ |
 | S7.1 | 工具名对齐 PI/DSH（`read`/`write`/`edit`）+ 搜索三件套（`grep`/`glob`/`ls`：只读、走同一份 jail、可并发、结果有上限） | ✅ |
@@ -45,7 +46,7 @@ S1–S7 完成即覆盖 PRD G1–G6 的最小闭环；此后按 PRD §5/§7 逐�
   - **会话中途授权目录**：用户说"B 目录你也可以看"时，模型调 `grant_access` 申请 → 终端审批 → 立即可访问（文件 jail 与 shell 两层同步生效，全程留痕）
   - `-allow-shell` 开启**验证回路**：agent 能改代码后自己跑 `go build` / `go test` 看真实输出再改（配套 `lab/` 练手项目：修好一个故意留 bug 的测试）
   - `-context-window` 开启**上下文压缩**（PI 同款：超过窗口-预留时模型生成结构化摘要落日志，投影遮蔽旧历史；`-reserve-tokens`/`-keep-recent-tokens` 调预算）、`-trim` 结果截断（全文落盘可回读，默认 32KB）
-  - `-agents`（默认开）加载**上下文文件**：从工作目录向上递归找 `AGENTS.md` / `CLAUDE.md`，注入系统提示词的「项目约定」节（PI 同款：同目录的 `AGENTS.override.md` 替换该目录的 AGENTS.md / CLAUDE.md）
+  - `-agents`（默认开）加载**上下文文件**：从工作目录向上递归找 `AGENTS.md` / `CLAUDE.md`，注入系统提示词的「项目约定」节（PI 同款：同目录的 `AGENTS.override.md` 替换该目录的 AGENTS.md / CLAUDE.md）。装配走根包入口（`mos.Config.Context`），全局目录默认 `~/.mos`
 - [examples/minimal](examples/minimal/) — **装配层的最小可跑示例**：`mos.NewModel` + `mos.New` + `session.Open` 十几行装出一个真能跑的智能体（证明"一行装配"不是空话）
 
 ## 构建

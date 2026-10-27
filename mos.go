@@ -39,10 +39,12 @@ import (
 
 	"github.com/puras/mos/agent"
 	"github.com/puras/mos/agent/approval"
+	"github.com/puras/mos/agent/contextfile"
 	"github.com/puras/mos/agent/driver"
 	"github.com/puras/mos/agent/driver/react"
 	"github.com/puras/mos/agent/hook"
 	"github.com/puras/mos/agent/policy"
+	"github.com/puras/mos/agent/prompt"
 	"github.com/puras/mos/filesystem"
 	"github.com/puras/mos/llm"
 	"github.com/puras/mos/planner"
@@ -112,7 +114,23 @@ type Config struct {
 	// ── 运行参数（零值 = 框架默认）──
 	//
 	// SystemPrompt 是静态系统引导词（作为历史首条消息注入）。空 = 不加。
+	//
+	// 与 Prompt **二选一**：两个都给 = 装配错误（不静默挑一个——不知道听谁的）。
 	SystemPrompt string
+	// Prompt 是系统提示词的**分节装配器**（agent/prompt）：宿主用它把身份、
+	// 约定、项目上下文、工具指引、部署事实装配成一段。
+	//
+	// nil = 不分节，直接用 SystemPrompt 字符串。给了它，根包就用它渲染
+	// （装配期渲染一次，之后静态不变——利于 prompt cache）。
+	Prompt *prompt.Builder
+	// Context 装配**上下文文件**（AGENTS.md / CLAUDE.md 等）：项目自己的规矩
+	// 写在文件里，模型据此知道这个项目的门规。
+	//
+	// nil = 不装配。装配后作为「项目约定」进系统提示词：给了 Prompt 就进分节
+	// （位置在约定之后、工具指引之前）；没给 Prompt 就追加在 SystemPrompt
+	// 之后（根包的 SystemPrompt 是字符串，位置只能到末尾——想要精确位置就用
+	// Prompt）。
+	Context *ContextConfig
 	// WorkDir 是工作目录：文件工具的沙箱根、截断落盘目录的父目录。空 = 当前目录。
 	WorkDir string
 	// ContextWindow 是模型上下文窗口（token）。0 = 默认 128K；确切窗口更小的
@@ -163,9 +181,31 @@ type Agent struct {
 	// roots 是运行期可变的根集合（宿主给的活边界；nil = 没有这个能力）。
 	roots *filesystem.RootSet
 
+	// 上下文文件（装配快照用；contextWired = 宿主有没有要求装这个能力）。
+	contextWired   bool
+	contextFiles   []string
+	contextBytes   int
+	contextWarning []string
+
 	// 运行期旋钮（原子；下一轮生效）。
 	concurrency atomic.Int64
 	maxRounds   atomic.Int64
+}
+
+// ContextConfig 是上下文文件的装配参数。
+//
+// 零值可用：Dir 空 = 用 Config.WorkDir；Options 零值 = 默认候选名、32KB 预算、
+// **不向上递归**（只看 Dir 本身）。
+type ContextConfig struct {
+	// Dir 是要扫的目录（空 = Config.WorkDir）。扫的是目录**本身**：每个目录里
+	// 取第一个命中的候选文件（AGENTS.override.md > AGENTS.md > AGENTS.MD >
+	// CLAUDE.md > CLAUDE.MD）。
+	Dir string
+	// Options 是发现参数（候选名 / 全局目录 / 字节预算 / 递归层数 / Reader）。
+	//
+	// GlobalDirs 为空 = 用 MoS 的全局目录（~/.mos）——全局约定是「所有项目
+	// 共享的那部分」，默认该有；填了就以宿主填的为准（不追加）。
+	Options contextfile.Options
 }
 
 // New 装配智能体。缺 Model 或参数非法直接报错（fail-closed）。
@@ -177,6 +217,58 @@ func New(cfg Config) (*Agent, error) {
 	}
 	if err := cfg.applyDefaults(); err != nil {
 		return nil, err
+	}
+
+	// 系统提示词：分节装配器优先（宿主用 agent/prompt 拼好），否则用字符串。
+	// 两个都给 = 装配错误：不知道听谁的，不静默挑一个。
+	if cfg.Prompt != nil && cfg.SystemPrompt != "" {
+		return nil, errors.New("mos: SystemPrompt 与 Prompt 二选一（两个都给，不知道听谁的）")
+	}
+	systemPrompt := cfg.SystemPrompt
+	pb := cfg.Prompt
+
+	// 上下文文件（AGENTS.md 等）：装配后作为「项目约定」进系统提示词。
+	//
+	// 位置：有分节装配器就进分节（约定之后、工具指引之前）；没有就追加在
+	// 字符串末尾（根包的 SystemPrompt 是字符串，位置只能到末尾）。
+	var contextFiles []string
+	contextBytes := 0
+	var contextWarning []string
+	if cfg.Context != nil {
+		dir := cfg.Context.Dir
+		if dir == "" {
+			dir = cfg.WorkDir
+		}
+		opts := cfg.Context.Options
+		if len(opts.GlobalDirs) == 0 {
+			// 宿主没显式给全局目录 = 用 MoS 自己的（~/.mos）：全局约定是
+			// 「所有项目共享的那部分」，默认该有。
+			opts.GlobalDirs = []string{contextfile.DefaultGlobalDir()}
+		}
+		res, err := contextfile.NewLoader(opts).Load(dir)
+		if err != nil {
+			return nil, fmt.Errorf("mos: 加载上下文文件: %w", err)
+		}
+		contextWarning = res.Warnings
+		contextBytes = len(res.Text)
+		for _, f := range res.Files {
+			contextFiles = append(contextFiles, f.Path)
+		}
+		if res.Text != "" {
+			if pb != nil {
+				if err := pb.AddProjectContext(res.Text); err != nil {
+					return nil, fmt.Errorf("mos: 装配项目约定: %w", err)
+				}
+			} else {
+				if systemPrompt != "" {
+					systemPrompt += "\n\n"
+				}
+				systemPrompt += res.Text
+			}
+		}
+	}
+	if pb != nil {
+		systemPrompt = pb.Render()
 	}
 
 	// 工具注册表：宿主自备优先，nil = 空注册表。
@@ -224,6 +316,11 @@ func New(cfg Config) (*Agent, error) {
 		truncateMax:  cfg.TruncateMaxBytes,
 		shellEnabled: shellEnabled,
 		roots:        cfg.Roots,
+
+		contextWired:   cfg.Context != nil,
+		contextFiles:   contextFiles,
+		contextBytes:   contextBytes,
+		contextWarning: contextWarning,
 	}
 	a.SetPolicy(cfg.Policy) // 装初始策略（挂守卫 + 设可见性）
 	a.rules.set(cfg.Rules)
@@ -288,7 +385,7 @@ func New(cfg Config) (*Agent, error) {
 		Guards:            guards,
 		Concurrency:       cfg.Concurrency,
 		MaxDecisionRounds: cfg.MaxDecisionRounds,
-		SystemPrompt:      cfg.SystemPrompt,
+		SystemPrompt:      systemPrompt,
 		Stream:            cfg.Stream,
 		OnChunk:           cfg.OnChunk,
 		Answerer:          cfg.Approval,
@@ -479,6 +576,18 @@ func (a *Agent) Describe() string {
 		b.WriteString("  名字级策略: 已装配\n")
 	} else {
 		b.WriteString("  名字级策略: 未装配（名字级名单不收紧）\n")
+	}
+	switch {
+	case !a.contextWired:
+		b.WriteString("  上下文文件: 未装配（宿主没要求）\n")
+	case len(a.contextFiles) == 0:
+		b.WriteString("  上下文文件: 已装配，但没找到文件（目录里没有 AGENTS.md / CLAUDE.md 等）\n")
+	default:
+		fmt.Fprintf(&b, "  上下文文件: %d 个（%d 字节）: %s\n",
+			len(a.contextFiles), a.contextBytes, strings.Join(a.contextFiles, ", "))
+		for _, w := range a.contextWarning {
+			fmt.Fprintf(&b, "    ⚠ %s\n", w)
+		}
 	}
 	return b.String()
 }

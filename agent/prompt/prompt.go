@@ -131,6 +131,9 @@ func (b *Builder) Set(s Section) error {
 //
 // 正文为空 = 没有上下文文件：不加分节（不留空洞）。
 // 重名即报错——同一个 Builder 注入两次是装配错误，当场暴露。
+//
+// **顺序**：先加项目约定，再 Complete。Complete 是整段替换（加了它，其余分节
+// 全部让位），之后再加分节一律报错（fail-closed，不静默丢弃）。
 func (b *Builder) AddProjectContext(text string) error {
 	if strings.TrimSpace(text) == "" {
 		return nil

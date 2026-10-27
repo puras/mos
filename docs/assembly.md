@@ -23,6 +23,7 @@ reply, err := a.Run(ctx, sess, "读一下 README")
 | A2 | **缺能力 = fail-closed** | `Model == nil` → `New` 报错；`Approval == nil` → 需人工确认的调用一律拒绝；`Sandbox == nil` → 不注册 shell |
 | A3 | **配置 ≠ 装配** | `Config` 不含文件路径、配置格式、密钥来源——YAML/JSON 解析与密钥获取归宿主（`policy` 层已是这样做的） |
 | A4 | **装配快照是事实** | `Describe()` 只描述「装了什么 / 没装什么」，不描述「应该装什么」；宿主不再各写一份横幅 |
+| A5 | **提示词只有一个来源** | `SystemPrompt` 与 `Prompt` **二选一**：两个都给 = 装配错误（不知道听谁的）；上下文文件（`Context`）作为「项目约定」节进同一个提示词，不另起通道 |
 
 ### 能力 vs 机制：两种语义，别混
 
@@ -73,6 +74,17 @@ type Config struct {
     WorkDir           string // 默认 os.Getwd()
     Concurrency       int    // <=0 = 默认 4
     MaxDecisionRounds int    // <=0 = 不限（S6 起默认不限）
+
+    // ── 系统提示词 ──
+    SystemPrompt string             // 静态引导词（与 Prompt 二选一）
+    Prompt       *prompt.Builder    // 分节装配器（位置可控；与 SystemPrompt 二选一）
+    Context      *ContextConfig     // 上下文文件（AGENTS.md 等；nil = 不装配）
+}
+
+// ContextConfig 是上下文文件的装配参数（目录 + 发现参数）。
+type ContextConfig struct {
+    Dir     string                // 扫哪个目录（空 = Config.WorkDir）
+    Options contextfile.Options   // 候选名 / 全局目录 / 字节预算 / 递归层数
 }
 
 // New 装配智能体。缺 Model 或参数非法直接报错（A2）。
@@ -109,6 +121,9 @@ option 函数适合「字段爆炸 + 想藏顺序」，MoS 的配置分组清晰
 | 截断落盘目录 | `<WorkDir>/.mos-trunc` | 逃生通道要在工作区可读根内，否则「回读全文」不可达 |
 | 文件工具根 | `<WorkDir>` | fail-closed：没声明就只有工作区 |
 | 路径强制范围 | 从 `<WorkDir>` 派生 | 只能收窄，不能在运行期放宽；`"/"` 是显式逃生门 |
+| 上下文文件目录 | `Config.Context.Dir` 空 = `<WorkDir>` | 扫目录本身；每个目录取第一个命中的候选文件 |
+| 上下文文件全局目录 | `Config.Context.Options.GlobalDirs` 空 = **`~/.mos`** | 全局约定是「所有项目共享的那部分」，默认该有；宿主填了以宿主的为准 |
+| 上下文文件字节上限 | 32KB（`contextfile.DefaultMaxBytes`） | 上下文文件进系统提示词，是**常驻**开销；工具结果那道截断网兜不住它 |
 
 > 截断上限从 64KB 收到 **32KB**（`agent.DefaultTruncateMaxBytes`）：64KB ≈ 16K token，
 > 单次工具结果就吃掉 128K 窗口的 14%，几次叠加就过半。全文仍落盘，代价只是多一次回读。
@@ -128,6 +143,9 @@ MoS chat 已就绪（provider=anthropic model=agnes-2.5-flash session=chat 已�
   结果截断: 32768 字节（全文落 /path/to/workdir/.mos-trunc，read 可回读）
   人工审批: 未装配（需确认的调用一律拒绝，fail-closed）
   文件根（运行期可变）: 读 1 个 / 写 1 个   ← 未装配时写「未装配（运行期加根不可用）」
+  上下文文件: 2 个（1834 字节）: /path/to/proj/AGENTS.md, /Users/x/.mos/AGENTS.md
+    ⚠ 上下文文件 /path/to/proj/AGENTS.md 超出字节预算，已截断（保留前 1200 字节 / 共 2400 字节）
+  上下文文件: 未装配（宿主没要求）   ← 装了但没找到文件时写「已装配，但没找到文件」
 ```
 
 未装配的能力**显式写出来**（"未装配" / "一律拒绝"），不让宿主用沉默代替事实。

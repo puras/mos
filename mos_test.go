@@ -3,13 +3,16 @@ package mos_test
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/puras/mos"
+	"github.com/puras/mos/agent/contextfile"
 	"github.com/puras/mos/agent/hook"
 	"github.com/puras/mos/agent/policy"
+	"github.com/puras/mos/agent/prompt"
 	"github.com/puras/mos/filesystem"
 	"github.com/puras/mos/llm"
 	"github.com/puras/mos/sandbox"
@@ -317,4 +320,131 @@ func (t stubTool) Parameters() any {
 }
 func (t stubTool) Execute(ctx context.Context, args json.RawMessage) (any, error) {
 	return "ok", nil
+}
+
+// 上下文文件（AGENTS.md 等）：装配进系统提示词，并在装配快照里如实写明。
+func TestContextFilesWiredIntoSystemPrompt(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "AGENTS.md")
+	if err := os.WriteFile(path, []byte("项目门规：提交前必须跑测试"), 0o644); err != nil {
+		t.Fatalf("写 AGENTS.md: %v", err)
+	}
+	a, err := mos.New(mos.Config{
+		Model:        &stubModel{reply: "ok"},
+		SystemPrompt: "宿主自己的引导词",
+		Context: &mos.ContextConfig{
+			Dir: dir,
+			// 全局目录显式给空目录：测试不受本机 ~/.mos 影响。
+			Options: contextfile.Options{GlobalDirs: []string{}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	got := a.RunContext().SystemPrompt
+	if !strings.Contains(got, "项目门规：提交前必须跑测试") {
+		t.Fatalf("系统提示词应含上下文正文：\n%s", got)
+	}
+	// 装配快照：装了什么要写出来（含文件路径）。
+	snap := a.Describe()
+	if !strings.Contains(snap, "上下文文件") || !strings.Contains(snap, path) {
+		t.Fatalf("装配快照应写明上下文文件：\n%s", snap)
+	}
+}
+
+// 分节装配器 + 上下文文件：项目约定落在「约定之后、工具指引之前」。
+func TestContextFilesLandInProjectContextSection(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("项目门规"), 0o644); err != nil {
+		t.Fatalf("写 AGENTS.md: %v", err)
+	}
+	pb := prompt.New()
+	if err := pb.Set(prompt.Section{Name: "identity", Order: prompt.OrderIdentity, Text: "身份"}); err != nil {
+		t.Fatalf("装配身份: %v", err)
+	}
+	if err := pb.Set(prompt.Section{Name: "rules", Order: prompt.OrderPolicy, Text: "约定"}); err != nil {
+		t.Fatalf("装配约定: %v", err)
+	}
+	a, err := mos.New(mos.Config{
+		Model:  &stubModel{reply: "ok"},
+		Prompt: pb,
+		Context: &mos.ContextConfig{
+			Dir:     dir,
+			Options: contextfile.Options{GlobalDirs: []string{}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	got := a.RunContext().SystemPrompt
+	if strings.Index(got, "约定") > strings.Index(got, "项目门规") {
+		t.Fatalf("项目约定应排在框架约定之后：\n%s", got)
+	}
+	if !strings.Contains(got, prompt.SectionProjectContext) && !strings.Contains(got, "项目约定与指引") {
+		t.Fatalf("应作为独立一节（项目约定）：\n%s", got)
+	}
+}
+
+// SystemPrompt 与 Prompt 二选一：两个都给 = 装配错误（不静默挑一个）。
+func TestSystemPromptAndPromptAreExclusive(t *testing.T) {
+	pb := prompt.New()
+	_, err := mos.New(mos.Config{
+		Model:        &stubModel{reply: "ok"},
+		SystemPrompt: "字符串",
+		Prompt:       pb,
+	})
+	if err == nil {
+		t.Fatal("SystemPrompt 与 Prompt 同时给应当报错")
+	}
+}
+
+// 全局目录：宿主没显式给 = 用 MoS 自己的 ~/.mos（HOME 可控，测试确定）。
+func TestContextGlobalDirDefaultsToMosHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	global := filepath.Join(home, ".mos")
+	if err := os.MkdirAll(global, 0o755); err != nil {
+		t.Fatalf("建全局目录: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(global, "AGENTS.md"), []byte("全局约定"), 0o644); err != nil {
+		t.Fatalf("写全局 AGENTS.md: %v", err)
+	}
+	dir := t.TempDir()
+	a, err := mos.New(mos.Config{
+		Model: &stubModel{reply: "ok"},
+		Context: &mos.ContextConfig{
+			Dir: dir,
+			// GlobalDirs 留空 = 用默认的 ~/.mos。
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := a.RunContext().SystemPrompt; !strings.Contains(got, "全局约定") {
+		t.Fatalf("应加载 ~/.mos 里的全局约定：\n%s", got)
+	}
+}
+
+// 没装上下文文件这个能力时，装配快照要写明「未装配」（没装什么也写出来）；
+// 装了但目录里没文件时也要说清楚——两件事不是一回事。
+func TestDescribeSaysContextFilesNotWired(t *testing.T) {
+	a, err := mos.New(mos.Config{Model: &stubModel{reply: "ok"}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if !strings.Contains(a.Describe(), "上下文文件: 未装配") {
+		t.Fatalf("装配快照应写明未装配上下文文件：\n%s", a.Describe())
+	}
+
+	dir := t.TempDir()
+	a2, err := mos.New(mos.Config{
+		Model:   &stubModel{reply: "ok"},
+		Context: &mos.ContextConfig{Dir: dir, Options: contextfile.Options{GlobalDirs: []string{}}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if !strings.Contains(a2.Describe(), "已装配，但没找到文件") {
+		t.Fatalf("装配快照应区分「没装」与「装了没找到」：\n%s", a2.Describe())
+	}
 }
