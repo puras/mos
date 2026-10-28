@@ -1,6 +1,9 @@
 .env
 .idea/
 
+# 本地工具链与临时产物（PPT/PDF 生成脚本、npm 缓存）
+.tmp/
+
 # Go 构建缓存（GOCACHE 指向仓库内时产生；go clean -cache 可清理）
 .gocache/
 
