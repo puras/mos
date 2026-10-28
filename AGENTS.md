@@ -15,6 +15,22 @@
 - 不得引用 MoGo 的 `internal/` 或网关实现层，防止"协议共享"退化为"框架依赖网关实现"。
 - 对外发布前需将协议层拆分为独立 module 或确认 MoGo 发布到可达仓库（当前开发阶段维持 `replace`，此事项为发布前待办）。
 
+## 功能分析纪律：必须附 PI/DSH 参考分析
+
+- 任何新功能/子系统的**方案分析**（PRD 细化、架构设计、模块落地前的选型与"这功能到底怎么做"）必须附 **PI / DSH 的参考分析**，**不自创机制**（沿用 S6 重做的既有纪律：逐项对齐 PI/DSH）。
+- 参考源码是**只读**的（与 MoGo 同规矩：不改、不提交、不提交 PR 之外的任何东西）：
+  - **PI**：`/Users/puras/workspace/source/pi`（`packages/coding-agent`、`packages/ai`、`packages/durable`、`packages/evals`…）
+  - **DSH**：`/Users/puras/workspace/source/deepseek-harness`（`packages/fs`、`packages/shell`、`packages/context`、`packages/session-query`、`packages/feedback`、`packages/goal`…）
+- 每一项至少写清五行，缺一不可：
+  1. **PI 的做法**——到文件/函数级（例：`packages/coding-agent/src/core/tools/edit.ts` 的多编辑数组）；
+  2. **DSH 的做法**——到文件/函数级（例：`packages/fs/tool-fs` 的 `writeFileAtomic`）；
+  3. **共识 / 分歧**——两家一致处直接抄；分歧处列出各自的代价，不许含糊成"各有优劣"；
+  4. **MoS 的取舍与理由**——选哪个、为什么、代价是什么；**"不做"也要写理由**；
+  5. **两家都没有的空白**——MoS 是否自创？自创必须写明理由与风险。
+- 引用要**可核对**：不写"PI 也是这么做的"这种无出处的话；要给路径（必要时带符号名）。写不出出处就明说"未找到对应实现"——不许编。
+- 分析要与 MoS 现有 PRD/文档对账：若对位实现与本仓库的验收标准相悖（如"注入不进会话历史" vs 对位实现的持久化注入），**不要默默改 PRD**——在分析里点出冲突，给出两个方案，由用户拍板。
+- 分析结论要落进 `docs/ARCHITECTURE.md`（或对应子系统文档）——口头结论不算数。
+
 ## Git
 
 本仓库可能有多个会话同时改同一棵树（用户在多个终端里并行干活，各改各的文件）。**凡是会碰到本次会话之外的文件**（未暂存 / 已暂存 / 未跟踪）的 git 操作——`git add -A`、`git clean`、`git reset --hard`、`git checkout .`——都会踩掉别人的工作。这不是理论风险：S5g 演示的 lab 修复曾被一次 `git add -A` 卷进提交，**同一个错犯了两次**（见提交 `38f1e8e`）。
