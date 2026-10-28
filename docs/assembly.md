@@ -390,7 +390,39 @@ func ToolsInRoots(rs *filesystem.RootSet) ([]Tool, error)
 func SearchTools(fsys filesystem.FileSystem) []Tool
 ```
 
-### 9.4 示例侧：删死代码 + 瘦身
+### 9.4 `tool/web`（联网工具包）
+
+```go
+// 厂商面：五个搜索后端（duckduckgo 零 Key，其余需密钥或自托管）。
+func NewDuckDuckGo() *DuckDuckGoProvider
+func NewTavily(apiKey string) *TavilyProvider
+func NewSerper(apiKey string) *SerperProvider
+func NewBrave(apiKey string) *BraveProvider
+func NewSearXNG(baseURL string) *SearXNGProvider
+
+// 能力面：把单查询后端包成多查询（并行、合并去重）的 Searcher。
+func NewSearcher(p Provider) Searcher
+
+// 模型面：两个工具（web_search / web_fetch）。
+func NewSearch(s Searcher) *Search
+func NewFetch(f Fetcher) *Fetch
+func Tools(searcher Searcher, fetcher Fetcher) []Tool   // nil 后端 → 不给那个工具
+
+// 传输面：带 SSRF 防御的默认抓取器。
+type HTTPFetcher struct{ Limits FetchLimits; Resolver Resolver; Dial func(...) }
+```
+
+装配（宿主一行）：
+
+```go
+reg := tool.NewRegistry()
+for _, tl := range web.Tools(web.NewSearcher(web.NewDuckDuckGo()), web.HTTPFetcher{}) {
+    reg.Register(tl)
+}
+```
+
+### 9.5 示例侧：删死代码 + 瘦身
+
 
 改造后 `visibleNames` / `nameLevelGuard` / `mustHooks` / `policyBanner` 都没人用了
 （横幅已由 `Describe()` 承担，策略与钩子已由装配层接上）→ 删掉（连带测试）。
@@ -398,7 +430,7 @@ func SearchTools(fsys filesystem.FileSystem) []Tool
 **留在宿主不动**：审批 UI（终端 y/N）、YAML 解析、REPL、**选哪些工具**、系统提示词
 里的"部署事实"（只有宿主知道）。
 
-### 9.5 测试计划
+### 9.6 测试计划
 
 - `mos.NewModel`：缺 provider/api_key/model → 报错；未知 provider → 报错；
   `OnRetry` / `Log` 被调用；`MaxTokens` 透传到适配器。
@@ -406,7 +438,7 @@ func SearchTools(fsys filesystem.FileSystem) []Tool
 - `builtin.FileToolsIn`：越界读被拒；未读过的文件不许覆盖。
 - 删死代码后既有测试仍绿；示例的 main_test / guard_test 仍绿。
 
-### 9.6 风险
+### 9.7 风险
 
 | 风险 | 判断 |
 | --- | --- |
@@ -414,7 +446,7 @@ func SearchTools(fsys filesystem.FileSystem) []Tool
 | `session.Open` 绑 JSONL 后端 | 可接受：宿主要别的后端用底层 API（`session.New` / `Restore`） |
 | `FileToolsIn` 是"简单档" | 可接受：要定制（共享 fsys、自定义 gate）用底层 API |
 
-### 9.7 拆几个 commit
+### 9.8 拆几个 commit
 
 1. `feat(mos): NewModel + APIKeyEnv`
 2. `feat(session): Open`

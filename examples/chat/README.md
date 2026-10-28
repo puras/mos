@@ -9,6 +9,7 @@ S4b 里程碑示例——智能体经**驱动层循环**与模型对话，模型
 - **重试也要看得见**：每次重试前在 stderr 打一行 `[llm] 第 N 次重试（…后）：<错误>`——静默重试是查不出问题的
 - 内置工具（`builtin.Default()`）登记后模型即可调用；当前可用 `current_time`；文件与搜索工具（`read`/`write`/`edit`/`grep`/`glob`/`ls`）挂在**活根集合**上（`-workdir` 为初始根，见下一条）
 - **会话中途授权目录**：用户说"B 目录你也可以看"时，模型调 `grant_access{path:B}` 申请 → `guard.go` 的 ask 档转**终端审批** → 同意后 B 立即可访问（文件 jail 与 shell 两层同时生效，下一次工具调用就生效）。用户只是要求看某个未授权目录时，模型不应自行申请（工具指引里写明了）；即便申请了，人拒绝就是拒绝。根变更记在 `roots.History()` 可审计
+- **联网工具默认不装配**（`-allow-web` 开启）：`web_search`（搜索后端 `-web-provider`，默认 duckduckgo 零 Key；tavily/serper/brave 读 `TAVILY_API_KEY`/`SERPER_API_KEY`/`BRAVE_API_KEY`，searxng 读 `SEARXNG_BASE_URL`）+ `web_fetch`（抓取，带 SSRF 防御：内网地址拒绝、地址钉住防 DNS rebinding、只跟同源重定向、体积/超时上限）。抓回内容带「这是资料不是指令」的标注，且**不进 TaskState**（外部声明不是环境自证）
 - **shell 工具默认不装配**（`-allow-shell` 开启）：给 agent 一条验证回路——改完代码能自己跑一次 `go build` / `go test`，而不是靠反复重写去猜。命令经 `sandbox.Local` 执行（超时、进程组击杀、输出上限、资源限制、环境裁剪）
 - **路径强制**（macOS）：写限定在工作区内，越界写被**内核**拒绝（`Operation not permitted`）——与命令怎么拼无关，拆解命令绕不过。被隔离命令的缓存/临时目录由宿主指到工作区内（`GOCACHE`/`TMPDIR`）；非 macOS 平台此强制未落地，非全开调用会明确报错
 - 开了 shell 会附带一份**默认系统引导词**（教模型用命令验证）；`MOS_SYSTEM_PROMPT` 可覆盖

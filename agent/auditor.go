@@ -44,6 +44,11 @@ type DefaultAuditor struct {
 
 // 内置只读白名单：输出即环境回答的工具。S5d/S5f 之后本仓库的内置工具
 // 就这几个；web_* 等随切片加入后在此登记。
+//
+// **web_search / web_fetch 故意不在白名单里**：它们的输出是**外部声明**
+// （别人写的网页与搜索结果），不是环境自证——模型可以把"我认为是这样"写成
+// 网页内容，审计门不能把它当事实。宿主要用它们的内容进 TaskState，得显式
+// Trust（决策在宿主，机制在框架）。
 var defaultTrusted = map[string]bool{
 	"current_time": true,
 	"read":         true,

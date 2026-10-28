@@ -170,3 +170,22 @@ func TestBuildSystemPromptGolden(t *testing.T) {
 		t.Fatalf("工具指引应先于部署事实：\n%s", got)
 	}
 }
+
+// 搜索后端选择：未知名字 / 缺密钥 → 明确报错（不静默降级）。
+func TestWebSearcherSelection(t *testing.T) {
+	s, err := webSearcher("duckduckgo")
+	if err != nil || s == nil {
+		t.Fatalf("duckduckgo 应可用: %v", err)
+	}
+	if _, err := webSearcher("nope"); err == nil {
+		t.Fatal("未知后端应报错")
+	}
+	t.Setenv("TAVILY_API_KEY", "")
+	if _, err := webSearcher("tavily"); err == nil {
+		t.Fatal("缺 TAVILY_API_KEY 应报错")
+	}
+	t.Setenv("TAVILY_API_KEY", "k")
+	if _, err := webSearcher("tavily"); err != nil {
+		t.Fatalf("有 Key 时 tavily 应可用: %v", err)
+	}
+}

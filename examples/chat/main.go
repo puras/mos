@@ -43,6 +43,7 @@ import (
 	"github.com/puras/mos/session"
 	"github.com/puras/mos/tool"
 	"github.com/puras/mos/tool/builtin"
+	"github.com/puras/mos/tool/web"
 )
 
 func main() {
@@ -58,6 +59,8 @@ func main() {
 	keepRecentTokens := flag.Int("keep-recent-tokens", 20000, "压缩后保留的近期上下文预算（token）")
 	concFlag := flag.Int("concurrency", 4, "同批工具调用的并发上限（1 = 串行；仅对声明可并发的工具生效）")
 	allowShell := flag.Bool("allow-shell", false, "装配 shell 工具（隔离执行；默认不装配=模型看不到这个能力）")
+	allowWeb := flag.Bool("allow-web", false, "装配联网工具 web_search / web_fetch（默认不装配=模型看不到这个能力）")
+	webProvider := flag.String("web-provider", "duckduckgo", "搜索后端：duckduckgo（零 Key）/ tavily / serper / brave / searxng")
 	shellTimeout := flag.Int("shell-timeout", 120, "shell 命令缺省超时（秒）")
 	shellMaxTimeout := flag.Int("shell-max-timeout", 300, "shell 命令超时上界（秒，模型申请更久会被夹到这里）")
 	shellSpill := flag.String("shell-spill", "", "shell 输出落盘目录（截断时全文写这里；默认不落盘）")
@@ -111,6 +114,21 @@ func main() {
 	// ask 档 → 终端审批）。不注册这个工具 = 不给模型申请授权的通道。
 	if err := reg.Register(builtin.NewGrantRoot(roots)); err != nil {
 		check(fmt.Errorf("注册工具 grant_access: %w", err))
+	}
+
+	// 联网工具：默认**不装配**（能力即证据）。装配时：
+	//   - web_search 走搜索后端（默认 DuckDuckGo，零 Key）；抓取走 web.Fetcher
+	//     （带 SSRF 防御：内网地址拒绝 + 地址钉住 + 只跟同源重定向 + 体积上限）；
+	//   - 抓回的内容是**外部声明**，进不了 TaskState（审计门白名单不含 web_*）。
+	// 后端选错（未知名称 / 缺 Key）→ 明确报错，不静默降级。
+	if *allowWeb {
+		searcher, err := webSearcher(*webProvider)
+		check(err)
+		for _, tl := range web.Tools(searcher, web.HTTPFetcher{}) {
+			if err := reg.Register(tl); err != nil {
+				check(fmt.Errorf("注册工具 %q: %w", tl.Name(), err))
+			}
+		}
 	}
 
 	// shell 工具：默认**不装配**——不给模型这个能力，比给它一个必然失败的工具
@@ -334,6 +352,44 @@ var pendingLine atomic.Bool
 func flushLine() {
 	if pendingLine.Swap(false) {
 		fmt.Println()
+	}
+}
+
+// webSearcher 按名字选搜索后端（宿主侧配置）。
+//
+// 密钥从环境变量读（框架不读环境变量，配置来源归宿主）：TAVILY_API_KEY /
+// SERPER_API_KEY / BRAVE_API_KEY / SEARXNG_BASE_URL。缺了就报错——不静默
+// 降级到一个“看起来能用”的后端。
+func webSearcher(name string) (web.Searcher, error) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", "duckduckgo", "ddg":
+		return web.NewSearcher(web.NewDuckDuckGo()), nil
+	case "tavily":
+		key := os.Getenv("TAVILY_API_KEY")
+		if key == "" {
+			return nil, errors.New("web: tavily 需要 TAVILY_API_KEY")
+		}
+		return web.NewSearcher(web.NewTavily(key)), nil
+	case "serper":
+		key := os.Getenv("SERPER_API_KEY")
+		if key == "" {
+			return nil, errors.New("web: serper 需要 SERPER_API_KEY")
+		}
+		return web.NewSearcher(web.NewSerper(key)), nil
+	case "brave":
+		key := os.Getenv("BRAVE_API_KEY")
+		if key == "" {
+			return nil, errors.New("web: brave 需要 BRAVE_API_KEY")
+		}
+		return web.NewSearcher(web.NewBrave(key)), nil
+	case "searxng":
+		base := os.Getenv("SEARXNG_BASE_URL")
+		if base == "" {
+			return nil, errors.New("web: searxng 需要 SEARXNG_BASE_URL")
+		}
+		return web.NewSearcher(web.NewSearXNG(base)), nil
+	default:
+		return nil, fmt.Errorf("web: 未知搜索后端 %q（支持 duckduckgo/tavily/serper/brave/searxng）", name)
 	}
 }
 

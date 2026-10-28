@@ -438,8 +438,11 @@ func TestDescribeSaysContextFilesNotWired(t *testing.T) {
 
 	dir := t.TempDir()
 	a2, err := mos.New(mos.Config{
-		Model:   &stubModel{reply: "ok"},
-		Context: &mos.ContextConfig{Dir: dir, Options: contextfile.Options{GlobalDirs: []string{}}},
+		Model: &stubModel{reply: "ok"},
+		// 全局目录指向一个**空目录**：不能依赖 ~/.mos 是空的——那里可能有
+		// 全局约定文件（真实机器上就有），那样这个用例就变成“环境依赖”的
+		// 坏测试（别人的 ~/.mos 一有文件，它就红）。
+		Context: &mos.ContextConfig{Dir: dir, Options: contextfile.Options{GlobalDirs: []string{t.TempDir()}}},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
