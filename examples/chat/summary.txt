@@ -1,0 +1,36 @@
+目录清单
+生成时间: 2026-10-27 08:52:36
+路径: /Users/puras/workspace/proj/hegq/mos/examples/chat
+
+命令: ls -la
+
+总计 216
+
+drwxr-xr-x@  22 puras  staff    704 Oct 27 08:51 .
+drwxr-xr-x@   4 puras  staff    128 Oct 26 14:31 ..
+-rw-r--r--@   1 puras  staff    742 Oct 26 16:00 .env
+-rw-r--r--@   1 puras  staff    733 Oct 26 13:59 .env.example
+-rw-r--r--@   1 puras  staff      6 Oct 23 18:04 .gitignore
+drwxr-xr-x@ 260 puras  staff   8320 Oct 26 11:36 .gocache
+drwx------@   6 puras  staff    192 Oct 27 08:51 .mos-trunc
+drwxr-xr-x@   2 puras  staff     64 Oct 26 11:36 .tmp
+-rw-r--r--@   1 puras  staff   1630 Oct 23 17:47 approval_test.go
+-rw-r--r--@   1 puras  staff   1490 Oct 23 17:46 approval.go
+drwxr-xr-x@  56 puras  staff   1792 Oct 27 08:52 data
+-rwxr-xr-x@   1 puras  staff    276 Oct 27 08:28 dev
+-rw-r--r--@   1 puras  staff    141 Oct 27 08:49 f1.txt
+-rw-r--r--@   1 puras  staff   8938 Oct 26 13:38 guard_test.go
+-rw-r--r--@   1 puras  staff   3385 Oct 23 18:21 guard.go
+drwxr-xr-x@   6 puras  staff    192 Oct 27 08:28 lab
+-rw-r--r--@   1 puras  staff   5485 Oct 27 08:28 main_test.go
+-rw-r--r--@   1 puras  staff  29584 Oct 27 08:28 main.go
+-rw-r--r--@   1 puras  staff     61 Oct 27 08:49 MEMORY.md
+-rw-r--r--@   1 puras  staff    756 Oct 22 16:05 policy.yaml
+-rw-r--r--@   1 puras  staff  11433 Oct 27 08:28 README.md
+-rw-r--r--@   1 puras  staff    292 Oct 27 08:51 t1.txt
+
+分类说明
+  Go 源码与测试: main.go, main_test.go, guard.go, guard_test.go, approval.go, approval_test.go
+  配置/元文件:  .env, .env.example, .gitignore, policy.yaml, README.md, MEMORY.md, dev(可执行脚本)
+  目录:          data/(56 项), lab/(6 项), .gocache/(Go 构建缓存), .tmp/, .mos-trunc/
+  杂项:          f1.txt, t1.txt
