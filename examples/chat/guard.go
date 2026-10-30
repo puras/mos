@@ -80,8 +80,10 @@ func sensitivePath(p string) bool {
 // 风险低）。
 //
 // 诚实边界：这只是**业务规则**，不是边界——find -delete、脚本语言、别名、
-// 变量拼接都绕得过去。真正的边界是路径强制隔离（S5f-2b，未落地）；在那之前，
-// 这条规则的作用是把最常见的删除动作送进人工审批，减少事故面。
+// 变量拼接都绕得过去。真正的边界是路径强制隔离（S5f-2b，已装配：macOS 上
+// Seatbelt 按写根内核强制，越界删除即使被批准也会被拒；非 macOS 平台
+// fail-closed 报错，Landlock 待实现）。这条规则的作用是把最常见的删除动作
+// 送进人工审批，减少事故面。
 func hasDeleteCommand(cmd string) bool {
 	fields := strings.Fields(cmd)
 	for i, f := range fields {

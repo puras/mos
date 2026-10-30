@@ -367,6 +367,14 @@ hooks.On(hook.HookToolPreExecute, hp.Approval())   // ask  → 需人工确认
 - **ask 档当前 = 拒绝**：没有审批通道时由执行通道 fail-closed（S5g 落地后才是"挂起等审批"）。
 - **分层**：工具名级名单（`Policy` 的 Allow/Deny）管"能不能调这个工具"；参数级规则管"这次调用的参数危不危险"。示例里两者串在同一条守卫链上（先名字级、后参数级）。
 
+**删除命令规则与目标路径（审批不看路径，刻意）**——示例的删除规则键在动词上（`rm`/`unlink`/`git rm`），不看参数删的是哪里。这个形状经 PI/DSH 对位核实：
+
+  1. **PI 的做法**：`packages/coding-agent/examples/extensions/permission-gate.ts`——宿主扩展按词法正则判定危险命令（`/\brm\s+(-rf?|--recursive)/i`、`sudo`、`chmod/chown 777`），命中即 `ctx.ui.select` 问人、`block` 拒绝；**不解析命令参数里的目标路径**。
+  2. **DSH 的做法**：没有危险命令表——`packages/sandbox/sandbox/src/index.ts` 三档模式（`read-only` / `workspace-write` / `danger-full-access`）+ `src/escalation.ts` 的提权审批（`WIDER_MODES` 只许变宽，`approveEscalation` 问人）。路径语义在**内核强制**层（workspace-write 的写白名单），不在审批分类层——工作区内的删除走默认档，**本来就不触发任何审批**。
+  3. **共识 / 分歧**：共识——两家的框架核心都没有"按目标路径给删除命令分级"的机制，PI 的示例与 MoS 现状同为**路径盲**的词法规则；分歧——DSH 不要词法层，路径判断全交内核强制 + 显式提权，代价是每个越界操作都要模型主动带 `sandbox_permissions` 走一轮审批（还可能被拒）；MoS 的词法 ask 把所有删除都拦下来问一次，代价是工作区内删除也被打扰。
+  4. **MoS 的取舍与理由**：保留路径盲的 ask。(a) 词法解析 `rm` 的目标参数不可靠（引号、通配、变量、`rm -rf a b` 混排），2026-10 事故已证明词法规则会诱发拆解绕过——解析得越细，假阴越隐蔽；(b) 工作区外的删除即使被批准也会被 S5f-2b 内核拒绝（Seatbelt 写根强制），实际风险有界，ask 的作用是减事故面而非当边界；(c) "工作区内免弹"是宿主侧的 UX 选择，示例宿主选择保守（宁可多问一次）。
+  5. **空白与自创风险**："按目标路径区分删除审批档位"两家都没有。宿主要加也可以（guard.go 是宿主规则），但属**自创机制**——它制造一个新的"分类判定 vs 实际语义"的绕过面，且与 DSH 的"放宽走显式提权"哲学相悖；默认不加，若加须如实标注为自创并承担误判代价。
+
 ### 3.9 人工审批（S5g）
 
 **框架负责编排，问人由宿主注入。** 与 PI / DSH 同构：PI 的扩展用 `ctx.ui.confirm`，DSH 用 `approval/request` 事件上的 answerer 链——框架本身都不画界面。
