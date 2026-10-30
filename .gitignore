@@ -19,5 +19,11 @@ examples/agentcli/data/
 examples/agentcli/mosagentcli
 examples/agents/agents
 examples/chat/moschat
+examples/chat/chat
+examples/minimal/minimal
 examples/chat/data/
 examples/chat/.mos-trunc/
+
+# 在仓库根构建示例时的产物（go build ./examples/chat/ → ./chat）
+/chat
+/minimal
