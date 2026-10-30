@@ -32,6 +32,7 @@
 | `session` | 会话事件日志、消息投影、TaskState、JSONL 持久化 | 重写瘦身 | S1 |
 | `llm`（+`llm/transport`） | ChatModel 抽象、协议适配、共享 HTTP envelope；**重试机制**（`WithRetry`）+ 策略结构体 | 移植归档 | S2 ✅ / S2b |
 | `tool`（+`tool/builtin`） | 工具接口、注册表、Schema 生成、`ConcurrencySafe` 并发分类器；`current_time` / `read` / `write` / `edit` / `grep` / `glob` / `ls` | 移植裁剪 | S3 ✅ / S5e / S5d+ |
+| `tool/searchtools` | `tool_search`：deferred 工具的 BM25 发现与激活（CJK bigram 扩展）；deferred 集非空才装配 | 新增 | S7.3 ✅ |
 | `planner` + `driver` | Planner 接口 + ReAct 决策；LoopDriver + ReActDriver | planner 移植 / 驱动重写 | S4a ✅ |
 | `agent/execpath` | 工具调用统一执行通道：preflight 裁决 + 调度 + 按调用序回填 | 重写 | S5a ✅ |
 | `agent/hook` | 双轨制：HookBus（waterfall 可改写）+ GuardBus（serial 单调裁决） | 移植裁剪 | S5b ✅ |
@@ -597,6 +598,55 @@ llm.WithRetry(model, llm.RetryPolicy{
 | S-D（可选） | 约定块压缩（复用 `agent.Compactor` 出摘要，压缩要人批） | ⬜ |
 
 **待用户拍板**：① 生效时机选 A / B / C（选 C 需同意改 PRD）；② 写回目标跟随已命中的上下文文件，还是固定项目根 `AGENTS.md`；③ 是否接受标记块（自创），还是改成"整文件由模型 `edit`"（两家做法，但会覆盖人写内容）；④ agent 块预算上限与超限行为（拒绝 vs 压缩）；⑤ 是否允许写全局 `~/.mos/AGENTS.md`（影响所有项目 → 更敏感，默认关）。
+
+### 3.15 工具规模化：deferred 懒加载 + `tool_search`（S7.3，FR-C3）
+
+> FR-C1（schema 缓存）已在 S3 落地（`Registry.Register` 时生成，`tool.go:97`）；FR-C2（无 title/$defs）与 FR-C4（静态提示保 cache）是现状的自然结果，本片补守护测试锁住。本节只展开真正的增量：FR-C3。
+
+##### PI / DSH 参考分析
+
+| # | 维度 | PI（`packages/coding-agent` + `packages/ai`） | DSH（`packages/core/tools` + `packages/llm/llm`） |
+| --- | --- | --- | --- |
+| ① | **PI 的做法** | 五档 `ToolExposure`（`core/extensions/types.ts:516`）：`direct`/`model-only` 注册即声明，`codemode`/`deferred`/`hidden` 不声明；active tool set（`getActiveTools`/`setActiveTools`）就是模型可见集。`tool_search` 工具（`extensions/tool-search/tool.ts`）：**Okapi BM25 排序**（k1=1.2, b=0.75；camelCase 分词 + 停用词 + 简单词干），搜索文档 = 名字 + 描述 + schema 属性名与描述（`createToolSearchDocument`）；搜索范围 = exposure 为 `codemode`/`deferred` 且未激活的工具（`isSearchable`:186）；命中即 `setActiveTools` 激活，**下一轮请求声明给模型**，激活记录进 transcript（survive resume/fork）。启用时机：MCP 扩展 `ensureDiscoveryActive`（`extensions/mcp/index.ts:502`）——配置里出现 `deferred` exposure 的服务器 → 自动激活 `tool_search`；**没有按上下文占比的自动阈值**。协议侧：Anthropic 原生 `defer_loading`（`packages/ai/src/api/anthropic-messages.ts:209`）+ `__pi_deferred_placeholder__` 占位工具常驻（Anthropic 的隐藏脚手架因此留在缓存前缀，实测注释：无占位则首次工具变更全缓存未命中）；Anthropic 拒绝全部工具均 deferred 的请求（:1180 注释），必须留至少一个初始激活工具；OpenAI Responses 走 `additional_tools` 增量 + `defer_loading`（`openai-responses-shared.ts:167-172` 实测记录、:455/:468） | `ToolSchema.deferLoading?: true`（`llm/llm/src/types.ts:497`，注释明写 "Uses Anthropic's defer_loading terminology"）；`defineTool` 选项 `deferLoading?: true`（`core/tools/src/schema.ts:499`）——**工具作者显式标记**，无自动阈值。投影链：registry `schemas()` → `schemaOf`（`core/tools/src/index.ts:1288-1302`）透传 deferLoading → system-prompt 组装（`core/system-prompt/src/index.ts:642-647`）→ 请求侧 `projectToolUpdates`（`llm/llm/src/content.ts:384`）按路由能力投影：支持 tool updates 的路由以 developer message 的 `tool_addition` block 激活（序列化为 `tool_reference`，`llm-deepseek/src/serialize.ts:95`、`defer_loading`:165）；不支持的路线剥掉 defer 标记全量声明（content.ts:432-436）。updates 里的 additions 以 defer 状态入声明表（content.ts:391），首次 addition 激活。激活事实走 `ToolHistory` 事件溯源 |
+| ② | **DSH 的做法** | （见右） | （见左） |
+| ③ | **共识 / 分歧** | **共识**：①不自创协议概念——对齐 Anthropic 原生 `defer_loading`（DSH 直接采用该术语；PI 占位符 + 各 API 适配）；②deferred 工具「声明但不加载」，经显式激活（PI `setActiveTools` / DSH `tool_addition`）进入可见集，**下一轮生效**；③激活必须留痕（PI transcript / DSH `ToolHistory`）；④**都没有**按上下文占比自动启用的机制。**分歧**：PI 有框架级 BM25 `tool_search` 工具（搜索即激活，协议无关）；DSH 的 deferLoading 只是协议投影标记，框架不提供 search 工具（激活走 developer message，谁发由上层定）。代价：PI 多一个排序器与搜索文档构造（~240 行）；DSH 需要上层自己解决「模型怎么发现 deferred 工具」 | 同左 |
+| ④ | **MoS 的取舍与理由** | 选 **PI 的 `tool_search` 语义（协议无关）**，**不做**协议原生 `defer_loading` 通道。理由：①MoS 三协议适配器自写（openai chat / anthropic / gemini），原生 defer_loading 只有 Anthropic（与 OpenAI Responses）支持，Gemini 无对应概念——做协议通道 = 三套投影 + 能力探测，复杂度高；②MoS 当前无 MCP / 大工具面，原生协议的缓存收益尚未兑现；③PI 的 BM25 排序器与搜索文档构造是纯函数，可直接移植成 Go。代价：激活走「下一轮生效」（MoS 现有「运行期旋钮下一轮生效」语义，与 `SetModel` 同构）；无原生 defer 时每轮 token 节省依赖「deferred 工具不进 `List()`」——这正是 FR-C3 的验收口径（工具数增长时 prompt token 亚线性） | 同左 |
+| ⑤ | **两家都没有的空白** | **PRD FR-C3 的「超 10% 自动启用」两家都没有**（PI：配置驱动；DSH：作者标记）——MoS 也不自创阈值机制，改为「机制在框架、策略在宿主」：宿主用 `Registry.RegisterDeferred` 声明 deferred 集，deferred 集非空 = `tool_search` 自动注册（工具必须始终可见，否则鸡生蛋）；小工具集（不注册 deferred）行为与现状完全一致（零回归）。**激活态持久化是第二处空白**：PI 记 transcript、DSH 走 ToolHistory，MoS 的等价物是会话事件日志——但激活态属于 Registry（内存），重放到新进程后由宿主装配决定；为保投影合法性（assistant 的 tool_call 对应工具须在声明清单里，部分供应商强制），驱动组装工具清单时把「历史中出现过的工具名」强制并入（fail-safe：日志说它被用过，它就该在）——此兜底为 MoS 自创，风险登记在下面 | 同左 |
+
+##### MoS SDK 侧设计
+
+| 落点 | 内容 | 依赖 |
+| --- | --- | --- |
+| `tool`（Registry 增强） | `RegisterDeferred`（注册但不进 `List()`）+ `DeferredTools()`（可搜清单：名 + 描述）+ `Activate(names)`（激活，下一轮 `List()` 生效）；`List()` 语义不变（可见 + 激活） | 不变 |
+| `tool/builtin` | `tool_search` 工具：BM25 排序（移植 PI：k1/b 同参、camelCase 分词、停用词、简单词干）+ 命中即 `Activate`；回执列激活的工具名与描述首行（PI 同款文案语义）；自身始终可见 | → `tool` |
+| 驱动（react） | 组装决策工具清单时并入「历史投影中出现过的工具名」（投影合法性兜底） | 不变 |
+| 装配层（`mos`） | `Config` 检测 deferred 集非空 → 自动注册 `tool_search`（能力即证据；未注册 deferred 工具则什么都不发生） | → `tool/builtin` |
+
+- **与 Policy / Guard 的关系**：deferred 工具激活后照常受 Policy / 守卫管——可见性过滤在 `List()`，执行与否由运行时守卫决定（既有纪律不变）。`tool_search` 自身的执行照常走 execpath 三阶段。
+- **审计与留痕**：激活 = `tool_search` 的 `tool/call` + `tool/result` 落日志（既有通道），回执列明激活了哪些；无新事件类型（治理规则 2 预算不破）。
+- **并发安全**：`Activate` 在工具执行通道内调用（`tool_search` 的 execute），`List()` 在下一轮决策前调用，Registry 锁已覆盖。
+- **C2 / C4 守护测试**：C2 = 断言 `generateSchema` 输出无 `title`/`$defs`（现状天然满足，锁住防止回归）；C4 = 断言连续两轮决策收到的 system 段逐字节一致（`prompt.Builder` 装配期渲染一次已保证，锁住）。
+
+##### 自创点与风险登记
+
+| 自创点 | 理由 | 风险 | 缓解 |
+| --- | --- | --- | --- |
+| 「历史工具名并入清单」兜底 | 激活态不跨进程；投影合法性要求历史里调过的工具在声明清单里 | 清单可能大于宿主装配的可见集（历史里有、现在不该有的工具） | 只并入**历史投影中实际出现**的名字；Policy/守卫照常裁决执行，越权依旧被拦 |
+| deferred 集非空即自动注册 `tool_search` | 机制在框架：不注册 deferred 就零变化；策略在宿主：要不要 deferred 是装配决定 | 宿主不知道 `tool_search` 的存在（自动出现） | `Describe()` 写明；工具描述自解释（PI 同款：描述不枚举可搜工具，保持稳定利于 cache） |
+
+##### 状态
+
+| 项 | 状态 |
+| --- | --- |
+| `Registry` deferred 支持 + 测试 | ✅（`RegisterDeferred`/`DeferredTools`/`Activate`；`tool/deferred_test.go`） |
+| `tool_search` 工具（BM25 + CJK bigram 扩展）+ 测试 | ✅（`tool/searchtools`；中文查询按重叠二元组成词元，无需分词词典） |
+| 驱动「历史工具名并入」兼底 + 测试 | ✅（react 每轮组装前并入投影中出现过的工具名） |
+| C2/C4 守护测试 | ✅（schema 无 title/$defs；`prompt.Builder` 两次 Render 逐字节一致） |
+| README / PRD 状态同步 | ✅（本片） |
+
+实现备注（与 PI 的两处有意差异，均已在此登记）：
+- **CJK bigram**：PI 的分词只认 `[a-z0-9]`，纯中文查询会得到空词元零结果——MoS 面向中文工具面，连续汉字按重叠二元组成词元（中文检索标准做法，无需分词词典）；
+- **激活态兼底**：PI 激活记 transcript、DSH 走 ToolHistory；MoS 的事件日志等价物已在，但驱动每轮组装清单时从**投影**反推历史工具名并入声明清单（投影合法性要求：历史里调过的工具必须在声明清单里，部分供应商强制），跨进程恢复零配置。
 
 ## 4. 治理规则（防再膨胀）
 

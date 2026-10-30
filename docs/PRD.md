@@ -103,7 +103,9 @@ Capability：filesystem / sandbox / httpx 顶层包（v2.24 从 tool 包剥离�
 | M2.1 ~ M2.7 | 状态外置、审计门、输出截断、两层消息翻译边界、fresh-context 压缩 + 利用率监控 + Doom Loop、槽位系统提示词 + Skills、RAG 扩展点 | ✅ |
 | v2 架构重构（v2.3 ~ v2.17） | EventBus / Session 日志 / Hook+Guard / RunContext+LoopDriver / seam / router / executor / scope / 持久化 / telemetry | ✅ |
 | M2.8 / M2.8+ | 异步 Approval + Checkpointer + AgentHandle / 文件工具 Jail（破坏性变更：`WorkspaceRoot` 必填） | ✅ |
-| M2.9 ~ M5 | 见 §5 需求 | ❌ 未开始 |
+| M2.10 | FR-C 工具规模化：deferred 懒加载 + `tool_search` BM25 发现激活（C1 缓存在重建时已落地；C2/C4 守护测试锁定）；C3 的「超阈值自动启用」改为「deferred 集非空才装配 `tool_search`」（PI/DSH 均无阈值机制，不自创，分析见 ARCHITECTURE §3.15） | ✅（重建周期 S7.3） |
+| M2.9 | FR-B 经验记忆 | ❌ 已决定不做（2026-10，用户拍板） |
+| M3 ~ M5 | 见 §5 需求 | ❌ 未开始 |
 
 ---
 
@@ -125,14 +127,14 @@ Capability：filesystem / sandbox / httpx 顶层包（v2.24 从 tool 包剥离�
 | FR-B1 | 执行历史沉淀为经验库：成功策略 / 已知陷阱入库，按成功率 / 时间 / 成本加权评分择优 | 经验写入 → 评分 → 检索 → 注入决策链路 E2E 测试 |
 | FR-B2 | 决策时检索注入：复用 M2.7 `memory.Retriever` 基础设施与注入钩子 | 未注入经验时行为与现状完全一致（零回归）；注入走 `CustomMsg(Source="experience")`，不进会话历史 |
 
-### 5.3 FR-C：M2.10 工具规模化（P1）
+### 5.3 FR-C：M2.10 工具规模化（P1，已交付，见 §4.3 里程碑表）
 
-| 编号 | 需求 | 验收标准 |
-| --- | --- | --- |
-| FR-C1 | schema 生成缓存：`generateSchema` 反射结果按工具 memo 化 | 循环内不再重复反射（基准测试佐证） |
-| FR-C2 | schema 压缩：删 title / $defs、过滤注入参数 | 注入 schema 体积下降且参数解析不受影响 |
-| FR-C3 | deferred 懒加载：工具只发名字进 prompt，`tool_search` 按需取 schema；工具描述占上下文超阈值（参考 Claude Code 10%）自动启用，小工具集保持全量注入 | 工具数增长时 prompt token 亚线性；默认行为对现有用户不变 |
-| FR-C4 | 静态系统提示保 prompt cache：动态内容移至 user 消息侧 | 连续两轮请求 system 段逐字节一致（缓存命中） |
+| 编号 | 需求 | 验收标准 | 状态 |
+| --- | --- | --- | --- |
+| FR-C1 | schema 生成缓存：`generateSchema` 反射结果按工具 memo 化 | 循环内不再重复反射（基准测试佐证） | ✅ 重建时已落地（`Registry.Register` 时生成） |
+| FR-C2 | schema 压缩：删 title / $defs、过滤注入参数 | 注入 schema 体积下降且参数解析不受影响 | ✅ 生成器本就不产出 title/$defs（守护测试锁定） |
+| FR-C3 | deferred 懒加载：工具只发名字进 prompt，`tool_search` 按需取 schema；工具描述占上下文超阈值（参考 Claude Code 10%）自动启用，小工具集保持全量注入 | 工具数增长时 prompt token 亚线性；默认行为对现有用户不变 | ✅ deferred 集 + `tool_search`（BM25）已落地；**「10% 阈值」未做**——PI/DSH 均无此机制（PI 配置驱动 / DSH 作者标记），不自创，改为「deferred 集非空才装配」 |
+| FR-C4 | 静态系统提示保 prompt cache：动态内容移至 user 消息侧 | 连续两轮请求 system 段逐字节一致（缓存命中） | ✅ 分节装配器装配期渲染一次（守护测试锁定） |
 
 ### 5.4 FR-D：M3 多智能体编排（P1，建议分期 M3a / M3b）
 
@@ -192,8 +194,8 @@ Capability：filesystem / sandbox / httpx 顶层包（v2.24 从 tool 包剥离�
 | 里程碑 | 内容（对应 FR） | 优先级 | 依赖 |
 | --- | --- | --- | --- |
 | **R（发布准备）** | FR-A1 协议层独立发布、FR-A2 文档同步 | P0 | moproto 仓库就绪 |
-| **M2.9** | FR-B1/B2 经验记忆 | P1 | 无（复用 M2.7 扩展点） |
-| **M2.10** | FR-C1~C4 工具规模化 | P1 | 无 |
+| ~~**M2.9**~~ | ~~FR-B1/B2 经验记忆~~ | ~~P1~~ | 已决定不做（2026-10） |
+| **M2.10** | ~~FR-C1~C4 工具规模化~~ | ~~P1~~ | ✅ 已交付（S7.3） |
 | **M3a** | FR-D1/D2/D3/D8/D9（路由拓扑、三权分离、SubAgent、MCP、Loop 升级） | P1 | R |
 | **M3b** | FR-D4~D7/D10（双阶段、并行 DAG、AgentTeam、合约+Elo、显式图） | P1 | M3a |
 | **M4** | FR-E1~E10 生产化 | P1 | M3a（部分项可并行） |
