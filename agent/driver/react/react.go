@@ -65,6 +65,38 @@ func (d *Driver) Run(ctx context.Context, rt *driver.RunContext, sess *session.S
 	var defs []llm.Tool
 	if rt.Tools != nil {
 		defs = rt.Tools.List()
+		// 历史工具名并入（S7.3 兼底）：投影合法性要求历史里调过的工具仍在声明
+		// 清单里（部分供应商对「历史 tool_call 的工具未声明」报错）。deferred
+		// 激活态不跨进程，重启恢复后由投影反推：日志说它被用过，它就该在。
+		used := map[string]bool{}
+		for _, ev := range sess.Events() {
+			if ev.Kind == session.EventAssistant {
+				for _, c := range ev.ToolCalls {
+					used[c.Name] = true
+				}
+			}
+		}
+		if len(used) > 0 {
+			known := map[string]bool{}
+			for _, def := range defs {
+				known[def.Name] = true
+			}
+			var missing []string
+			for name := range used {
+				if !known[name] {
+					missing = append(missing, name)
+				}
+			}
+			if len(missing) > 0 {
+				if _, err := rt.Tools.Activate(missing); err != nil {
+					// 未注册的名字（幻觉工具）不在激活范围：跳过（Activate 对
+					// 已知工具逐个生效，错误只在全部未注册时发生；这里防御性
+					// 忽略，不阻断正常轮）。
+					_ = err
+				}
+				defs = rt.Tools.List()
+			}
+		}
 	}
 
 	maxRounds := rt.MaxDecisionRounds // <=0 = 不限（压缩接管上下文增长）

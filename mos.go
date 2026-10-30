@@ -52,6 +52,7 @@ import (
 	"github.com/puras/mos/session"
 	"github.com/puras/mos/tool"
 	"github.com/puras/mos/tool/builtin"
+	"github.com/puras/mos/tool/searchtools"
 )
 
 // Config 是装配层配置：全字段可选，零值 = 框架默认（见 defaults.go）。
@@ -187,6 +188,8 @@ type Agent struct {
 	workDir      string
 	truncateMax  int
 	shellEnabled bool
+	// searchWired 标记装配时注册了 tool_search（deferred 集非空；Describe 快照用）。
+	searchWired bool
 	// roots 是运行期可变的根集合（宿主给的活边界；nil = 没有这个能力）。
 	roots *filesystem.RootSet
 
@@ -326,6 +329,19 @@ func New(cfg Config) (*Agent, error) {
 		shellEnabled = true
 	}
 
+	// tool_search：deferred 集非空才注册（能力即证据——没有懒加载工具就不给
+	// 发现工具，小工具集行为与从前完全一致）。机制在框架、策略在宿主：
+	// 要不要 deferred 是宿主的装配决定（S7.3，docs/ARCHITECTURE.md §3.15）。
+	searchWired := false
+	if len(reg.DeferredTools()) > 0 {
+		if _, ok := reg.Get("tool_search"); !ok {
+			if err := reg.Register(searchtools.NewToolSearch(searchtools.Options{Registry: reg})); err != nil {
+				return nil, fmt.Errorf("mos: 注册 tool_search 工具: %w", err)
+			}
+		}
+		searchWired = true
+	}
+
 	// 守卫总线（单调裁决）与钩子总线（可改写环节）：两条轨道，互不绕过。
 	guards := hook.NewGuardBus()
 	hooks := hook.NewHookBus()
@@ -343,6 +359,7 @@ func New(cfg Config) (*Agent, error) {
 		workDir:      cfg.WorkDir,
 		truncateMax:  cfg.TruncateMaxBytes,
 		shellEnabled: shellEnabled,
+		searchWired:  searchWired,
 		roots:        cfg.Roots,
 
 		contextWired:   cfg.Context != nil,
@@ -623,6 +640,12 @@ func (a *Agent) Describe() string {
 		b.WriteString("  shell: 已装配（隔离执行 + 路径强制：写限定在工作区）\n")
 	} else {
 		b.WriteString("  shell: 未装配（模型看不到这个能力）\n")
+	}
+	switch {
+	case !a.searchWired:
+		b.WriteString("  tool_search: 未装配（没有 deferred 工具）\n")
+	default:
+		b.WriteString("  tool_search: 已装配（deferred 工具经搜索激活，下一轮生效）\n")
 	}
 	if a.compactor != nil {
 		b.WriteString("  上下文压缩: 已装配（超预算时模型生成结构化摘要落日志）\n")

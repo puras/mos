@@ -69,6 +69,9 @@ type Registry struct {
 	order []string
 	// schemas 是注册时生成的 JSON Schema 缓存：避免循环内每轮 List() 重复反射。
 	schemas map[string]map[string]any
+	// deferred 是懒加载集：注册但不进 List()（模型看不到），经 tool_search
+	// 激活后下一轮才声明。只记名字，顺序沿 order。
+	deferred map[string]bool
 	// visible 是可见性过滤器（可选）：返回 false 的工具不出现在 List() 里，
 	// 但仍可被 Call——执行与否由运行时守卫决定。
 	visible func(name string) bool
@@ -77,8 +80,9 @@ type Registry struct {
 // NewRegistry 创建空注册表。
 func NewRegistry() *Registry {
 	return &Registry{
-		tools:   make(map[string]Tool),
-		schemas: make(map[string]map[string]any),
+		tools:    make(map[string]Tool),
+		schemas:  make(map[string]map[string]any),
+		deferred: make(map[string]bool),
 	}
 }
 
@@ -130,15 +134,20 @@ func (r *Registry) Names() []string {
 
 // List 返回工具的协议层定义（按注册顺序），供 LLM 请求使用。
 // Schema 取自注册时的缓存，不在每轮调用中重复反射。
-// List 返回**模型可见**的工具清单。
+// List 返回**模型可见且已激活**的工具清单。
 //
 // 可见性过滤（SetVisibility）在这里生效：被过滤掉的工具不出现在清单里，模型
-// 不会去调它们（PI/DSH 的可见性层语义）。Names() 与 Call() 不受过滤影响。
+// 不会去调它们（PI/DSH 的可见性层语义）。deferred（RegisterDeferred）且未
+// 激活的工具同样不出现——它的名字与描述只经 tool_search 暴露（S7.3）。
+// Names() 与 Call() 不受两道过滤影响。
 func (r *Registry) List() []llm.Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	out := make([]llm.Tool, 0, len(r.order))
 	for _, name := range r.order {
+		if r.deferred[name] {
+			continue
+		}
 		if r.visible != nil && !r.visible(name) {
 			continue
 		}
@@ -154,12 +163,16 @@ func (r *Registry) List() []llm.Tool {
 
 // Guidelines 返回已注册工具的跨调用指引（按注册序，稳定；利于 prompt cache）。
 // 未实现 Guideline 的工具、返回空串的指引、被可见性过滤掉的工具都不贡献——
-// 模型看不见的工具，其指引同样不进提示词（与 List() 同一可见性语义）。
+// 模型看不见的工具，其指引同样不进提示词（与 List() 同一可见性语义，
+// deferred 未激活的同样不进）。
 func (r *Registry) Guidelines() []GuidelineText {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	var out []GuidelineText
 	for _, name := range r.order {
+		if r.deferred[name] {
+			continue
+		}
 		if r.visible != nil && !r.visible(name) {
 			continue
 		}
@@ -170,6 +183,67 @@ func (r *Registry) Guidelines() []GuidelineText {
 		}
 	}
 	return out
+}
+
+// RegisterDeferred 注册一个懒加载工具：进注册表（可被 Call、可被守卫裁），
+// 但不进 List()/Guidelines()——模型看不到，只有它的名字与描述经
+// DeferredTools() 暴露给 tool_search。激活（Activate）后下一轮 List()
+// 才声明它（PI 的 deferred exposure / DSH 的 deferLoading 同语义）。
+// 重名（含与普通注册的冲突）返回错误。
+func (r *Registry) RegisterDeferred(t Tool) error {
+	if err := r.Register(t); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.deferred[t.Name()] = true
+	return nil
+}
+
+// DeferredInfo 是一个 deferred 工具的搜索元数据（名 + 描述；schema 不进——
+// 搜到才加载 schema，这正是省 token 的点）。
+type DeferredInfo struct {
+	Name        string
+	Description string
+}
+
+// DeferredTools 返回当前仍未激活的 deferred 工具（按注册序）。已激活的不在——
+// 它已进 List()，再列出来是重复信息。
+func (r *Registry) DeferredTools() []DeferredInfo {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []DeferredInfo
+	for _, name := range r.order {
+		if !r.deferred[name] {
+			continue
+		}
+		t := r.tools[name]
+		out = append(out, DeferredInfo{Name: name, Description: t.Description()})
+	}
+	return out
+}
+
+// Activate 激活若干 deferred 工具：下一轮 List() 开始声明它们。
+// 未注册的名字报错（fail-closed——激活一个不存在的工具是调用方 bug）；
+// 未注册为 deferred 的名字（已是普通工具）跳过（它已在清单里）。
+// 返回实际新激活的名字（按传入序；已激活的不重复算）。
+func (r *Registry) Activate(names []string) ([]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var activated []string
+	for _, name := range names {
+		if _, ok := r.tools[name]; !ok {
+			return nil, fmt.Errorf("tool: 激活未注册工具 %q", name)
+		}
+		if !r.deferred[name] {
+			continue // 普通工具已在清单里，跳过
+		}
+		if r.deferred[name] {
+			delete(r.deferred, name)
+			activated = append(activated, name)
+		}
+	}
+	return activated, nil
 }
 
 // Call 执行指定名称的工具调用（统一入口）。
