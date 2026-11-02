@@ -141,7 +141,7 @@ type SearchArgs struct {
 
 - ✅ **已交付**：统一 LLM 接入、工具系统、ReAct 循环、执行通道、安全纵深、上下文工程、装配层、联网工具、工具规模化（M2.10）
 - ⬜ **R（发布准备，P0）**：协议层脱离本地 replace，外部工程 `go get` 可构建
-- ⬜ **M3** 多智能体：SubAgent（agents-as-tools）、MCP 接入、AgentTeam、并行 DAG
+- ⬜ **M3** 多智能体：SubAgent（agents-as-tools）、MCP 接入、AgentTeam、并行 DAG；其中 **S8 预切片**：Skills 重做 → MCP 客户端（stdio）→ MCP 装配（先 MCP 后 SubAgent），设计与 PI/DSH 对账见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §3.16
 - ⬜ **M4** 生产化：Docker 强隔离、模型分级路由、评估与监控、可恢复运行目录
 - ⬜ **M5** 自我进化（实验性）
 

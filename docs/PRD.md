@@ -1,6 +1,7 @@
 # MoS PRD（产品需求文档）
 
-> 版本：v0.1（草案）｜ 日期：2026-10-15 ｜ 维护：puras
+> 版本：v0.1（草案）｜ 日期：2026-11-02 ｜ 维护：puras
+> 更新记录：**2026-11-02** —— Skills 状态从「已交付（M2.6）」改为 **FR-D11 待建**（重建树无实现；用户拍板：按新架构重做，不移植旧码）；FR-D8 五步交互的「请求制定」改为「**暴露策略（exposure）**」；开放问题 2（MCP transport）定「先 stdio」、5（SubAgent/MCP 先后）定「MCP 先」。分析见 `docs/ARCHITECTURE.md` §3.16。
 > 需求权威来源：`docs/architecture-v2.md`（架构与路线图）+ `README.md` 路线图 + `docs/sdk-contracts.md`（平台契约）；本文将其整理为可跟踪的产品需求视图。
 > 状态约定：M1 ~ M2.8+ 为**已交付基线**（本文 §4 只盘点不展开）；M2.9 ~ M5 为**待建需求**（本文 §5/§6 的需求主体）。API 细节以 `docs/agent/*` 子系统文档与源码为准。
 
@@ -18,7 +19,7 @@ MoS（取自 Sapient）是基于 Go 的**智能体基础框架（Agent Base SDK�
 
 - **状态写文件不写上下文**：`TaskState` 外置、会话事件日志（append-only）是唯一事实来源；
 - **只接受环境独立验证过的事实**：`Auditor` 审计门，模型自述不算数；
-- **上下文越少越好**：截断（M2.3）+ fresh-context 压缩（M2.5）+ 槽位式系统提示词 + Skills 懒加载（M2.6）；
+- **上下文越少越好**：截断（M2.3）+ fresh-context 压缩（M2.5）+ 槽位式系统提示词（M2.6）+ Skills 懒加载（**M3a 待建，FR-D11**）；
 - **能写成 Linter 的约束别写成文档**：`Policy` 执行前拦截 + `GuardBus` 单调守卫 + `Sandbox` 执行中隔离。
 
 ### 1.3 三层职责边界（MoS 是 SDK，不越界）
@@ -88,10 +89,10 @@ Capability：filesystem / sandbox / httpx 顶层包（v2.24 从 tool 包剥离�
 | 工具系统 | 结构体 tag → JSON Schema、参数容错解析；`tool/builtin` 7 个纯标准库工具；`tool/extension` web_search（5 家搜索提供商）；输出截断（行/字节 + 智能截断 + 落盘逃生通道）；`Sandbox` 进程级隔离（jail + 超时 + 资源限制 + 环境裁剪 + 网络控制）；`filesystem` capability（Lexical + Realpath 双层校验、symlink TOCTOU 防护、`fs/resolve` 审计事件） |
 | 安全 | `DefaultPolicy` 分级（绝对危险拒绝 / 受限危险 WorkDir + Approval 确认 / 前缀白名单 / 路径越界 / fail-closed 未知工具）；`request_human_input` 人工介入工具；异步 Approval 挂起-恢复 |
 | 会话与状态 | append-only 事件日志 + `deriveMessages` 投影；JSONL 持久化（fail-fast、崩溃恢复）；`TaskState` 外置（目标/已验证事实/状态机）；`Auditor` 审计门（只读白名单 + Trust 扩展） |
-| 上下文工程 | 截断 + fresh-context 压缩（不切断 ToolCall-Result 对，摘要 = TaskState 快照）；槽位式系统提示词 + CLAUDE.md 向上递归；Skills（7 字段 frontmatter + `activate_skill` + `allowed-tools` 守卫硬收窄，激活作用域 = 本次 Run）；40% Dumb Zone 告警；Doom Loop 守卫 |
+| 上下文工程 | 截断 + fresh-context 压缩（不切断 ToolCall-Result 对，摘要 = TaskState 快照）；槽位式系统提示词 + CLAUDE.md 向上递归；40% Dumb Zone 告警；Doom Loop 守卫。**Skills 未交付**（原 M2.6 记录随重建丢失 → M3a FR-D11 待建） |
 | 循环生态 | 4 驱动 + HybridRouter（规则硬路由 → LLM 分类兜底）；批量工具三阶段并发执行（preflight → 有界并发 → 按源序回填）；`tool.SequentialTool` 串行回退 |
 | 生命周期 | `agent/scope` 注册作用域（逆序回滚）；`agent/approval` + `agent/checkpoint` + `agent/handle`（create/resume/dispose + 资源校验）；TaskState 持久化 |
-| 可观测 | `Observer` 回调 + `EventBus`（emit/waterfall/parallel/serial 四模式）；Telemetry seam（显式 span 契约 + Recorder 参考实现 + Conformance 契约测试）；`skill/*`、`fs/resolve`、`approval/*`、`checkpoint/*` 等事件全量落会话日志 |
+| 可观测 | `Observer` 回调 + `EventBus`（emit/waterfall/parallel/serial 四模式）；Telemetry seam（显式 span 契约 + Recorder 参考实现 + Conformance 契约测试）；`fs/resolve`、`approval/*`、`checkpoint/*` 等事件全量落会话日志（`skill/*` 随 FR-D11 待建） |
 | 装配 | `assistant.Config` 全量注入式配置；`agent/seam` + `agent/config`（YAML → Agent）；声明式驱动选择（`Driver` / `DriverFactory`） |
 | 示例与文档 | `examples/cli`（真实模型）、`examples/protocli`（双协议切换 + Wrap 组合）、`examples/agentcli`（七站式运行时教程）；`docs/agent/` 18 篇子系统文档 + `docs/assistant.md` + `docs/llm.md` |
 
@@ -100,7 +101,7 @@ Capability：filesystem / sandbox / httpx 顶层包（v2.24 从 tool 包剥离�
 | 里程碑 | 内容 | 状态 |
 | --- | --- | --- |
 | M1 / M1.5 / M1.6 | 任务循环、多协议接入、工具系统、事件观测 / assistant 组装 + Policy / 执行沙箱 | ✅ |
-| M2.1 ~ M2.7 | 状态外置、审计门、输出截断、两层消息翻译边界、fresh-context 压缩 + 利用率监控 + Doom Loop、槽位系统提示词 + Skills、RAG 扩展点 | ✅ |
+| M2.1 ~ M2.7 | 状态外置、审计门、输出截断、两层消息翻译边界、fresh-context 压缩 + 利用率监控 + Doom Loop、槽位式系统提示词、RAG 扩展点 | ✅（Skills 随重建丢失 → 见 M3a FR-D11） |
 | v2 架构重构（v2.3 ~ v2.17） | EventBus / Session 日志 / Hook+Guard / RunContext+LoopDriver / seam / router / executor / scope / 持久化 / telemetry | ✅ |
 | M2.8 / M2.8+ | 异步 Approval + Checkpointer + AgentHandle / 文件工具 Jail（破坏性变更：`WorkspaceRoot` 必填） | ✅ |
 | M2.10 | FR-C 工具规模化：deferred 懒加载 + `tool_search` BM25 发现激活（C1 缓存在重建时已落地；C2/C4 守护测试锁定）；C3 的「超阈值自动启用」改为「deferred 集非空才装配 `tool_search`」（PI/DSH 均无阈值机制，不自创，分析见 ARCHITECTURE §3.15） | ✅（重建周期 S7.3） |
@@ -147,9 +148,10 @@ Capability：filesystem / sandbox / httpx 顶层包（v2.24 从 tool 包剥离�
 | FR-D5 | LLMCompiler 多智能体并行 DAG：基于 `agent/driver/scripted`（单智能体先行版已落地）扩展 Map-Reduce——分支并发、结果经 TaskState 汇聚、合并只读分支摘要、并行度作为计划元数据 | DAG 校验 fail-closed（依赖环 / 节点存在性）；并发分支数有界 |
 | FR-D6 | AgentTeam 智能体团队：Team Lead + Teammates + Shared Task List（`pending → in_progress → completed` + `blocks/blockedBy` 依赖自动解锁）+ Mailbox 点对点消息；状态落盘（角色/上下文/决策/任务文件/名册写 `runs/<run-id>`，中断后可重建）；工作树隔离（独立工作目录/分支，测试通过才合并） | 事件 `subagent/*`、`task_claim/task_complete` 落日志；团队重建演练（kill 后一条命令恢复） |
 | FR-D7 | 合约化任务 + Elo 择优：可验证交付物 + 协商澄清 + 子合约分解；多方案生成按 Elo 排序择优 | 交付物可机器验证（退出码 / 路径命中 / 事件日志），禁止 LLM 自评闭环 |
-| FR-D8 | MCP 接入：`mcp.json` 声明服务器与 transport（stdio / streamable-http）；五步交互（发现 → 请求制定 → 调用 → 错误回传 → 结果注入） | MCP 工具进 Registry 后与内置工具同受 Policy/Guard 管辖；单个 MCP 失败不阻塞其余加载 |
+| FR-D8 | MCP 接入：宿主以结构声明服务器与 transport（stdio / streamable-http；**先 stdio**；`mcp.json` 解析归宿主，框架不绑配置格式）；五步交互（发现 → **暴露策略**（exposure：`deferred`/`direct`/`hidden` + 逐工具覆盖）→ 调用 → 错误回传 → 结果注入）；不做 OAuth（凭据由宿主注入） | MCP 工具进 Registry 后与内置工具同受 Policy/Guard 管辖；单个 MCP 失败不阻塞其余加载；MCP 工具默认 deferred（经 `tool_search` 发现激活），工具面增长不吃线性 prompt |
 | FR-D9 | Agent Loop 升级：Turn 语义完善 + 错误注入反馈（错误信息解释"为何违反规则 + 正确做法"，Linter 报错即上下文工程） | 错误注入后模型自纠成功率可观测（测试集） |
 | FR-D10 | 显式图边界（判据门控）：节点 / 边 / 状态 schema + reducers / checkpointer；编译期校验（节点可达性、状态字段一致性、边类型合法性），不合法图拒绝运行 | **仅在满足分支/并行/持久/可审计判据时引入**——图是可选编排层，不是默认架构 |
+| FR-D11 | Skill 能力（Skills 重做，M3a）：装配期技能目录（`SKILL.md` + frontmatter：name/description/when-to-use/allowed-tools/disable-model-invocation/metadata）+ 专用 `skill` 工具（正文按需加载，进工具结果）+ 技能清单进系统提示词（静态，保 prompt cache）+ `skill/*` 事件 | 渐进式披露（元数据进上下文、正文按需）；**不做技能级工具收窄**（PI 有字段无实现、DSH 无字段 → 不自创；`allowed-tools` 只解析留痕 + 诊断）；用户显式 `/name` 由宿主调用展开器（框架不自动扫文本）；技能目录须登记为文件读根 |
 
 ### 5.5 FR-E：M4 生产化（P1）
 
@@ -196,7 +198,7 @@ Capability：filesystem / sandbox / httpx 顶层包（v2.24 从 tool 包剥离�
 | **R（发布准备）** | FR-A1 协议层独立发布、FR-A2 文档同步 | P0 | moproto 仓库就绪 |
 | ~~**M2.9**~~ | ~~FR-B1/B2 经验记忆~~ | ~~P1~~ | 已决定不做（2026-10） |
 | **M2.10** | ~~FR-C1~C4 工具规模化~~ | ~~P1~~ | ✅ 已交付（S7.3） |
-| **M3a** | FR-D1/D2/D3/D8/D9（路由拓扑、三权分离、SubAgent、MCP、Loop 升级） | P1 | R |
+| **M3a** | FR-D1/D2/D3/D8/D9/**D11**（路由拓扑、三权分离、SubAgent、MCP、Loop 升级、Skills 重做；MCP 先于 SubAgent） | P1 | R |
 | **M3b** | FR-D4~D7/D10（双阶段、并行 DAG、AgentTeam、合约+Elo、显式图） | P1 | M3a |
 | **M4** | FR-E1~E10 生产化 | P1 | M3a（部分项可并行） |
 | **M5** | FR-F1 自我进化（实验） | P2 | M4 的 E4（评估与机器信号） |
@@ -221,10 +223,10 @@ Capability：filesystem / sandbox / httpx 顶层包（v2.24 从 tool 包剥离�
 ### 8.2 开放问题（待用户/维护者决策）
 
 1. `moproto` 拆独立 module 的时间点与版本策略（是否与 MoS v1.0 同步）？
-2. MCP transport 优先级：stdio 与 streamable-http 先做哪个？
+2. ~~MCP transport 优先级~~ —— **已决（2026-11-02）**：先 stdio（无网络依赖、易测、与进程管理同构），streamable-http 紧随（`httpx` 已有）。
 3. 远程沙箱后端选型：Docker 还是 containerd（或两者都做适配器）？
 4. M2.9 经验记忆的默认介质：SDK 内置 JSONL 默认实现（对齐 Persistence 惯例）还是纯扩展点？
-5. M3a 中 SubAgent 与 MCP 的先后（MCP 工具面会放大 SubAgent 工具白名单的价值，但也增加交付面）？
+5. ~~M3a 中 SubAgent 与 MCP 的先后~~ —— **已决（2026-11-02）**：**MCP 先**（边界独立可单测；工具面立稳后，SubAgent 的工具白名单才有稳定母集）。
 
 ---
 

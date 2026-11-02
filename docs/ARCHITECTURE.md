@@ -43,6 +43,8 @@
 | `agent/contextfile` | 上下文文件（AGENTS.md / CLAUDE.md 等）发现与合并：候选名优先级 + 向上递归 + 同目录 override + 真实路径去重 + 字节预算裁剪；**I/O 以 Reader 接口注入**（框架不碰文件系统） | 新增 | S6 ✅ |
 | `agent`（上下文件） | 截断、压缩、Auditor | 重写瘦身 | S6 ✅ |
 | `mos`（根包） | 一行装配 `mos.New(Config)` + 运行期旋钮（并发/策略/规则/加根/**换模型**）+ 装配快照 | 重写 | S7 ✅ |
+| `agent/skill` | 技能元数据解析（frontmatter）+ 目录发现 + `<available_skills>` 清单渲染 + 专用 `skill` 工具按需加载正文；**不做技能级工具收窄**（§3.16） | 新增 | S8.1 ⬜ |
+| `tool/mcp` | MCP 客户端（stdio / streamable-http）+ 工具适配（`mcp__<server>__<tool>` 命名、schema 直通、结果投影）+ 原子换代 | 新增 | S8.2 ⬜ |
 
 > S3 边界：`tool/builtin` 只带 `current_time`（无安全副作用）。涉及文件与命令执行的
 > 内置工具（read / write / grep / glob / ls / shell）等 S5 的 filesystem jail
@@ -655,6 +657,87 @@ llm.WithRetry(model, llm.RetryPolicy{
 实现备注（与 PI 的两处有意差异，均已在此登记）：
 - **CJK bigram**：PI 的分词只认 `[a-z0-9]`，纯中文查询会得到空词元零结果——MoS 面向中文工具面，连续汉字按重叠二元组成词元（中文检索标准做法，无需分词词典）；
 - **激活态兼底**：PI 激活记 transcript、DSH 走 ToolHistory；MoS 的事件日志等价物已在，但驱动每轮组装清单时从**投影**反推历史工具名并入声明清单（投影合法性要求：历史里调过的工具必须在声明清单里，部分供应商强制），跨进程恢复零配置。
+
+### 3.16 Skill 与 MCP 集成（S8：FR-D8 + Skills 重做）
+
+> **前置对账与拍板结果（2026-11-02，用户拍板）**：PRD §4.2/§4.3 原把 Skills 记为「已交付基线」（M2.6：7 字段 frontmatter + `activate_skill` + `allowed-tools` 守卫硬收窄 + `skill/*` 事件），但**重建后的工作树里没有任何 skill 包**——旧实现只存在于 `main_bak1015`（`agent/skills.go`、`agent/skills_activate.go`、`assistant/activate_skill.go`，外加 `docs/superpowers/specs/2026-08-17-skills-design.md` 与 `docs/research/skills-survey.md`）。**拍板：选 A —— 按新架构重做**（旧实现只作参考、不移植：它基于旧的守卫与执行通道，移植等于重写）。PRD 状态已同步（Skills 从「已交付」移到 FR-D11 待建）。
+> MCP 侧：PRD FR-D8 原写「五步交互（发现 → 请求制定 → 调用 → 错误回传 → 结果注入）」，而 PI/DSH 都是「发现 → **暴露** → 调用 → 错误回传 → 结果投影」——「请求制定」无对位物。**拍板：改为「暴露策略（exposure）」**，PRD 措辞已同步。
+> 其余拍板：MCP transport **先 stdio**（http 紧随）；M3a 内 **MCP 先于 SubAgent**；`allowed-tools` **参考 PI/DSH —— 不做技能级工具收窄**（两家都没有 → 不自创，见下方④⑤）。
+
+##### PI / DSH 参考分析 — Skill
+
+| # | 维度 | PI（`packages/coding-agent`） | DSH（`packages/skill/*`） |
+| --- | --- | --- | --- |
+| ① | **PI 的做法** / **DSH 的做法** | **发现**：`src/core/skills.ts` 的 `loadSkillsFromDirInternal`——目录里有 `SKILL.md` 即「技能根」（不再下钻），否则收该目录的 `.md` 子文件；`loadSkills` 扫 `<agent-dir>/skills`（user）→ `<cwd>/.pi/skills`（project）→ 显式 `--skill` 路径；按真实路径去重（symlink），同名**先发现先得** + collision 诊断。**契约**：frontmatter `name`（可回退父目录名）+ `description`（必需）；`validateName` = `^[a-z0-9-]+$`、≤64 字符、不得首尾/连续连字符；`validateDescription` ≤1024；`disable-model-invocation: true` = 模型不可见，只能显式命令调。**呈现**：`formatSkillsForPrompt` 把 name/description/**location（绝对路径）**写进 system prompt 的 `<available_skills>`，明说「用 read 工具读技能文件」，相对路径按技能目录解析（`src/core/system-prompt.ts:180`）。**加载**：模型用 **read 工具**读 SKILL.md（正文进工具结果 → 进历史）；`src/core/agent-session.ts:2173` 的 `_expandSkillCommand` 把 `/skill:name args` 展开成 `<skill name location>` + 正文，args 追加正文之后。**字段表**（`docs/skills.md`）：name/description/license/compatibility/metadata/allowed-tools/disable-model-invocation——其中 `allowed-tools` 文档口径是「experimental **pre-approved** tool list」（预批准），PI 本体不强制执行 | **注册表**：`packages/skill/skill/src/index.ts` 的 `SkillRegistry` = **provider + scope 分层**（`ScopedLayers`：global 层 + scope 链，最近层同名直接覆盖、层内按 `rank`），`SkillProvider{list,get}`，`collectCache` + revision 失效（`skills/change` 事件），`isSkillName` = `^[a-z0-9]+(?:-[a-z0-9]+)*$`。**工具**：`packages/skill/tool-skill/src/index.ts` 注册 **`skill` 工具**（参数只有 `name`，校验 model 可调用，返回正文）。**目录呈现**：不进 system prompt，而是 `agent/pre-step` 钩子注入 **user 消息**（`<system-reminder><available_skills>`，`source.kind='skill-catalog'`），按 entries digest 比对避免重复发布，目录变化时发「替换目录」。**显式调用**：同一钩子只扫 `source.kind==='user'` 的消息，匹配 `/name` 手势（`SKILL_GESTURE`），注入 `source.kind='skill-invocation'` / `form='instructions'` 的 user 消息；正文统一 `renderSkillContent`（`<skill_content><skill_resources><skill_instructions>` + 资源基准提示 directory/url/opaque）。**策略面**：`SkillInvocationPolicy{modelInvocable,userInvocable}`，frontmatter 由 `skill-filesystem` 的 `parseInvocationPolicy` 解析 `disable-model-invocation` / `user-invocable`（拒绝 legacy 驼峰键），另有自由 `metadata` |
+| ② | （见右） | （见左） |
+| ③ | **共识 / 分歧** | **共识**：①渐进式披露——元数据进上下文、正文按需加载；②目录型发现 + `name`/`description` 必需 + kebab-case 名；③模型不可见必须显式标记（`disable-model-invocation`）；④正文渲染要转义（技能正文不能自己开框）；⑤用户显式调用是独立入口（PI `/skill:name`、DSH `/name`）。**分歧**：①**清单落位**——PI 进 system prompt（静态），DSH 进 user 消息（动态、可更新、带 source 元数据）；②**正文获取通道**——PI 复用 read 工具（不多一处工具面，但要受读文件权限约束），DSH 用专用 `skill` 工具（多一处工具面，但与「读工作区文件」的权限面分离）；③**注册表形态**——PI 无 scope/provider 分层（固定 user→project 顺序 + 先到先得），DSH 有 provider + scope 链 + rank + 运行期失效通知；④**用户显式调用的识别点**——PI 在输入入口展开命令，DSH 在 pre-step 钩子扫消息 |
+| ④ | **MoS 的取舍与理由** | **清单进系统提示词（PI 语义）**：MoS 的技能目录由宿主**装配期**给定（治理规则「不做运行期插件热加载」）→ 清单在装配期即固定 → 进静态 system prompt 最省（渲染一次、cache 友好），不必抄 DSH 的「会话级目录发布 + digest + 替换」动态机制。代价：技能集变了要重建 Agent（v2 再补运行期热加载，届时清单须改走 user 侧）。**专用 `skill` 工具（DSH 语义）**：技能正文来自宿主配置的目录（可能在工作区外），走 read 工具会与「模型只能读 jail 内路径」的纪律打架；专用工具让「读技能」与「读工作区文件」权限面分离。代价：多一处工具面。**不抄 DSH 的 scope/provider 分层**：MoS 现在没有 scope 概念（§3.4 已记「DSH 的 per-scope 限制层——MoS 还没有 scope 概念」）。v1 = 宿主给的目录列表 + 固定优先级（项目 > 用户）+ 同名先到先得 + 诊断告警（PI 语义）。代价：将来 FR-D3 多智能体要按 agent 分技能集时再补一层（届时「按 Agent 装配不同目录」即可，不必上注册表）。**用户显式调用 = 提供展开器，不自动扫描**：MoS 提供 `skill.ExpandInvocation(text, catalog)`，由宿主决定何时调用；**不**自动扫用户文本里的 `/name`（误触发风险，且 MoS SDK 无用户命令面）。**`allowed-tools`：不做技能级工具限制（拍板：参考 PI/DSH）**——实查：**PI 只在文档里认这个字段**（`packages/coding-agent/docs/skills.md:78` 的 spec 字段表；PI 代码里没有任何 `allowed-tools` 实现，`src/core/agent-session.ts:504` 的 `_allowedTools` 是 CLI `--tools` 的会话级名单，与 skill 无关）；**DSH 连字段都没有**（工具限制是运行时通用机制 `ToolRestriction{allow,deny}`，`packages/core/tools/src/index.ts:701`、`:1105 restrict()`，只用在 SubAgent 的 `toolFilter` 上）。两家都没有「技能激活 → 工具面收窄」的机制 → MoS 也不自创（旧 MoS 的守卫硬收窄**作废**）：`allowed-tools` **只解析 + 记进 `skill/activate` 事件与诊断**（PI 同款：识别但未执行），执行语义交给宿主——宿主用既有能力（`policy.Config` 名字级名单 + `Registry.AddVisibility`）自行把技能与工具面绑定。代价：MoS 不提供「开箱即用的技能级授权」；收益：不与两家的行为模型打架，宿主策略自由度更高。**frontmatter 改 kebab-case**（`when-to-use` / `allowed-tools` / `disable-model-invocation`，对齐 spec 与 DSH）；旧 MoS v1 的 snake_case 不再沿用（未发布、无兼容负担，按 NFR-8 在变更记录声明）。字段集合 = `name` / `description`（必需）+ `when-to-use` / `allowed-tools` / `disable-model-invocation` / `metadata`；`paths` / `references` / `source` / `schema_version` **不做**（旧评审 C2 已把 `paths` 判为「清单过滤属业务层」） |
+| ⑤ | **两家都没有的空白** | **① 技能级工具限制**：PI 有字段无实现、DSH 连字段都没有 → **MoS 不自创**（拍板，见④）：`allowed-tools` 只解析与留痕，执行语义归宿主。风险：宿主若不接策略，`allowed-tools` 就是装饰字段——处置：解析时给诊断（「该字段当前不生效」），别让它看起来像生效了。**② 技能目录的 jail 语义**：两家都直接读技能文件（PI `readFileSync`、DSH `ctx.fs`），没有「技能目录须登记为读根」之说。MoS 自创：技能目录由宿主显式配置，并挂进 `filesystem.RootSet` 读根，否则读不到（对齐 §3.5 文件边界纪律）。风险：多一道宿主配置（根集合要自己加） |
+
+##### PI / DSH 参考分析 — MCP
+
+| # | 维度 | PI（`packages/coding-agent`） | DSH（`packages/mcp/*`） |
+| --- | --- | --- | --- |
+| ① | **PI 的做法** / **DSH 的做法** | **配置**：`src/core/mcp-servers.ts` —— `mcp.json`（`<agent-dir>/mcp.json` 全局 / `.pi/mcp.json` 项目）；条目 = stdio（`command`/`args`/`env`/`cwd`）或 streamable-http（`url`/`headers`/`oauth`）；`validateMcpServerConfig` 明确**不支持旧 SSE**；env/header 值支持 `${ENV}` 展开；`timeout` 默认 60s；`enabled` 可留条目不连。**暴露**：`McpExposure` 四档（`codemode` / `deferred` / `direct` / `hidden`）+ `toolExposure` 逐工具覆盖（精确名优先于 `*` pattern，`getMcpToolExposure`），默认 `codemode`。**命名**：`mcpNamespace` = `mcp__<server>`（`-`→`_`）；`src/extensions/mcp/tools.ts` 的 `createMcpToolName` = `mcp__<server>__<tool>`，非 `[A-Za-z0-9_]` → `_`，超 64 字符或重名 → 追加 **8** 位 sha256 后缀。**呈现**：`renderServersSection` 产出 system prompt 的 `mcp_servers` 节（整节 ≤4096 字符、每台 ≤250 字符，放不下就丢服务器并计数），告诉模型「有哪些服务器、工具怎么够到（codemode / tool_search）」；`ensureDiscoveryActive` 按配置里的 exposure 自动激活 `tool_search`（deferred）或 codemode 工具。**结果**：`limitMcpContent` 把模型可见文本压到 20KB（`truncateMiddle`），超出落临时文件并在正文给指针；`createMcpResultSchema` 把 `content`/`structuredContent`/`isError` 合成输出 schema；**工具不可注销** → 服务器撤掉的工具改注册为 `hidden`。**资源工具**：`list_mcp_resources` / `list_mcp_resource_templates` / `read_mcp_resource`。**认证**：完整 OAuth（动态注册 / 回调服务器 / token 存储 / 刷新） | **配置**：`packages/mcp/mcp-client/src/index.ts` 的 `Config` = `StdioConfig | StreamableHttpConfig`；`serverName` 必填 `[A-Za-z0-9_-]{1,32}` 且**注册作用域内唯一**（重名直接拒绝启动）；`toolCallTimeoutMs` 默认 60000；`failOnStartupError`（首连失败是否让插件加载失败）；`maxInstructionBytes` 默认 32768；`reconnect`（指数退避 + maxAttempts）。**命名**：`packages/mcp/mcp-client/src/tools.ts` 的 `publicToolName` = `mcp__<server>__<raw>`，非 `[A-Za-z0-9_-]` → `_`，超 64 字符 → 追加 **12** 位 sha256 后缀（PI 是 8 位）。**换代**：`syncTools` 两阶段——先取全量再换代，**换代冲突回滚**（不留半套工具）；刷新失败保留上一代（`docs/subsystems/mcp.zh.md`）。**结果**：`isError` → 抛错（工具结果标失败）；content 投影——text 拼接，image 走**附件系统**（需模型具备 image 输入的正面证明），audio/resource/未知类型 → 文本诊断，原始 JSON 保留给程序化调用方。**服务器 instructions**：非空即发布为**带服务器归属的系统提示词节**（受 `maxInstructionBytes` 限制）。**资源**：`mcp-resources` 共享三个资源工具，调用方作用域内解析服务器名；不支持 prompt 模板 / 采样 / 任务执行 / 资源订阅 |
+| ② | （见右） | （见左） |
+| ③ | **共识 / 分歧** | **共识**：①命名空间 `mcp__<server>__<tool>`（Claude Code 同款）；②MCP 工具进**普通工具注册表**——与内置工具同一条流水线（守卫、权限、结果记录、并发规则）；③每服务器独立连接与生命周期，一个失败不阻塞其他；④发现/刷新失败**保留上一代**工具（不降级成空）；⑤工具列表变化要能重新同步；⑥调用超时必需（默认 60s，两家同）；⑦结果要投影成模型可读文本，原始结构另存。**分歧**：①**暴露模型**——PI 有 4 档 exposure（含 `codemode` 这种「脚本里调工具」的形态）+ 逐工具覆盖，DSH 没有 exposure 概念（工具一律声明给模型，只有资源工具按服务器可见度决定）；②**清单呈现**——PI 有 `mcp_servers` 提示词节 + 两条「怎么够到」的路，DSH 依赖普通工具清单；③**认证**——PI 有完整 OAuth，DSH 只有 header + env；④**富内容**——DSH 有附件系统 + 图片准入证明，PI 把二进制落临时文件 + 文本截断 |
+| ④ | **MoS 的取舍与理由** | **exposure 取 PI 的三档（`deferred` / `direct` / `hidden`）+ 逐工具覆盖，不做 `codemode`**：MoS 没有 codemode 形态（没有「脚本里调工具」的工具），那一档在 MoS 无对位物；`deferred` 直接落在 MoS 现成的 `Registry.RegisterDeferred` + `tool_search`（S7.3，FR-C3）上——**MCP 工具默认 deferred**：服务器工具面通常很大，全量声明会撑爆 prompt（FR-C3 的验收口径就是「工具数增长时 prompt token 亚线性」）。代价：模型要多一次 `tool_search` 才拿到 MCP 工具（PI 的 deferred 同款代价）。**服务器摘要走 `tool_search` 搜索文档 + 激活回执，不进系统提示词**：MoS 的系统提示词是**装配期渲染一次**的静态内容（FR-C4），而 MCP 连接在装配后才建立、还可能掉线重连 → 写进静态提示词会失真；服务器 instructions 在连接成功时以**一次性 user 消息**注入（DSH 语义，走 user 侧以免破 cache）。代价：模型不搜之前看不到有哪些 MCP 服务器（PI 一眼能看到）——MoS 明确接受的取舍，登记为风险。**认证不做 OAuth**：PRD §1.3 把密钥管理划给协议层/宿主，SDK 不碰凭据生命周期；stdio 给 `env`、http 给 `headers`，`${ENV}` 展开归宿主（框架不绑配置格式，治理规则 5）。代价：需要 OAuth 的服务器只能由宿主先取好 token 再装配。**不解析 `mcp.json`**：框架只认结构（`mcp.Config`），键名与格式归宿主（同 `policy.Config`）。**结果投影复用 MoS 既有截断网**：MCP content → 文本（text 拼接；image/audio/resource/resource_link → 文本占位诊断，原始 JSON 保留在返回值），超长由 `agent.Truncator`（`tool/post-execute` 钩子）截断 + 落盘 + 指针（PI 自带 20KB 截断 + 临时文件，DSH 走附件系统）。代价：MoS 没有图片入模（模型看不了图）。**工具调用默认独占**：MCP 工具不实现 `tool.ConcurrencySafe` → 走 MoS 的 fail-closed 默认（串行）；将来可按「服务器只读」再声明并发。**失败隔离**：装配期某服务器连不上 → 该服务器不注册工具（快照记警告），其余照常（FR-D8 验收）；调用期连接不可用 → 工具返回错误结果（模型看得见、可自纠） |
+| ⑤ | **两家都没有的空白** | **① MCP 工具的注册表换代**：MoS 的 `Registry` 只有 `Register`（重名报错）、**没有注销/替换**；MCP 工具列表会变（服务器增删工具）→ 需要 `Registry.Replace`（或 Unregister+Register），并同步清 schema 缓存与 deferred 标记。DSH 的两阶段换代（先取全量、失败回滚不留半套）可抄；PI 因工具不可注销只能「改注册为 hidden」——那是 PI 的框架限制而非好做法。**MoS 自创：注册表支持原子换代 + 回滚**，理由：MCP 是第一个需要热换工具面的消费者；风险：换代瞬间的清单一致性（半新半旧）→ 按 DSH 两阶段做。**② 上游 JSON Schema 直通**：MoS 的 `tool` 包只支持「Go 结构体反射生成 schema」（`tool/tool.go` 的 `generateSchema`/`typeToSchema`，map 走 default → **空 schema**）→ MCP 的参数 schema 会丢。**MoS 自创 `tool.SchemaProvider` 可选接口**（工具直接给 JSON Schema，优先于反射），理由：MCP schema 是上游给的，不该反推；风险：多一条 schema 来源路径 → 守护测试锁住（结构体工具行为不变）。**③ MCP 事件类型**：PRD 只点名 `skill/*` 等，治理规则 2（事件目录预算制）要求先删一个旧的 → **不加新的 `mcp/*` 事件**；MCP 调用留痕走既有 `tool/call`/`tool/result`（MCP 工具就是普通工具），连接状态进 `Describe()` 快照与宿主日志 |
+
+##### MoS SDK 侧设计
+
+| 落点 | 内容 | 依赖 |
+| --- | --- | --- |
+| `tool`（增强） | ① `SchemaProvider` 可选接口（工具直给 JSON Schema，注册时优先于反射）；② `Registry.Replace`（原子换代：schema 缓存 + deferred 标记同步）；③ 可见性过滤器**可叠加**（`AddVisibility`，AND 语义）——policy 一层 + MCP hidden 一层（现在 `SetVisibility` 是单值，policy 已占用；技能不再贡献一层——拍板不做技能级工具面收窄） | 不变 |
+| `agent/skill`（新包） | `Metadata`（frontmatter：name/description/when-to-use/allowed-tools（**只解析，不执行**）/disable-model-invocation/metadata）+ `Loader`（目录发现；读文件走 `Reader` 接口，同 `contextfile` 形态；技能目录须挂进 `filesystem.RootSet` 读根）+ `Render`（`<available_skills>` 清单 + `<skill_content>` 正文，转义）+ `ExpandInvocation`（用户显式 `/name` 展开器，宿主调用）+ `State`（本次 Run 的激活集合，ctx 携带；供事件与宿主查询） | → `tool`, `agent/hook`, `agent/prompt`, `filesystem` |
+| `agent/skill` 的工具 | `skill` 工具（参数 `name`；校验 model 可调用——`disable-model-invocation` 的技能模型不可见也不可加载；返回正文 → 进工具结果 → 进历史）。**不挂技能守卫**（拍板：不做技能级工具限制） | → `tool` |
+| `agent/prompt` | 新增 `OrderSkills`（= 800：项目约定 750 之后、工具指引 1000 之前）+ `AddSkills(text)`；清单**装配期**渲染 → 静态，保 prompt cache（FR-C4） | 不变 |
+| `session` | 事件 `skill/load`、`skill/activate`（PRD §4.2 点名 `skill/*` → 走事件预算制例外）；载荷只记元数据（不记正文） | 不变 |
+| `tool/mcp`（新包） | `Config`（每服务器：Name/Transport/Command/Args/Env/CWD/URL/Headers/Timeout/Enabled/Description/Exposure/ToolExposure）+ `Client` 接口（`ListTools`/`CallTool`）+ `stdio`（子进程 + JSON-RPC）/ `streamable-http`（复用 `httpx`）两个 transport + `Server`（连接、发现、换代、重连）+ `Adapter`（→ `tool.Tool`：命名 `mcp__<server>__<tool>`、schema 直通、结果投影、默认独占） | → `tool`, `agent/truncate`, `httpx` |
+| `mos`（装配层） | `Config.Skills *SkillConfig`（目录列表 + 预算 + 读根登记）/ `Config.MCP *MCPConfig`（服务器列表 + 默认 exposure + 超时）；一开即装；`Describe()` 快照写明「装了什么 + **没装什么**」（连接失败的服务器也要写出来） | → `agent/skill`, `tool/mcp` |
+| 驱动（react） | 工具清单每轮取 `List()`（deferred 不在其中）；**不加**新的驱动逻辑——技能正文走工具结果，MCP 工具走普通注册表 | 不变 |
+
+**切片顺序与验收门**（每片：`go test ./...` 全绿 + 本节状态同步 + 一页说明）：
+
+| 片 | 内容 | 验收 |
+| --- | --- | --- |
+| **S8.1** | `tool` 增强（SchemaProvider / Replace / 可见性叠加）+ `agent/skill` 全文 + `skill` 工具 + `skill/*` 事件 + 装配入口 | E2E：技能目录 → 模型调 `skill` → 正文进上下文 → `disable-model-invocation` 的技能既不进清单也不可加载（fail-closed）；`allowed-tools` 只解析留痕且给出「当前不生效」诊断；清单进系统提示词且两次 Render 逐字节一致（保 cache） |
+| **S8.2** | `tool/mcp` 客户端（stdio transport + JSON-RPC 最小实现：initialize / tools/list / tools/call / `notifications/tools/list_changed`）+ 工具适配（命名 / schema 直通 / 结果投影 / 两阶段换代）+ 单测用假 server | 命名/哈希后缀/换代回滚/超时/取消 单测；假 server 驱动端到端 |
+| **S8.3** | 装配层（MCP 一开即装、默认 deferred + `tool_search` 联动、服务器 instructions 一次性 user 侧注入、失败隔离、Describe 快照） | 单个 MCP 失败不阻塞其余加载（FR-D8 验收）；MCP 工具默认不进模型清单、搜到才进 |
+
+##### 自创点与风险登记
+
+| 自创点 | 理由 | 风险 | 缓解 |
+| --- | --- | --- | --- |
+| **不做**技能级工具限制（`allowed-tools` 只解析留痕） | PI 有字段无实现、DSH 连字段都没有；不自创 | 宿主不接策略时该字段形同装饰 | 解析即给诊断（「该字段当前不生效」），不假装生效；工具面收窄仍走宿主既有能力（Policy + `AddVisibility`） |
+| 技能目录须登记为文件读根 | 沿用 §3.5 文件边界纪律（两家都直接读技能文件） | 宿主多一道配置；漏登 = 技能读不到 | 装配期显式校验：技能目录不在 Roots → 装配报错（fail-closed） |
+| MCP 工具默认 deferred（PI 同款）+ 逐工具 exposure 覆盖 | MCP 工具面大，全量声明撑爆 prompt（FR-C3 口径） | 模型要多一次搜索才知道 MCP 存在 | `tool_search` 描述里点名 MCP；服务器摘要进搜索文档与激活回执 |
+| 注册表原子换代（`Registry.Replace`）+ 回滚 | MCP 是第一个需要热换工具面的消费者 | 换代瞬间清单不一致 | 两阶段（先取全量、再换代），冲突回滚不留半套（DSH 语义） |
+| `tool.SchemaProvider` 直给 schema | MCP 的 schema 是上游给的，不该反推 | 多一条 schema 来源 | 守护测试：结构体工具生成的 schema 逐字节不变 |
+| 服务器 instructions 走一次性 user 消息 | 系统提示词是装配期静态（FR-C4），MCP 连接在其后建立且会重连 | 掉线重连后 instructions 不再刷新 | 语义定为「连接建立时注入一次」，重连后不重复注入（避免刷屏） |
+| 不做 OAuth / 不做资源工具 / 不做 codemode | 密钥归协议层与宿主；资源工具要分页 + 二进制 + URI 命名空间（面大）；MoS 无 codemode 形态 | 需要这些能力的用户要自己补 | v1 只保证「工具调用」这一条主链路；命名空间 `mcp__` 预留，MCP 资源列入 M3b |
+
+##### 拍板结果（2026-11-02，用户已决）
+
+| # | 事项 | 结论 |
+| --- | --- | --- |
+| 1 | **Skills 状态冲突** | **选 A**：按新架构重做（不移植 `main_bak1015` 的旧实现）；PRD 已把 Skills 从「已交付」移到 FR-D11 待建 |
+| 2 | **FR-D8「请求制定」** | 改为「**暴露策略（exposure）**」，与本节 exposure 设计对齐；PRD 措辞已同步 |
+| 3 | **`allowed-tools` 语义** | **参考 PI/DSH**：不做技能级工具限制（PI 有字段无实现、DSH 无字段）→ 只解析 + 留痕 + 诊断；执行语义归宿主（Policy + `AddVisibility`） |
+| 4 | **技能清单落位** | **系统提示词**（装配期固定 → 静态，保 prompt cache）；将来做运行期热加载再改走 user 侧（届时补 DSH 那套 digest + 替换） |
+| 5 | **MCP transport 顺序**（PRD 开放问题 2） | **先 stdio**，http 紧随（`httpx` 已有） |
+| 6 | **SubAgent 与 MCP 先后**（PRD 开放问题 5） | **MCP 先**（边界独立可单测；工具面立稳后，SubAgent 的工具白名单才有稳定母集） |
+
+##### 状态
+
+| 项 | 状态 |
+| --- | --- |
+| PI/DSH 参考分析（Skill + MCP） | ✅（本节） |
+| `tool` 增强（SchemaProvider / Replace / 可见性叠加） | ⬜ |
+| `agent/skill` 包 + `skill` 工具 + 事件（**不做技能级守卫**） | ⬜ |
+| `tool/mcp` 包（客户端 + transport + 适配器） | ⬜ |
+| 装配层入口（`Config.Skills` / `Config.MCP`）+ deferred 联动 | ⬜ |
+| PRD 状态同步（Skills 状态、FR-D8 措辞、开放问题 2/5） | ✅（本片，PRD 已改） |
 
 ## 4. 治理规则（防再膨胀）
 
