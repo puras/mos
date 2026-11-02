@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MoS — Go 智能体基础框架</title>
+<style>
+  :root {
+    --bg: #0d1117; --bg-soft: #161b22; --bg-card: #1a212b;
+    --border: #2d3742; --text: #e6edf3; --text-dim: #8b98a5;
+    --accent: #4ea1ff; --accent-2: #3fb950; --accent-3: #d29922; --accent-4: #f778ba;
+    --code-bg: #0a0e14;
+    --mono: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+    line-height: 1.6;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  code, pre { font-family: var(--mono); }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 0 24px; }
+
+  nav {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(13,17,23,.92); backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+  }
+  nav .wrap { display: flex; align-items: center; height: 56px; gap: 26px; }
+  .logo { font-weight: 700; font-size: 18px; }
+  .logo .m { color: var(--accent); }
+  nav .links { margin-left: auto; display: flex; gap: 22px; }
+  nav .links a { color: var(--text-dim); font-size: 14px; }
+  nav .links a:hover { color: var(--text); }
+
+  .hero { padding: 96px 0 40px; text-align: center; }
+  .hero h1 { font-size: 48px; font-weight: 800; letter-spacing: 1px; }
+  .hero h1 .grad {
+    background: linear-gradient(92deg, var(--accent), var(--accent-4));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .hero p { max-width: 620px; margin: 18px auto 0; color: var(--text-dim); font-size: 17px; }
+  .hero p b { color: var(--text); font-weight: 600; }
+  .cta { margin-top: 30px; }
+  .btn { display: inline-block; padding: 10px 26px; border-radius: 8px; font-size: 15px; font-weight: 600; margin: 0 6px; }
+  .btn.primary { background: var(--accent); color: #0d1117; }
+  .btn.primary:hover { background: #6cb6ff; }
+  .btn.ghost { border: 1px solid var(--border); color: var(--text); }
+  .btn.ghost:hover { border-color: var(--accent); }
+  .deps { margin-top: 22px; color: var(--text-dim); font-size: 13px; }
+  .deps b { color: var(--accent-2); }
+
+  .codecard {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 12px;
+    text-align: left; margin: 36px auto 0; max-width: 760px; overflow: hidden;
+  }
+  .codecard .bar {
+    display: flex; gap: 6px; padding: 10px 14px; background: var(--bg-soft);
+    border-bottom: 1px solid var(--border); align-items: center;
+  }
+  .codecard .bar i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .codecard .bar i:nth-child(1) { background: #ff5f57; }
+  .codecard .bar i:nth-child(2) { background: #febc2e; }
+  .codecard .bar i:nth-child(3) { background: #28c840; }
+  .codecard .bar span { margin-left: 10px; color: var(--text-dim); font-size: 12px; font-family: var(--mono); }
+  .codecard pre { padding: 18px 22px; font-size: 13px; line-height: 1.7; overflow-x: auto; color: #adbac7; }
+  .c-kw { color: #ff7b72; } .c-str { color: #a5d6ff; } .c-fn { color: #d2a8ff; }
+  .c-cm { color: #768390; } .c-num { color: #79c0ff; }
+
+  section { padding: 56px 0; }
+  section.alt { background: var(--bg-soft); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+  h2 { text-align: center; font-size: 26px; }
+  p.lead { text-align: center; color: var(--text-dim); margin-top: 8px; }
+
+  .caps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 36px; }
+  .cap {
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 22px; transition: border-color .15s;
+  }
+  .cap:hover { border-color: var(--accent); }
+  .cap .ico { font-size: 24px; }
+  .cap h3 { font-size: 16px; margin: 8px 0 6px; }
+  .cap p { color: var(--text-dim); font-size: 13.5px; }
+  .cap p b { color: var(--text); font-weight: 600; }
+
+  .strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 36px; }
+  .pill {
+    background: var(--bg-card); border: 1px solid var(--border); border-left: 4px solid var(--accent);
+    border-radius: 10px; padding: 16px 18px; text-align: left;
+  }
+  .pill:nth-child(2) { border-left-color: var(--accent-2); }
+  .pill:nth-child(3) { border-left-color: var(--accent-3); }
+  .pill:nth-child(4) { border-left-color: var(--accent-4); }
+  .pill h4 { font-size: 15px; }
+  .pill p { color: var(--text-dim); font-size: 13px; margin-top: 3px; }
+
+  .trust { margin-top: 32px; text-align: center; color: var(--text-dim); font-size: 14px; }
+  .trust b { color: var(--accent-2); font-weight: 600; }
+
+  .quick { max-width: 680px; margin: 32px auto 0; }
+  .quick pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px 20px; font-size: 13px; overflow-x: auto; color: #adbac7;
+  }
+  .more { margin-top: 34px; text-align: center; color: var(--text-dim); font-size: 14px; }
+
+  footer { border-top: 1px solid var(--border); padding: 32px 0 44px; text-align: center; color: var(--text-dim); font-size: 13px; }
+  footer a { margin: 0 12px; }
+
+  @media (max-width: 860px) {
+    .caps { grid-template-columns: 1fr; }
+    .strip { grid-template-columns: 1fr 1fr; }
+    .hero h1 { font-size: 34px; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <div class="logo"><span class="m">MoS</span></div>
+    <div class="links">
+      <a href="#caps">能力</a>
+      <a href="#security">安全</a>
+      <a href="#quick">开始</a>
+      <a href="index.html">文档</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <h1>长程智能体，<span class="grad">框架来驾驭</span></h1>
+    <p>Go 版 Agent Base SDK：可靠性问题框架承接，业务代码只决定<b>要什么、允许什么</b>。</p>
+    <div class="cta">
+      <a class="btn primary" href="#quick">快速开始</a>
+      <a class="btn ghost" href="index.html">看文档</a>
+    </div>
+    <div class="deps">第三方依赖仅 <b>3 个</b> ｜ 单二进制交付 ｜ <code>go build ./... &amp;&amp; go test ./...</code></div>
+
+    <div class="codecard">
+      <div class="bar"><i></i><i></i><i></i><span>main.go</span></div>
+      <pre><span class="c-cm">// 模型 + 工具 + 安全 + 会话，十几行装配一个真能跑的智能体</span>
+model, _ := <span class="c-fn">mos.NewModel</span>(mos.ModelConfig{Provider: <span class="c-str">"anthropic"</span>, <span class="c-cm">/* ... */</span>})
+reg := <span class="c-fn">tool.NewRegistry</span>()
+
+a, _ := <span class="c-fn">mos.New</span>(mos.Config{Model: model, Tools: reg})
+fmt.<span class="c-fn">Print</span>(a.<span class="c-fn">Describe</span>())  <span class="c-cm">// 装配快照：装了什么，如实交代</span>
+
+sess, _ := session.<span class="c-fn">Open</span>(<span class="c-str">"data"</span>, <span class="c-str">"my-agent"</span>)  <span class="c-cm">// JSONL 持久化，重启可恢复</span>
+reply, _ := a.<span class="c-fn">Run</span>(context.<span class="c-fn">Background</span>(), sess, <span class="c-str">"帮我看看这个项目"</span>)</pre>
+    </div>
+  </div>
+</header>
+
+<section id="caps">
+  <div class="wrap">
+    <h2>六大核心能力</h2>
+    <p class="lead">全部是已落地的代码，不是名词。</p>
+    <div class="caps">
+      <div class="cap"><div class="ico">🔌</div><h3>统一 LLM 接入</h3><p>OpenAI / Anthropic / Gemini 三协议一套接口，换模型不改业务；用量口径跨协议可比。</p></div>
+      <div class="cap"><div class="ico">🧰</div><h3>声明式工具系统</h3><p>写个 struct 就是工具，schema 自动生成；<b>tool_search</b> 让千级工具面 token 亚线性。</p></div>
+      <div class="cap"><div class="ico">📓</div><h3>事件日志会话</h3><p>append-only 日志是唯一事实来源，崩溃恢复只补事件不改写，重启即续跑。</p></div>
+      <div class="cap"><div class="ico">🔁</div><h3>可插拔循环驱动</h3><p>LoopDriver 接口化：新增一种循环 = 一个 Run 实现，不污染共享设施。</p></div>
+      <div class="cap"><div class="ico">✂️</div><h3>上下文工程</h3><p>截断落盘可回读、压缩不切断调用对、提示词静态分节——<b>prompt cache 友好</b>。</p></div>
+      <div class="cap"><div class="ico">📡</div><h3>全链路可观测</h3><p>turn / tool / approval / compaction 全落日志；Describe() 装配快照，缺什么如实说。</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="security" class="alt">
+  <div class="wrap">
+    <h2>安全纵深：四层防线</h2>
+    <p class="lead">结构性让误用与逃逸难以发生。</p>
+    <div class="strip">
+      <div class="pill"><h4>① Policy 规则</h4><p>工具黑白名单，未知工具一律拒绝</p></div>
+      <div class="pill"><h4>② Guard 守卫</h4><p>串行单调裁决，钩子结构上无法绕过</p></div>
+      <div class="pill"><h4>③ 沙箱隔离</h4><p>文件 jail + 进程沙箱，写前观察门</p></div>
+      <div class="pill"><h4>④ 人工审批</h4><p>参数级 deny/ask 转人工，动作全留痕</p></div>
+    </div>
+    <p class="trust"><b>fail-closed 是全库纪律</b>：未知工具拒绝、缺能力即报错、审批未配置即拒绝——绝不静默降级。</p>
+  </div>
+</section>
+
+<section id="quick">
+  <div class="wrap">
+    <h2>三步跑起来</h2>
+    <p class="lead">克隆即编译。</p>
+    <div class="quick">
+      <pre>git clone https://github.com/puras/mos.git &amp;&amp; cd mos
+go build ./... &amp;&amp; go test ./...
+
+cd examples/minimal
+export MOS_PROVIDER=anthropic MOS_MODEL=your-model ANTHROPIC_API_KEY=sk-...
+go run . "只回答：1+1=?"</pre>
+    </div>
+    <p class="more">要接进自己的工程？看 <a href="index.html">文档</a>，别看这里。</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <a href="index.html">文档</a>
+    <a href="https://github.com/puras/mos">GitHub</a>
+    <p style="margin-top:12px;">MoS — 长程智能体，框架来驾驭。</p>
+  </div>
+</footer>
+
+</body>
+</html>
