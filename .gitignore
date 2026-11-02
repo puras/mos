@@ -27,3 +27,6 @@ examples/chat/.mos-trunc/
 # 在仓库根构建示例时的产物（go build ./examples/chat/ → ./chat）
 /chat
 /minimal
+
+# 工具结果截断落盘目录（各层级均可能出现）
+.mos-trunc/
