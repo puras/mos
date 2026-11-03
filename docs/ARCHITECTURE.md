@@ -739,6 +739,81 @@ llm.WithRetry(model, llm.RetryPolicy{
 | 装配层入口（`Config.Skills` / `Config.MCP`）+ deferred 联动 | ⬜ |
 | PRD 状态同步（Skills 状态、FR-D8 措辞、开放问题 2/5） | ✅（本片，PRD 已改） |
 
+### 3.17 挂起-恢复（FR-G3：跨进程续跑）
+
+> **定位**：G4 的另一半。**可重放** ✅（append-only 日志 + 确定性投影 + 崩溃恢复合成 `interrupted`）；**「进程死了还能接着跑」在重建树里是空的**——PRD §4.3 曾把 M2.8 整体标 ✅，其中的 Checkpointer + AgentHandle 并没有实现（2026-11-03 PRD 回填时拆开标出，见 PRD §4.3 与 FR-G3）。
+> **边界**：本节只管「一次 run 跑到一半 → 进程死 → 另一个进程接着跑」。**不管**：运行期热加载（治理规则：不做）、平台层调度与队列（PRD FR-E5 / FR-E6 属 M4 与平台层）、多智能体并行 DAG（FR-D5）。
+> **状态**：本节是**设计草案，尚未拍板**。下面④里的取舍、恢复语义与切片都是**建议**；拍板后才开建。
+
+##### PI / DSH 参考分析 — 挂起-恢复
+
+| # | 维度 | PI（`packages/durable`） | DSH（`packages/session` / `packages/goal` / `packages/interaction/user-questions`） |
+| --- | --- | --- | --- |
+| ① | **PI 的做法** / **DSH 的做法** | **有，且是执行级最完整的一家**：定位 "A durable agent harness. Conversations, model turns, tool calls, and your own state are **committed to storage before anything is shown**. If the process dies mid-turn, **reopening the storage picks the work up where it stopped**"（`packages/durable/README.md` 开头）。<br>**恢复入口**：`harness.resume()`（`src/harness/scheduler.ts:423`；`src/harness/harness.ts:127/169/174` 调 `tasks.resume()`；`src/harness/submissions.ts:77/116`）——README：「Work interrupted by a crash or close **stays pending**. `resume()` starts the task scheduler」。<br>**执行模型**：不可变 entries + **tasks** + **phases**，每阶段用 `runtime.commit()` 落盘（spec §5 Tasks、§5.4 Scheduler, abort, and ownership）。<br>**恢复语义**（README「Sleeping and Waking Up」段）：**"There is no sleep in the middle of a phase: a phase reruns from its top after a restart, so work after the wait goes in the next phase, and what it needs goes in the checkpoint."**——不是从断点续跑，是**整阶段重跑**，因此阶段必须幂等。<br>**挂起**：`runtime.sleepUntil(at, { phase: "deliver" })` → `{ status: "sleeping", until, checkpoint }`，睡眠状态落盘、跨重启保持；`onWake` 让宿主（如 Cloudflare Durable Object）自己定时唤醒并调 `resume()`（spec §5.6 Sleeping, timers, and wakeups）。<br>**幂等**：相同 `requestId` 重投返回既有 submission（不重复提交）；`harness.submission(id)` 重开后可重新取回等待。<br>**存储**：可插拔 `src/storage/{sqlite,jsonl,indexeddb}`；JSONL 用 **base + delta** 链（`src/storage/jsonl/storage.ts:651+` 的 confirmed base），何时落 base 由定义的 `checkpointWhen` 决定（spec §3.5 Bases and checkpoints）。<br>**可观测**：`pi.durable.checkpoint`、`pi.durable.replay`（嵌套调用从存储结果重放）、phase 属性 `resumed: true`。<br>**没有的**：durable 里**没有「等人批准」的语义**（grep 不到 human / confirmation / approval）——等待只能表达成 sleep（时间到醒）或 child task 的 `waiting` 状态（README:685）。 | **有会话级恢复，没有执行级断点**。<br>**持久化**：`packages/session/session-persistence-jsonl`——每会话一个 append-only JSONL（默认 Zstd 帧 + 校验和），格式迁移与断尾崩溃恢复留在存储内部。<br>**重连续跑**：`packages/core/agent-loop/src/agent.ts:637-641`——重接会话时补一条 `request/header`，`reason: 'initial' \| 'resume'`。<br>**目标持久化**：`packages/goal/README.md:12,27`——"one durable goal per session: create, edit, **pause, resume**, complete, block, and clear"；目标跨 restarts / resumes / forks 存活；`/goal` 让人直接操控、不花模型轮次。<br>**人工问答跨进程**：`packages/interaction/user-questions/README.md`——`ask()` / `askTimed()`；**"The `userQuestions` projection derives durable questions from the tool call, its result, and the eventual reply"**；进程结束后问题变 `continued`，`answer` RPC 把回复作为 `user-question-reply` 消息注入；"Answering a closed Session resumes its root agent first"。<br>**协议级恢复**：`packages/acp/README.md:12`——客户端可 create / list / **resume** / close 会话，回答权限提示、取消工作。<br>**取消 ≠ 暂停**：`packages/api/session-controller/src/commands.ts:497` 的 `cancel()` → `agent.cancel({ kind: 'user' }, { keepInbox: true })`——取消当前 turn、保留 inbox 待办；**没有「挂起当前 run 交给另一个进程」的概念**。<br>**它的 "checkpoint"** 是**持久化屏障**不是执行断点：`packages/core/session/src/index.ts:1307` 的 `session/flush`（per-request durability barrier）。<br>**后台任务**：`packages/jobs/jobs-local` 是**进程内**内存注册表，不跨进程。 |
+| ② | （见右） | （见左） |
+| ③ | **共识 / 分歧** | **共识**：①**先落盘再展示**——没落盘 = 没发生（PI 显式；DSH 的 `session/flush` 屏障同理）；②**重开 = 重放日志派生视图**（PI 重跑 phase；DSH 从 session 事件派生历史与 question 投影）；③**幂等键防重复提交**（PI `requestId`；DSH 的 archive-admission）；④**跨进程存活的人机交互必须落日志**，不能留在内存（DSH 明确；PI 压根没这层）。<br>**分歧**：①**恢复粒度**——PI 执行级（task / phase / checkpoint）vs DSH 会话级（session log + goal + 投影）：PI 的代价是一整套 phase 状态机，DSH 的代价是中途副作用无法续跑；②**恢复语义**——PI「phase 从头重跑」要求幂等，DSH「从日志派生继续」不重跑副作用但也丢了半截执行位置；③**人工决策**——DSH 有完整的跨进程故事（问题派生 + 回复作消息注入），PI durable 没有；④**存储形态**——PI 可插拔存储 + base/delta 压缩，DSH 固定 append-only JSONL + 格式迁移目录。 |
+| ④ | **MoS 的取舍与理由**（建议） | **恢复粒度取 turn 边界，不引入 PI 的 phase / checkpoint 状态机**：MoS 的 turn 本来就是「一串工具调用 + 回填」，抄 phase 状态机属于自创新机制（同 §3.16 纪律）。抄的是 PI 的**幂等纪律**（重跑 → 必须幂等），不是它的框架。代价：重跑会重复工具副作用（PI 同样有这个问题）。<br>**快照 = 会话日志本身，不另设 checkpoint 文件**：MoS 的「日志即事实」= 快照即日志；PI 需要额外存储是因为它的 transcript 与执行态分离。代价：日志大则恢复慢（缓解：压缩事件已遮蔽旧历史，恢复只需尾部窗口）。<br>**未决审批抄 DSH**：MoS 已有 `approval/asked` / `approval/decided` 两个事件（S5g），载荷已含 `{ id, toolName, callId, reason }` / `{ …, outcome }`——**问题正文就在日志里**，所以「未决 = 有 asked 无 decided」可直接派生，回复仍走原路径记 `approval/decided`。MoS 要补的是**读接口 + 重新投递**，不是新机制。<br>**不做**：PI 的 sleep / onWake / Durable Object 调度器、base+delta 存储压缩、task graph——属平台层，超出 SDK 边界（DSH 也大多放在平台层）。<br>**不提供 handle 抽象**：旧树的 `agent/handle`（create / resume / dispose）属平台层职责（PRD FR-E6 的 `runs/<run-id>` 生命周期）。MoS 只给**恢复原语**，run 目录与句柄归宿主。 |
+| ⑤ | **两家都没有的空白** | **① 工具副作用在「重跑」下的幂等保证**：PI 靠 phase 边界（阶段内的副作用仍会重来，它只保证「checkpoint 里带的东西够用」），DSH 干脆不重跑（没这个问题）。MoS 手里有现成资产——**写前观察门**（`tool/builtin/observe.go` 的版本令牌 + CAS）：文件先读后写、读后再改用 CAS 校验，**重跑不会覆盖别人在这期间改的东西**。这是 MoS 相对两家的独特优势，应写进设计而不是自创新机制。<br>**② shell 副作用无人兜底**：两家都承认「恢复即重跑」，shell 的外部副作用（写文件、发请求）没有等价保护——MoS 同理，必须**诚实写明**而不是假装幂等。<br>**③ 恢复的授权边界**：谁有权把一个挂起的 run 接过去继续跑？两家都没答案（PI 是本地进程打开同一存储；DSH 的 goal 暂停由人显式操作）。MoS 的答案应偏保守：**宿主显式指定恢复**，框架不自动拾起（对应 fail-closed 纪律）。 |
+
+##### MoS SDK 侧设计（建议，待拍板）
+
+| 落点 | 内容 | 依赖 |
+| --- | --- | --- |
+| `session`（**增强，不新建包**） | ① `PendingApprovals(sess)` 读接口：从事件日志派生未决审批（有 `approval/asked` 无 `approval/decided`，按 id 配对）；② 悬空工具调用（有 `tool/call` 无 `tool/result`）的查询；③ 恢复点判定沿用现有 `Restore`（孤儿 turn → `interrupted`）。**不新增事件类型**（治理规则 2：事件目录预算制） | 不变 |
+| `agent/approval`（增强） | ① `Service.Decide` 支持「先取已有决定、再问人」：恢复时若该 id 已有 `approval/decided`（上一进程答了但没来得及回填），直接用记录里的结果，**不重复问人**；② 提供重新投递：把未决审批再交给宿主的 Answerer | → `session` |
+| `agent/driver/react`（增强） | 恢复后的续跑：**只把悬空的那一次工具调用接着走完**（执行 → 回填 → 继续问模型），不实现「半截调用从中间续」 | → `agent/approval` |
+| `tool/builtin`（**不改**） | 幂等靠现有观察门 CAS——不新增机制，只在文档里写明它保护什么、**不保护什么** | 不变 |
+| 装配层 `mos` | **不新增 `Config` 字段**：恢复是「打开会话」的动作，不是装配能力；何时 `session.Open(dir, id)` 由宿主决定 | 不变 |
+| 宿主（平台层） | run 目录与句柄（create / resume / dispose）、谁有权恢复、多实例竞争 | 平台层职责，框架不管 |
+
+**恢复语义：三个候选（需拍板）**
+
+| 候选 | 做法 | 与两家对位 | 代价 |
+| --- | --- | --- | --- |
+| **A 整轮重跑** | 恢复后重跑整个 turn（PI 纪律），新起一轮 | PI（phase 从头重跑） | append-only 日志不能改写 → 旧 user 消息已在日志里，重跑要么重放要么新起一轮，语义容易糊；重复副作用面最大 |
+| **B 只续悬空的那次调用**（建议） | 悬空的 `tool/call` 接着走完：重走审批 → 执行 → 回填 → 继续问模型 | DSH（问题从事件派生 + 回复注入） | 「副作用是否已发生」不可知（shell 尤甚）——靠观察门 CAS 兜文件类 |
+| **C 只报告不续跑**（保守默认） | 恢复只列出未决审批与悬空调用，由宿主决定下一步 | DSH 的 `goal` 显式 pause/resume（人操作） | 自动化程度低；但把「续跑」的决定权留在宿主手里（与⑤③的保守取向一致） |
+
+**建议**：**B + C 组合**——恢复时先按 C 报告状态（未决审批 + 悬空调用），宿主显式要求「继续」时按 B 接着走完；A 作为宿主想「整轮重来」时的手动选项（重新提交输入开新轮）。
+
+**切片顺序与验收门**（每片：`go test ./...` 全绿 + 本节状态同步 + 一页说明）
+
+| 片 | 内容 | 验收 |
+| --- | --- | --- |
+| **S9.1** | `session.PendingApprovals` + 悬空调用查询 + `agent/approval` 的「先取已有决定 / 重新投递」 | 派生正确：有 asked 无 decided = 未决；有 decided = 已决（**不重复问人**）；同一 id 配对不串；悬空调用与未决审批能对上 |
+| **S9.2** | 恢复语义落地（react 驱动：报告状态 → 宿主确认 → 续完悬空调用）+ 幂等纪律与边界文档 | 文件类工具重跑不覆盖他人改动（观察门 CAS 拒）；shell 副作用可能重复的**诚实行为**有测试记录；「不自动续跑」有守护测试 |
+| **S9.3** | E2E 演练：kill -9 → 重开会话 → 看到未决审批 → 宿主回答 → 续完 | PRD FR-G3 验收：kill 后从会话恢复续跑 E2E 通过 |
+
+**自创点与风险登记**
+
+| 自创点 | 理由 | 风险 | 缓解 |
+| --- | --- | --- | --- |
+| 恢复粒度 = turn 边界（不抄 PI 的 phase / checkpoint 状态机） | PI 执行级 / DSH 会话级，两家粒度不同；MoS 不自创新机制 | 重跑重复工具副作用 | 文件类靠观察门 CAS；shell 副作用明确不受保护，写进文档与 README「诚实的边界」 |
+| 快照 = 会话日志，不另设 checkpoint 文件 | MoS 日志即事实；PI 额外存储源于它 transcript 与执行态分离 | 日志大 → 恢复慢 | 压缩事件已遮蔽旧历史；恢复只需尾部窗口 |
+| 未决审批从事件派生（DSH 语义） | MoS 已有 `approval/asked` / `decided`，载荷含 reason | 事件载荷要能重建问题 | 载荷已含 `{ id, toolName, callId, reason }`，无需新增字段 |
+| 不提供 handle / run 句柄 | 属平台层（FR-E6） | 宿主需自管 run 目录 | 提供恢复原语 + 文档示例（平台侧照做即可） |
+| 恢复不自动发生（宿主显式指定） | 两家都没答案；MoS 偏保守（fail-closed） | 自动化程度低 | 平台层可用 FR-E6 的 run 目录实现自动化，不进 SDK |
+
+**待拍板**
+
+| # | 事项 | 建议 |
+| --- | --- | --- |
+| 1 | 恢复语义 | B（只续悬空的那次调用）+ C（先报告不自动续跑）；A 作为宿主手动选项 |
+| 2 | shell 副作用重复执行 | 接受并写进「诚实的边界」；**不做**「跳过已执行调用」的机制（自创且易错） |
+| 3 | 是否要 MoS 侧 run 句柄 | 不做（归平台层 FR-E6） |
+| 4 | 排期 | 建议先于 M3a（它是 FR-E6 的前置；且 M3 的 SubAgent 白名单 / 任务列表同样受益于「跨进程可恢复」的心智模型） |
+
+**状态**
+
+| 项 | 状态 |
+| --- | --- |
+| PI/DSH 参考分析（挂起-恢复） | ✅（本节） |
+| PRD FR-G3 回填 + §4.3 拆开 M2.8 | ✅（2026-11-03，PRD 已改） |
+| 拍板（恢复语义 / shell 副作用 / 句柄 / 排期） | ⬜ 未拍板 |
+| S9.1 未决审批派生与投递 | ⬜ |
+| S9.2 恢复语义与幂等纪律 | ⬜ |
+| S9.3 E2E 演练 | ⬜ |
+
 ## 4. 治理规则（防再膨胀）
 
 1. 新增一个包 = PRD 有一条 FR 指名要它；否则留在 `main_bak1015` 不动。

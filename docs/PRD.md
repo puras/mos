@@ -190,7 +190,7 @@ Harness Engineering 四铁律 + Loop Engineering 九杠杆 + Audit Gate 审计�
 | --- | --- | --- | --- |
 | FR-G1 | 上下文文件（`agent/contextfile` + `agent/prompt` 分节装配）：候选名优先级（`AGENTS.override.md` > `AGENTS.md` > `AGENTS.MD` > `CLAUDE.md` > `CLAUDE.MD`）+ 向上递归 + 同目录 override + 真实路径去重 + 字节预算裁剪；正文作为「项目约定」节进系统提示词 | 装配快照写明装了哪些文件、多少字节、降级警告；读取以 `Reader` 接口注入（框架不碰文件系统）；未装则零开销 | ✅（2026-10-27 落地；2026-11-03 回填登记） |
 | FR-G2 | 联网工具包（`tool/web`）：`web_search` / `web_fetch`，含 SSRF 防御（私有网段 / 环回拦截） | 抓取目标越界即拒；工具进注册表后与内置工具同受 Policy/Guard 管辖 | ✅（2026-10-28 落地；2026-11-03 回填登记） |
-| FR-G3 | 挂起-恢复（`agent/checkpoint` + `agent/handle`）：把「跑到一半」的智能体挂起，恢复后接着跑；审批决定可跨进程留存 | kill 后从 checkpoint 恢复续跑 E2E；checkpoint 只记可重放事实；**是 FR-E6（`runs/<run-id>` 可恢复运行目录）的前置** | ⬜ **未做**（重建树无此包）；建议排期先于 M3a |
+| FR-G3 | 挂起-恢复（`agent/checkpoint` + `agent/handle`）：把「跑到一半」的智能体挂起，恢复后接着跑；审批决定可跨进程留存 | kill 后从 checkpoint 恢复续跑 E2E；checkpoint 只记可重放事实；**是 FR-E6（`runs/<run-id>` 可恢复运行目录）的前置**。设计草案见 `docs/ARCHITECTURE.md` §3.17（PI/DSH 对账 + 取舍 + 待拍板项） | ⬜ **未做**（重建树无此包）；建议排期先于 M3a |
 
 ---
 
