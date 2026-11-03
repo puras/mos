@@ -170,9 +170,8 @@
     <h1>用 MoS 写出你的第一个 Agent</h1>
     <p>全程可复制可编译：装依赖 → 装配模型与工具 → 跑一轮 → 加自己的工具。</p>
     <div class="notice">
-      当前为开发阶段：协议层 <code>moproto</code> / <code>mog</code> 尚未发布到可达仓库，
-      依赖需要本地 <code>replace</code>（见第 1 节）。协议层发布后即可直接 <code>go get</code>。
-      协议层仓库：<a href="https://github.com/puras/moproto">github.com/puras/moproto</a>
+      协议层 <a href="https://github.com/puras/moproto">moproto</a> 已独立发布：<code>go get</code> 直接可用，
+      <b>不需要任何本地 replace</b>。MoS 仅 3 个依赖：moproto / uuid / yaml.v3。
     </div>
   </div>
 
@@ -184,7 +183,7 @@
         <tr><td>Go 1.26+</td><td>见仓库 <code>go.mod</code> 的 <code>go</code> 指令</td></tr>
         <tr><td>模型凭据</td><td>OpenAI / Anthropic / Gemini 任一，或自建网关（<code>BaseURL</code>）</td></tr>
         <tr><td>模型名</td><td>账号实际可用的模型名，例如 <code>gpt-4o-mini</code></td></tr>
-        <tr><td>三个仓库</td><td>开发阶段需要：<code>mos</code>（本仓库）、<code>moproto</code>、<code>mog</code> 放同一父目录</td></tr>
+        <tr><td>网络</td><td>首次 <code>go get</code> 需要能访问 Go module proxy（内网可自建 GOPROXY）</td></tr>
       </tbody>
     </table>
   </section>
@@ -192,39 +191,32 @@
   <section id="install">
     <h2><span class="n">01</span>添加依赖</h2>
     <p>建一个新工程：</p>
-    <pre><span class="c"># 三个仓库放在同一父目录（开发阶段）</span>
-git clone https://github.com/puras/mos.git
-<span class="c"># 协议层 MoProto（github.com/puras/moproto），clone 到同级目录</span>
-git clone https://github.com/puras/moproto.git
-<span class="c"># 协议依赖 mog，同样 clone 到同级目录</span>
-git clone https://github.com/puras/mog.git
-
-mkdir myagent &amp;&amp; cd myagent
+    <pre>mkdir myagent &amp;&amp; cd myagent
 go mod init myagent</pre>
 
-    <p>写 <code>go.mod</code>（<b>三个 replace 都要写</b>）：</p>
+    <p>加依赖（协议层已发布，直接拉即可，不需要克隆本地仓库）：</p>
+    <pre>go get github.com/puras/mos@v0.1.0</pre>
+
+    <p><code>go.mod</code> 里只会多一行 require，<b>没有 replace</b>：</p>
     <pre>module myagent
 
 go 1.26
 
-require github.com/puras/mos v0.0.0
-
-replace github.com/puras/mos =&gt; ../mos
-replace github.com/puras/moproto v0.1.0 =&gt; ../moproto
-replace github.com/puras/mog v0.1.6 =&gt; ../mog</pre>
+require github.com/puras/mos v0.1.0</pre>
 
     <div class="ok">
-      <b>为什么必须自己写 replace：</b>Go 只认主模块的 <code>replace</code>，依赖模块里的 replace 不会传递。
-      少了 moproto / mog 两行，<code>go mod tidy</code> 会去公网找这两个模块并失败。
+      <b>为什么不用 replace：</b>协议层 <a href="https://github.com/puras/moproto">moproto</a> 已独立发布，
+      Go 会自己把它拉下来（MoS 只依赖它 + uuid + yaml.v3，共 3 个）。
+      Go 只认主模块的 <code>replace</code>、依赖模块里的不传递——但这里根本不需要 replace。
     </div>
 
-    <p>拉依赖并验证（此时还没有代码，能过就行）。若 <code>go mod tidy</code> 仍报找不到模块，
-    确认三个仓库确实在同级目录、目录名分别是 <code>mos</code> / <code>moproto</code> / <code>mog</code>：</p>
+    <p>拉依赖并验证（此时还没有代码，能过就行）：</p>
     <pre>go mod tidy
 go build ./...</pre>
 
-    <p>协议层发布后，删掉三个 <code>replace</code>，改成一行即可：</p>
-    <pre>go get github.com/puras/mos</pre>
+    <p>若 <code>go mod tidy</code> 拉不动模块，多半是网络或代理问题（不是 MoS 的问题）：</p>
+    <pre>go env GOPROXY
+GOPROXY=https://goproxy.cn,direct go mod tidy</pre>
   </section>
 
   <section id="first">
@@ -478,8 +470,10 @@ a, _ := mos.New(mos.Config{
     <h2><span class="n">06</span>常见问题</h2>
 
     <div class="faq">
-      <h4><code>go mod tidy</code> 报找不到 moproto / mog</h4>
-      <p>replace 没写在你的 go.mod 里。依赖模块的 replace 不传递，三个都要自己写。</p>
+      <h4><code>go mod tidy</code> 拉不动模块 / 找不到 moproto</h4>
+      <p>协议层已发布，<b>不需要 replace</b>（replace 只在开发期协议层未发布时才需要）。
+      这通常是网络或代理问题：查 <code>go env GOPROXY</code>，内网可换
+      <code>GOPROXY=https://goproxy.cn,direct</code>。</p>
     </div>
 
     <div class="faq">

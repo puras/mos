@@ -10,8 +10,10 @@ go build ./... && go test ./...
 ```
 
 ```bash
-go get github.com/puras/mos@v0.1.0
+go get github.com/puras/mos@v0.1.0   # 最新已发布版本
 ```
+
+> `main` 上的开发对应 **v0.2.0**（开发中，尚未发布；发布时才打 `v0.2.0` 标签）。
 
 跑一个真实的智能体（`examples/minimal`，十几行装配）：
 
@@ -129,6 +131,8 @@ type SearchArgs struct {
 
 - [docs/PRD.md](docs/PRD.md) — 产品需求（要什么）
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 目标架构与不变式（怎么立），含每个子系统契约
+- [docs/tutorial.html](docs/tutorial.html) — 从零上手教程（可复制可编译）
+- [docs/release-v0.1.0.md](docs/release-v0.1.0.md) — v0.1.0 发布说明（首个公开版本）
 - 旧实现与旧文档考古：`main_bak1015` 分支（如 `git show main_bak1015:README.md`）
 
 ## 示例
