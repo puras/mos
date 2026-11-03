@@ -616,6 +616,7 @@ func (a *Agent) Describe() string {
 		return "mos: 智能体未装配"
 	}
 	var b strings.Builder
+	fmt.Fprintf(&b, "  MoS 版本: %s\n", Version)
 	fmt.Fprintf(&b, "  已注册工具: %s\n", strings.Join(a.tools.Names(), ", "))
 	fmt.Fprintf(&b, "  模型可见工具: %s\n", strings.Join(a.visibleNames(), ", "))
 	fmt.Fprintf(&b, "  并发上限: %d（仅对声明可并发的工具生效）\n", a.concurrency.Load())

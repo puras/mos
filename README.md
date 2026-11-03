@@ -13,7 +13,7 @@ go build ./... && go test ./...
 go get github.com/puras/mos@v0.1.0   # 最新已发布版本
 ```
 
-> `main` 上的开发对应 **v0.2.0**（开发中，尚未发布；发布时才打 `v0.2.0` 标签）。
+> `main` 上的开发对应 **v0.2.0**（开发中，尚未发布；发布时才打 `v0.2.0` 标签）。框架版本也有代码常量 `mos.Version`，与发布标签同名；`a.Describe()` 的快照第一行会打印它。
 
 跑一个真实的智能体（`examples/minimal`，十几行装配）：
 
@@ -70,6 +70,7 @@ reply, _ := a.Run(context.Background(), sess, "帮我看看这个项目")
 | **安全纵深** | `agent/policy` / `agent/hook` / `filesystem` / `sandbox` / `agent/approval` | Policy 规则 → Guard 守卫 → Sandbox 隔离 → 人工审批四层防线；HookBus 可改写、GuardBus 不可绕过 |
 | **上下文工程** | `agent`（truncate/compact）+ `agent/prompt` + `agent/contextfile` | 结果截断（全文落盘可回读）+ token 预算压缩（模型生成摘要落日志）；系统提示词分节装配；AGENTS.md 等上下文文件发现与注入 |
 | **能力包** | `tool/builtin` / `tool/web` / `tool/searchtools` / `httpx` | 文件五件套与搜索三件套；联网搜索/抓取（SSRF 防御）；工具发现 |
+| **版本** | 根包 `mos` | `mos.Version` 常量（与发布标签同名）；main 上的值 = 下一个待发布版本 |
 
 ## 特性
 
