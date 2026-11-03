@@ -1,6 +1,9 @@
 .env
 .idea/
 
+# macOS 目录元数据
+.DS_Store
+
 # 本地工具链与临时产物（PPT/PDF 生成脚本、npm 缓存）
 .tmp/
 
