@@ -4,11 +4,13 @@
 
 ## 快速开始
 
-> 当前开发阶段经本地 `replace` 引用协议层（`moproto` / `mog`），外部工程直接 `go get` 尚不可用——这是发布前待办（PRD FR-A1）。克隆本仓库后即可编译运行。
-
 ```bash
 git clone https://github.com/puras/mos.git && cd mos
 go build ./... && go test ./...
+```
+
+```bash
+go get github.com/puras/mos@v0.1.0
 ```
 
 跑一个真实的智能体（`examples/minimal`，十几行装配）：
@@ -140,7 +142,7 @@ type SearchArgs struct {
 ## 路线图
 
 - ✅ **已交付**：统一 LLM 接入、工具系统、ReAct 循环、执行通道、安全纵深、上下文工程、装配层、联网工具、工具规模化（M2.10）
-- ⬜ **R（发布准备，P0）**：协议层脱离本地 replace，外部工程 `go get` 可构建
+- ✅ **R（发布准备，P0）**：协议层脱离本地 replace，外部工程 `go get` 可构建（v0.1.0 已发布）
 - ⬜ **M3** 多智能体：SubAgent（agents-as-tools）、MCP 接入、AgentTeam、并行 DAG；其中 **S8 预切片**：Skills 重做 → MCP 客户端（stdio）→ MCP 装配（先 MCP 后 SubAgent），设计与 PI/DSH 对账见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §3.16
 - ⬜ **M4** 生产化：Docker 强隔离、模型分级路由、评估与监控、可恢复运行目录
 - ⬜ **M5** 自我进化（实验性）
@@ -153,5 +155,9 @@ type SearchArgs struct {
 go build ./...   # 编译
 go test ./...    # 测试（沙箱 / shell 类测试需允许 Seatbelt 授权的环境）
 ```
+
+## 许可证
+
+[MIT](LICENSE)
 
 (End of file)
