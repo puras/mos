@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MoS 文档 — 从零写出你的第一个 Agent</title>
+<style>
+  :root {
+    --bg: #0d1117; --bg-soft: #161b22; --bg-card: #1a212b;
+    --border: #2d3742; --border-soft: #232c36;
+    --text: #e6edf3; --text-dim: #8b98a5;
+    --accent: #4ea1ff; --accent-2: #3fb950; --accent-3: #d29922;
+    --code-bg: #0a0e14;
+    --mono: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+    line-height: 1.75; font-size: 15px;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { font-family: var(--mono); }
+  .layout { display: flex; max-width: 1180px; margin: 0 auto; }
+
+  /* ── 顶部导航（与产品介绍页同款）── */
+  nav {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(13,17,23,.92); backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+  }
+  nav .wrap { display: flex; align-items: center; height: 56px; gap: 26px; max-width: 1000px; margin: 0 auto; padding: 0 24px; }
+  .logo { font-weight: 700; font-size: 18px; }
+  .logo .m { color: var(--accent); }
+  .logo:hover { text-decoration: none; }
+  nav .links { margin-left: auto; display: flex; gap: 22px; }
+  nav .links a {
+    color: var(--text-dim); font-size: 14px; padding: 4px 0;
+    border-bottom: 2px solid transparent; transition: color .15s, border-color .15s;
+  }
+  nav .links a:hover { color: var(--text); text-decoration: none; }
+  nav .links a.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  aside {
+    width: 236px; flex: none; padding: 28px 18px 60px;
+    position: sticky; top: 56px; height: calc(100vh - 56px); overflow-y: auto;
+    border-right: 1px solid var(--border-soft);
+  }
+  aside .brand { font-weight: 700; font-size: 17px; margin-bottom: 4px; }
+  aside .brand a { color: var(--text); }
+  aside .brand span { color: var(--accent); }
+  aside .ver { color: var(--text-dim); font-size: 12px; margin-bottom: 20px; }
+  aside nav a {
+    display: block; padding: 6px 10px; border-radius: 6px;
+    color: var(--text-dim); font-size: 13.5px; border-left: 2px solid transparent;
+  }
+  aside nav a:hover { background: var(--bg-soft); color: var(--text); text-decoration: none; }
+  aside nav a.active { color: var(--accent); background: var(--bg-soft); border-left-color: var(--accent); }
+  aside nav a b { color: var(--accent); font-weight: 600; margin-right: 6px; font-family: var(--mono); font-size: 12px; }
+  aside .grp { color: #6b7683; font-size: 11px; letter-spacing: 1px; margin: 18px 10px 6px; text-transform: uppercase; }
+
+  main { flex: 1; min-width: 0; padding: 40px 44px 100px; }
+  .dochead { border-bottom: 1px solid var(--border-soft); padding-bottom: 22px; margin-bottom: 30px; }
+  .dochead h1 { font-size: 30px; }
+  .dochead p { color: var(--text-dim); margin-top: 8px; }
+  .notice {
+    margin-top: 16px; padding: 10px 14px; border-radius: 8px; font-size: 13px;
+    background: rgba(210,153,34,.08); border: 1px solid rgba(210,153,34,.35); color: #d8b46a;
+  }
+  .ok {
+    margin-top: 16px; padding: 10px 14px; border-radius: 8px; font-size: 13px;
+    background: rgba(63,185,80,.07); border: 1px solid rgba(63,185,80,.3); color: #7ee787;
+  }
+
+  section { margin: 46px 0; }
+  section > h2 {
+    font-size: 21px; padding-bottom: 8px; border-bottom: 1px solid var(--border-soft); margin-bottom: 14px;
+  }
+  section > h2 .n { color: var(--accent); font-family: var(--mono); font-size: 15px; margin-right: 10px; }
+  h3 { font-size: 15.5px; margin: 24px 0 8px; }
+  p { margin: 8px 0; color: var(--text-dim); }
+  p b, li b, td b { color: var(--text); font-weight: 600; }
+
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 14px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+  th { color: var(--text-dim); font-weight: 600; font-size: 12.5px; letter-spacing: .5px; }
+  td:first-child { white-space: nowrap; }
+  td code, p code, li code {
+    background: var(--code-bg); border: 1px solid var(--border-soft); border-radius: 4px;
+    padding: 1px 6px; font-size: 12.5px; color: #a5d6ff;
+  }
+
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px 20px; font-size: 13px; line-height: 1.75; overflow-x: auto;
+    color: #adbac7; margin: 14px 0;
+  }
+  pre .c { color: #768390; }
+  pre .k { color: #ff7b72; }
+  pre .s { color: #a5d6ff; }
+  pre .f { color: #d2a8ff; }
+  pre .n { color: #79c0ff; }
+
+  .cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin-top: 14px; }
+  .card {
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px;
+    display: block;
+  }
+  .card:hover { border-color: var(--accent); text-decoration: none; }
+  .card h4 { font-size: 14.5px; margin-bottom: 4px; }
+  .card .f { font-family: var(--mono); font-size: 12px; color: var(--accent); }
+  .card p { font-size: 13px; margin: 6px 0 0; }
+
+  .faq { border-left: 3px solid var(--border); padding: 2px 0 2px 16px; margin: 16px 0; }
+  .faq h4 { font-size: 14.5px; margin-bottom: 4px; }
+  .faq p { font-size: 14px; margin: 4px 0; }
+
+  ul, ol { padding-left: 22px; color: var(--text-dim); }
+  li { margin: 6px 0; }
+
+  @media (max-width: 900px) {
+    .layout { flex-direction: column; }
+    aside { width: auto; height: auto; position: static; border-right: 0; border-bottom: 1px solid var(--border-soft); }
+    aside nav { display: flex; flex-wrap: wrap; gap: 4px; }
+    main { padding: 28px 20px 60px; }
+    .cards { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <div class="logo"><a href="index.html"><span class="m">MoS</span></a></div>
+    <div class="links">
+      <a href="index.html#caps">能力</a>
+      <a href="index.html#security">安全</a>
+      <a href="index.html#proto">协议</a>
+      <a href="index.html#quick">开始</a>
+      <a href="tutorial.html" class="active">文档</a>
+    </div>
+  </div>
+</nav>
+
+<div class="layout">
+
+<aside>
+  <div class="brand"><a href="tutorial.html"><span>MoS</span> 文档</a></div>
+  <div class="ver">从零到第一个 Agent</div>
+  <nav>
+    <div class="grp">教程</div>
+    <a href="#pre"><b>0</b>前置条件</a>
+    <a href="#install"><b>1</b>添加依赖</a>
+    <a href="#first"><b>2</b>第一个 Agent</a>
+    <a href="#tool"><b>3</b>写自己的工具</a>
+    <a href="#session"><b>4</b>会话与持久化</a>
+    <a href="#sec"><b>5</b>权限与安全</a>
+    <a href="#faq"><b>6</b>常见问题</a>
+    <a href="#api"><b>7</b>API 速查</a>
+    <div class="grp">其他</div>
+    <a href="index.html">产品介绍</a>
+    <a href="https://github.com/puras/moproto">MoProto 协议层</a>
+  </nav>
+</aside>
+
+<main>
+  <div class="dochead">
+    <h1>用 MoS 写出你的第一个 Agent</h1>
+    <p>全程可复制可编译：装依赖 → 装配模型与工具 → 跑一轮 → 加自己的工具。</p>
+    <div class="notice">
+      当前为开发阶段：协议层 <code>moproto</code> / <code>mog</code> 尚未发布到可达仓库，
+      依赖需要本地 <code>replace</code>（见第 1 节）。协议层发布后即可直接 <code>go get</code>。
+      协议层仓库：<a href="https://github.com/puras/moproto">github.com/puras/moproto</a>
+    </div>
+  </div>
+
+  <section id="pre">
+    <h2><span class="n">00</span>前置条件</h2>
+    <table>
+      <thead><tr><th>需要什么</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>Go 1.26+</td><td>见仓库 <code>go.mod</code> 的 <code>go</code> 指令</td></tr>
+        <tr><td>模型凭据</td><td>OpenAI / Anthropic / Gemini 任一，或自建网关（<code>BaseURL</code>）</td></tr>
+        <tr><td>模型名</td><td>账号实际可用的模型名，例如 <code>gpt-4o-mini</code></td></tr>
+        <tr><td>三个仓库</td><td>开发阶段需要：<code>mos</code>（本仓库）、<code>moproto</code>、<code>mog</code> 放同一父目录</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="install">
+    <h2><span class="n">01</span>添加依赖</h2>
+    <p>建一个新工程：</p>
+    <pre><span class="c"># 三个仓库放在同一父目录（开发阶段）</span>
+git clone https://github.com/puras/mos.git
+<span class="c"># 协议层 MoProto（github.com/puras/moproto），clone 到同级目录</span>
+git clone https://github.com/puras/moproto.git
+<span class="c"># 协议依赖 mog，同样 clone 到同级目录</span>
+git clone https://github.com/puras/mog.git
+
+mkdir myagent &amp;&amp; cd myagent
+go mod init myagent</pre>
+
+    <p>写 <code>go.mod</code>（<b>三个 replace 都要写</b>）：</p>
+    <pre>module myagent
+
+go 1.26
+
+require github.com/puras/mos v0.0.0
+
+replace github.com/puras/mos =&gt; ../mos
+replace github.com/puras/moproto v0.1.0 =&gt; ../moproto
+replace github.com/puras/mog v0.1.6 =&gt; ../mog</pre>
+
+    <div class="ok">
+      <b>为什么必须自己写 replace：</b>Go 只认主模块的 <code>replace</code>，依赖模块里的 replace 不会传递。
+      少了 moproto / mog 两行，<code>go mod tidy</code> 会去公网找这两个模块并失败。
+    </div>
+
+    <p>拉依赖并验证（此时还没有代码，能过就行）。若 <code>go mod tidy</code> 仍报找不到模块，
+    确认三个仓库确实在同级目录、目录名分别是 <code>mos</code> / <code>moproto</code> / <code>mog</code>：</p>
+    <pre>go mod tidy
+go build ./...</pre>
+
+    <p>协议层发布后，删掉三个 <code>replace</code>，改成一行即可：</p>
+    <pre>go get github.com/puras/mos</pre>
+  </section>
+
+  <section id="first">
+    <h2><span class="n">02</span>第一个 Agent</h2>
+    <p>新建 <code>main.go</code>，整段复制：</p>
+    <pre>package main
+
+import (
+	<span class="s">"context"</span>
+	<span class="s">"fmt"</span>
+	<span class="s">"os"</span>
+	<span class="s">"strings"</span>
+
+	<span class="s">"github.com/puras/mos"</span>
+	<span class="s">"github.com/puras/mos/llm"</span>
+	<span class="s">"github.com/puras/mos/session"</span>
+	<span class="s">"github.com/puras/mos/tool"</span>
+	<span class="s">"github.com/puras/mos/tool/builtin"</span>
+)
+
+<span class="k">func</span> main() {
+	<span class="c">// 协议名：openai / anthropic / gemini</span>
+	provider := env(<span class="s">"MOS_PROVIDER"</span>, <span class="s">"openai"</span>)
+	keyEnv := mos.APIKeyEnv(provider) <span class="c">// openai→OPENAI_API_KEY，框架不读环境变量，只告诉你名字</span>
+	<span class="k">if</span> keyEnv == <span class="s">""</span> {
+		fmt.Fprintf(os.Stderr, <span class="s">"未知协议 %q\n"</span>, provider)
+		os.Exit(<span class="n">1</span>)
+	}
+
+	<span class="c">// ① 模型：协议 + 凭据 + 模型名；重试策略由框架执行</span>
+	model, err := mos.NewModel(mos.ModelConfig{
+		Provider: provider,
+		APIKey:   os.Getenv(keyEnv),
+		BaseURL:  env(<span class="s">"MOS_BASE_URL"</span>, <span class="s">""</span>), <span class="c">// 走网关时填</span>
+		Model:    env(<span class="s">"MOS_MODEL"</span>, <span class="s">"gpt-4o-mini"</span>),
+		Retry:    llm.RetryPolicy{MaxAttempts: <span class="n">3</span>},
+	})
+	<span class="k">if</span> err != nil {
+		fail(err)
+	}
+
+	<span class="c">// ② 工具：默认工具 + 一整套文件/搜索工具（jail 根 = 当前目录）</span>
+	reg := tool.NewRegistry()
+	<span class="k">for</span> _, t := <span class="k">range</span> builtin.Default() {
+		<span class="k">if</span> err := reg.Register(t); err != nil {
+			fail(err)
+		}
+	}
+	tools, err := builtin.ToolsIn(<span class="s">"."</span>)
+	<span class="k">if</span> err != nil {
+		fail(err)
+	}
+	<span class="k">for</span> _, t := <span class="k">range</span> tools {
+		<span class="k">if</span> err := reg.Register(t); err != nil {
+			fail(err)
+		}
+	}
+
+	<span class="c">// ③ 装配：一次装好模型、工具、安全、上下文工程</span>
+	a, err := mos.New(mos.Config{Model: model, Tools: reg})
+	<span class="k">if</span> err != nil {
+		fail(err)
+	}
+	fmt.Print(a.Describe()) <span class="c">// 装配快照：装了什么、没装什么</span>
+
+	<span class="c">// ④ 会话（JSONL 持久化，重启可恢复）+ 跑一轮</span>
+	sess, err := session.Open(<span class="s">"data"</span>, <span class="s">"demo"</span>)
+	<span class="k">if</span> err != nil {
+		fail(err)
+	}
+	q := strings.Join(os.Args[<span class="n">1</span>:], <span class="s">" "</span>)
+	<span class="k">if</span> q == <span class="s">""</span> {
+		q = <span class="s">"只回答：1+1=?"</span>
+	}
+	reply, err := a.Run(context.Background(), sess, q)
+	<span class="k">if</span> err != nil {
+		fail(err)
+	}
+	fmt.Println(reply)
+	fmt.Printf(<span class="s">"[tokens] 共 %d\n"</span>, sess.TotalUsage().TotalTokens)
+}
+
+<span class="k">func</span> env(k, def <span class="k">string</span>) <span class="k">string</span> {
+	<span class="k">if</span> v := strings.TrimSpace(os.Getenv(k)); v != <span class="s">""</span> {
+		<span class="k">return</span> v
+	}
+	<span class="k">return</span> def
+}
+
+<span class="k">func</span> fail(err <span class="k">error</span>) {
+	fmt.Fprintln(os.Stderr, err)
+	os.Exit(<span class="n">1</span>)
+}</pre>
+
+    <h3>跑起来</h3>
+    <pre>export MOS_PROVIDER=openai
+export OPENAI_API_KEY=sk-...
+export MOS_MODEL=gpt-4o-mini
+
+go run . <span class="s">"只回答：1+1=?"</span></pre>
+    <p>先打印一段<b>装配快照</b>（模型、工具、上下文预算、降级警告），再打印模型回答。</p>
+
+    <h3>环境变量</h3>
+    <table>
+      <thead><tr><th>变量</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td><code>MOS_PROVIDER</code></td><td>协议：<code>openai</code> / <code>anthropic</code> / <code>gemini</code></td></tr>
+        <tr><td><code>OPENAI_API_KEY</code><br><code>ANTHROPIC_API_KEY</code><br><code>GEMINI_API_KEY</code></td><td>凭据。用 <code>mos.APIKeyEnv(provider)</code> 取名字，不用自己拼</td></tr>
+        <tr><td><code>MOS_MODEL</code></td><td>模型名</td></tr>
+        <tr><td><code>MOS_BASE_URL</code></td><td>网关地址（可选，留空用协议默认）</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="tool">
+    <h2><span class="n">03</span>写自己的工具</h2>
+    <p>工具就是一个实现了 <code>tool.Tool</code> 的结构体：名字、说明、参数类型、执行函数。</p>
+    <pre>package main
+
+import (
+	<span class="s">"context"</span>
+	<span class="s">"encoding/json"</span>
+
+	<span class="s">"github.com/puras/mos/tool"</span>
+)
+
+<span class="c">// 参数：struct tag → JSON Schema（注册时生成并缓存）</span>
+<span class="k">type</span> WeatherArgs <span class="k">struct</span> {
+	City <span class="k">string</span> <span class="s">`json:"city" mos:"desc=城市名,required=true"`</span>
+	Unit <span class="k">string</span> <span class="s">`json:"unit,omitempty" mos:"desc=温度单位：celsius 或 fahrenheit"`</span>
+}
+
+<span class="k">type</span> Weather <span class="k">struct</span> {}
+
+<span class="k">func</span> (Weather) Name() <span class="k">string</span>        { <span class="k">return</span> <span class="s">"weather"</span> }
+<span class="k">func</span> (Weather) Description() <span class="k">string</span> { <span class="k">return</span> <span class="s">"查询指定城市的当前天气"</span> }
+<span class="k">func</span> (Weather) Parameters() <span class="k">any</span>     { <span class="k">return</span> &amp;WeatherArgs{} } <span class="c">// 反射生成 schema 用</span>
+
+<span class="k">func</span> (Weather) Execute(ctx context.Context, raw json.RawMessage) (<span class="k">any</span>, <span class="k">error</span>) {
+	args, err := tool.Parse[WeatherArgs](raw)
+	<span class="k">if</span> err != nil {
+		<span class="k">return</span> <span class="k">nil</span>, err
+	}
+	<span class="c">// 返回值会被序列化后回填给模型 —— 保持 JSON 可序列化</span>
+	<span class="k">return</span> map[string]<span class="k">any</span>{
+		<span class="s">"city"</span>:   args.City,
+		<span class="s">"temp_c"</span>: <span class="n">26</span>,
+		<span class="s">"sky"</span>:    <span class="s">"晴"</span>,
+	}, <span class="k">nil</span>
+}</pre>
+
+    <p>在装配处注册（<code>Weather{}</code> 满足 <code>tool.Tool</code>）：</p>
+    <pre>reg := tool.NewRegistry()
+<span class="k">if</span> err := reg.Register(Weather{}); err != nil {
+	fail(err)
+}</pre>
+
+    <ul>
+      <li>工具名就是模型调用时的函数名，重复注册会报错（fail-closed，不静默覆盖）</li>
+      <li>参数用 struct tag 描述：<code>mos:"desc=说明,required=true"</code>，<code>json</code> tag 决定字段名</li>
+      <li>返回 <code>error</code> 不会中断整轮——错误会作为工具结果回填给模型，让它自己纠正</li>
+      <li>默认独占执行。想与同批调用并发，实现 <code>ConcurrencySafe(args json.RawMessage) bool</code> 并返回 true，否则一律串行</li>
+    </ul>
+  </section>
+
+  <section id="session">
+    <h2><span class="n">04</span>会话与持久化</h2>
+    <p><code>session.Open(dir, id)</code> 一行建/恢复：日志是 append-only 的 JSONL，落在 <code>dir/id/</code>。</p>
+    <pre><span class="c">// 多轮对话：同一个 sess 复用，上下文自动接续</span>
+sess, _ := session.Open(<span class="s">"data"</span>, <span class="s">"demo"</span>)
+<span class="k">for</span> {
+	q := readLine(<span class="s">"> "</span>)
+	<span class="k">if</span> q == <span class="s">""</span> {
+		<span class="k">break</span>
+	}
+	reply, err := a.Run(context.Background(), sess, q)
+	<span class="k">if</span> err != nil {
+		fail(err)
+	}
+	fmt.Println(reply)
+}</pre>
+    <ul>
+      <li>进程重启、<code>Open</code> 同一个 id → 上下文接着上次继续（崩溃恢复只补事件、不改写历史）</li>
+      <li><code>sess.Events()</code> 拿到全链路事件（turn / assistant / tool / approval / compaction）</li>
+      <li><code>sess.TotalUsage()</code> 拿跨轮累计用量（输入、缓存读、输出）</li>
+      <li>不想落盘：<code>session.New(id, nil)</code> 用内存会话</li>
+    </ul>
+  </section>
+
+  <section id="sec">
+    <h2><span class="n">05</span>权限与安全</h2>
+    <p>默认就是收紧的：<b>fail-closed</b>——未知工具拒绝、缺能力即报错、审批未配置即拒绝。</p>
+
+    <h3>① 文件边界：工具只能碰 jail 根以内</h3>
+    <pre><span class="c">// 只能访问 /srv/work 及其子目录，越界路径被拒（symlink 逃逸也挡）</span>
+tools, err := builtin.ToolsIn(<span class="s">"/srv/work"</span>)</pre>
+    <p>想运行期加根（用户在会话中途授权另一个目录）：</p>
+    <pre>roots := filesystem.NewRootSet([]<span class="k">string</span>{<span class="s">"/srv/work"</span>}, []<span class="k">string</span>{<span class="s">"/srv/work"</span>})
+tools, err := builtin.ToolsInRoots(roots)
+
+a, _ := mos.New(mos.Config{Model: model, Tools: reg, Roots: roots})
+<span class="c">// 之后随时加根，对后续调用立即生效</span>
+a.AddRoot(<span class="s">"/srv/data"</span>)</pre>
+
+    <h3>② 名字级策略：谁能被调用、谁能被看见</h3>
+    <pre><span class="k">import</span> <span class="s">"github.com/puras/mos/agent/policy"</span>
+
+a, _ := mos.New(mos.Config{
+	Model: model,
+	Tools: reg,
+	Policy: &amp;policy.Config{
+		Allow: []<span class="k">string</span>{<span class="s">"read*"</span>, <span class="s">"grep*"</span>, <span class="s">"weather"</span>}, <span class="c">// 支持 * 通配</span>
+		Deny:  []<span class="k">string</span>{<span class="s">"write"</span>, <span class="s">"edit"</span>},                 <span class="c">// 拒绝优先于放行</span>
+	},
+})</pre>
+    <p><code>Allow</code> 为 <code>nil</code> = 不限制；<b>空集 = 全禁</b>。被拒的工具不会出现在模型看到的清单里。</p>
+
+    <h3>③ 人工审批：某些调用要人点头</h3>
+    <pre><span class="k">import</span> <span class="s">"github.com/puras/mos/agent/approval"</span>
+
+<span class="k">type</span> termApprover <span class="k">struct</span> {}
+
+<span class="k">func</span> (termApprover) Decide(ctx context.Context, req approval.Request) (approval.Outcome, <span class="k">error</span>) {
+	fmt.Printf(<span class="s">"需要确认：%s（%s）\n允许吗？[y/N] "</span>, req.ToolName, req.Reason)
+	<span class="k">var</span> s <span class="k">string</span>
+	fmt.Scanln(&amp;s)
+	<span class="k">if</span> s == <span class="s">"y"</span> || s == <span class="s">"Y"</span> {
+		<span class="k">return</span> approval.Approved, <span class="k">nil</span>
+	}
+	<span class="k">return</span> approval.Rejected, <span class="k">nil</span>
+}
+
+a, _ := mos.New(mos.Config{
+	Model:    model,
+	Tools:    reg,
+	Approval: approval.NewService(termApprover{}, <span class="k">nil</span>), <span class="c">// 第二个参数是审计落地口</span>
+})</pre>
+    <p>审批有四档结果：<code>Approved</code> / <code>Rejected</code> / <code>Cancelled</code> / <code>Unavailable</code>。
+    没装配应答方 → 需要确认的调用一律拒绝，不会偷偷放行。</p>
+
+    <h3>④ 参数级规则：按参数决定放行 / 拒绝 / 转人工</h3>
+    <pre>a, _ := mos.New(mos.Config{
+	Model: model,
+	Tools: reg,
+	Rules: myRules, <span class="c">// []policy.Check：deny 进守卫，ask 转审批</span>
+})</pre>
+    <p>例如「写文件到某个路径 → 转人工确认」。写法见 <code>agent/policy</code> 包与 <code>examples/chat/guard.go</code>。</p>
+  </section>
+
+  <section id="faq">
+    <h2><span class="n">06</span>常见问题</h2>
+
+    <div class="faq">
+      <h4><code>go mod tidy</code> 报找不到 moproto / mog</h4>
+      <p>replace 没写在你的 go.mod 里。依赖模块的 replace 不传递，三个都要自己写。</p>
+    </div>
+
+    <div class="faq">
+      <h4>401 / model not found</h4>
+      <p>检查三件事：协议名（<code>MOS_PROVIDER</code>）与密钥变量名是否匹配（<code>mos.APIKeyEnv</code> 返回的名字）、
+      模型名是否是账号可用的、是否走了网关（<code>MOS_BASE_URL</code>）。</p>
+    </div>
+
+    <div class="faq">
+      <h4>写文件报「未读过该文件」</h4>
+      <p>写前观察门：没读过的文件不允许覆盖，先 <code>read</code> 再 <code>write</code>。这是防丢失更新，不是 bug。</p>
+    </div>
+
+    <div class="faq">
+      <h4>读文件报「越界」</h4>
+      <p>文件工具的 jail 根之外一律拒绝。改根：<code>builtin.ToolsIn("/你的目录")</code>，或运行期 <code>a.AddRoot(dir)</code>。</p>
+    </div>
+
+    <div class="faq">
+      <h4>模型调我的工具被拒绝了</h4>
+      <p>策略（<code>Policy</code>）或守卫拒绝。默认 fail-closed：先看 <code>a.Describe()</code> 打印的装配快照，
+      再看会话日志里的拒绝事件。</p>
+    </div>
+
+    <div class="faq">
+      <h4>想让模型跑 shell 命令</h4>
+      <p><code>mos.Config.Sandbox</code> 非 nil 时装配层才注册 shell 工具（<code>sandbox.Local</code>）。
+      macOS 上会走 Seatbelt 路径强制，需要本机授权；沙箱是纵深防御的一层，不是强隔离边界。</p>
+    </div>
+
+    <div class="faq">
+      <h4>上下文长了变慢、变贵</h4>
+      <p>压缩与截断默认已开（工具结果超限会落盘、超过 token 预算会生成摘要）。
+      把 <code>ContextWindow</code> 设成模型真实窗口，否则要等溢出才触发压缩。</p>
+    </div>
+
+    <div class="faq">
+      <h4>跑 <code>go test ./...</code> 有失败</h4>
+      <p>沙箱 / shell 类测试需要本机允许 Seatbelt 与本地端口监听的环境，在受限环境下会失败。</p>
+    </div>
+  </section>
+
+  <section id="api">
+    <h2><span class="n">07</span>API 速查</h2>
+    <table>
+      <thead><tr><th>函数</th><th>用途</th></tr></thead>
+      <tbody>
+        <tr><td><code>mos.NewModel(cfg ModelConfig)</code></td><td>装配模型：Provider / APIKey / BaseURL / Model / Retry / Log</td></tr>
+        <tr><td><code>mos.APIKeyEnv(provider)</code></td><td>该协议的密钥环境变量名</td></tr>
+        <tr><td><code>mos.New(cfg Config)</code></td><td>装配 Agent：Model、Tools、Policy、Rules、Approval、Sandbox、Roots、Context、Prompt…</td></tr>
+        <tr><td><code>(a *Agent) Run(ctx, sess, input)</code></td><td>跑一轮，返回模型回答</td></tr>
+        <tr><td><code>(a *Agent) Describe()</code></td><td>装配快照：装了什么、没装什么、降级警告</td></tr>
+        <tr><td><code>(a *Agent) AddRoot(dir)</code></td><td>运行期加文件根（需装配 Roots）</td></tr>
+        <tr><td><code>tool.NewRegistry()</code></td><td>建工具注册表</td></tr>
+        <tr><td><code>(r *Registry) Register(t)</code></td><td>注册工具（进模型的工具清单）</td></tr>
+        <tr><td><code>(r *Registry) RegisterDeferred(t)</code></td><td>懒加载注册：模型先看不到，经 <code>tool_search</code> 激活</td></tr>
+        <tr><td><code>tool.Parse[T](raw)</code></td><td>解析模型传来的工具参数</td></tr>
+        <tr><td><code>builtin.Default()</code></td><td>内置无副作用工具集</td></tr>
+        <tr><td><code>builtin.ToolsIn(root)</code></td><td>文件 + 搜索工具集，jail 根 = root</td></tr>
+        <tr><td><code>builtin.ToolsInRoots(rs)</code></td><td>同上，根来自可变集合（支持运行期加根）</td></tr>
+        <tr><td><code>session.Open(dir, id)</code></td><td>建/恢复 JSONL 会话</td></tr>
+        <tr><td><code>(s *Session) Events()</code></td><td>全链路事件</td></tr>
+        <tr><td><code>(s *Session) TotalUsage()</code></td><td>跨轮累计用量</td></tr>
+        <tr><td><code>policy.Config{Allow, Deny}</code></td><td>名字级策略（支持 <code>*</code> 通配）</td></tr>
+        <tr><td><code>approval.NewService(ans, audit)</code></td><td>装配审批通道</td></tr>
+        <tr><td><code>filesystem.NewRootSet(read, write)</code></td><td>可变文件根集合</td></tr>
+      </tbody>
+    </table>
+
+    <h3>下一步</h3>
+    <div class="cards">
+      <a class="card" href="../examples/chat/README.md">
+        <div class="f">examples/chat</div>
+        <h4>全能力演示</h4>
+        <p>流式输出、多协议、会话恢复、策略与审批、压缩与截断、AGENTS.md 注入、中途授权目录。</p>
+      </a>
+      <a class="card" href="../examples/agents/README.md">
+        <div class="f">examples/agents</div>
+        <h4>多 Agent 协作</h4>
+        <p>拆解 / 执行 / 验收三角色 + 任务列表驱动。</p>
+      </a>
+      <a class="card" href="../README.md">
+        <div class="f">README.md</div>
+        <h4>核心概念表</h4>
+        <p>八个概念各自在哪个包、一句话说明。</p>
+      </a>
+      <a class="card" href="PRD.md">
+        <div class="f">docs/PRD.md</div>
+        <h4>需求与路线图</h4>
+        <p>要什么、验收标准、规划中的能力（MCP / Skills / 多智能体）。</p>
+      </a>
+    </div>
+  </section>
+</main>
+
+</div>
+<script>
+(function () {
+  var links = [].slice.call(document.querySelectorAll('aside nav a[href^="#"]'));
+  var targets = links.map(function (a) {
+    return { a: a, el: document.getElementById(a.getAttribute('href').slice(1)) };
+  }).filter(function (t) { return t.el; });
+  if (!targets.length) return;
+
+  function spy() {
+    var line = window.scrollY + 140;
+    var cur = null;
+    targets.forEach(function (t) { if (t.el.offsetTop <= line) cur = t; });
+    if (window.innerHeight + window.scrollY >= document.body.scrollHeight - 2) {
+      cur = targets[targets.length - 1];
+    }
+    targets.forEach(function (t) { t.a.classList.toggle('active', t === cur); });
+  }
+  window.addEventListener('scroll', spy, { passive: true });
+  window.addEventListener('resize', spy);
+  spy();
+})();
+</script>
+</body>
+</html>
