@@ -45,6 +45,7 @@ import (
 	"github.com/puras/mos/agent/hook"
 	"github.com/puras/mos/agent/policy"
 	"github.com/puras/mos/agent/prompt"
+	"github.com/puras/mos/agent/skill"
 	"github.com/puras/mos/filesystem"
 	"github.com/puras/mos/llm"
 	"github.com/puras/mos/planner"
@@ -141,6 +142,15 @@ type Config struct {
 	// 之后（根包的 SystemPrompt 是字符串，位置只能到末尾——想要精确位置就用
 	// Prompt）。
 	Context *ContextConfig
+	// Skills 是技能能力配置（nil = 不提供该能力）。
+	//
+	// 技能 = 目录里的 SKILL.md + frontmatter：清单（name / description）进
+	// 系统提示词（装配期渲染一次 → 静态，保 prompt cache），正文由 skill
+	// 工具按需加载。技能集**装配期固定**——不做运行期热加载。
+	//
+	// 给了目录但没装出技能（目录不存在 / 全被跳过）不算装配失败：降级说明
+	// 进 Describe() 快照，不静默丢。
+	Skills *SkillConfig
 	// WorkDir 是工作目录：文件工具的沙箱根、截断落盘目录的父目录。空 = 当前目录。
 	WorkDir string
 	// ContextWindow 是模型上下文窗口（token）。0 = 默认 128K；确切窗口更小的
@@ -199,6 +209,9 @@ type Agent struct {
 	contextBytes   int
 	contextWarning []string
 
+	// skills 是装配期发现的技能清单（nil = 没装技能这个能力）。
+	skills *skill.Catalog
+
 	// catalog 是模型目录（多模型模式；nil = 单模型模式）。
 	catalog *modelCatalog
 
@@ -221,6 +234,33 @@ type ContextConfig struct {
 	// GlobalDirs 为空 = 用 MoS 的全局目录（~/.mos）——全局约定是「所有项目
 	// 共享的那部分」，默认该有；填了就以宿主填的为准（不追加）。
 	Options contextfile.Options
+}
+
+// SkillConfig 是技能装配参数。
+//
+// 零值可用：Dirs 空 = 没有技能目录（不装技能）；Reader 空 = 读本地文件。
+type SkillConfig struct {
+	// Dirs 是技能目录列表（按优先级从高到低）。
+	//
+	// 顺序即优先级：同名技能**先到先得**（后来的被遮蔽并出诊断，PI 同款）。
+	// 每个目录下：目录自己含 SKILL.md 就是技能根，否则它的每个直接子目录
+	// （含 SKILL.md）是一个技能。
+	//
+	// 路径**原样**传给 Reader：注入自定义 Reader 时，路径是宿主命名空间里的
+	// 键（未必是文件系统路径），框架不擅自展开 "~"。
+	Dirs []string
+	// Reader 是读技能文件与列目录的能力（nil = 读本地文件）。
+	//
+	// 框架不碰文件系统：宿主要 jail 语义（只许读声明过的目录）就注入自己的
+	// Reader。**技能目录列表本身就是宿主声明的授权范围**，框架不另行校验根
+	// 集合——框架看不到注入的 Reader 内部边界，越界判断只能是宿主的事。
+	Reader skill.Reader
+	// MaxBodyBytes 是单个技能正文的字节上限（≤0 = 64KB）。超限的技能跳过
+	// 并出诊断（截断的指令是坏指令）。
+	MaxBodyBytes int
+	// MaxCatalogBytes 是清单渲染的字节上限（≤0 = 8KB）。超预算时先丢描述、
+	// 再丢条目，丢了多少如实写进末尾提示。
+	MaxCatalogBytes int
 }
 
 // New 装配智能体。缺 Model 或参数非法直接报错（fail-closed）。
@@ -298,6 +338,32 @@ func New(cfg Config) (*Agent, error) {
 			}
 		}
 	}
+	// 技能（Skills）：清单进系统提示词（装配期渲染一次 → 静态，保 prompt
+	// cache），正文由 skill 工具按需加载。
+	//
+	// 装配期就把技能读进来（而不是调用时再读）：技能集是静态的，坏掉的技能
+	// 文件应该在装配期就暴露成诊断，而不是跑到一半才失败。
+	var skillCatalog *skill.Catalog
+	if cfg.Skills != nil {
+		skillCatalog = skill.Load(skill.Options{
+			Dirs:            cfg.Skills.Dirs,
+			Reader:          cfg.Skills.Reader,
+			MaxBodyBytes:    cfg.Skills.MaxBodyBytes,
+			MaxCatalogBytes: cfg.Skills.MaxCatalogBytes,
+		})
+		if text := skillCatalog.Render(); text != "" {
+			if pb != nil {
+				if err := pb.AddSkills(text); err != nil {
+					return nil, fmt.Errorf("mos: 装配技能清单: %w", err)
+				}
+			} else {
+				if systemPrompt != "" {
+					systemPrompt += "\n\n"
+				}
+				systemPrompt += text
+			}
+		}
+	}
 	if pb != nil {
 		systemPrompt = pb.Render()
 	}
@@ -342,6 +408,16 @@ func New(cfg Config) (*Agent, error) {
 		searchWired = true
 	}
 
+	// skill 工具：只有存在**模型可见**技能时才注册（能力即证据——没有可
+	// 加载的技能就不给这个工具；仅用户可调用的技能由宿主的展开器处理）。
+	if skillCatalog != nil && len(skillCatalog.ModelVisible()) > 0 {
+		if _, ok := reg.Get(skill.ToolName); !ok {
+			if err := reg.Register(skill.NewTool(skillCatalog)); err != nil {
+				return nil, fmt.Errorf("mos: 注册 skill 工具: %w", err)
+			}
+		}
+	}
+
 	// 守卫总线（单调裁决）与钩子总线（可改写环节）：两条轨道，互不绕过。
 	guards := hook.NewGuardBus()
 	hooks := hook.NewHookBus()
@@ -366,6 +442,8 @@ func New(cfg Config) (*Agent, error) {
 		contextFiles:   contextFiles,
 		contextBytes:   contextBytes,
 		contextWarning: contextWarning,
+
+		skills: skillCatalog,
 
 		catalog: catalog,
 	}
@@ -452,12 +530,74 @@ func (a *Agent) Run(ctx context.Context, sess *session.Session, input string) (s
 	if sess == nil {
 		return "", errors.New("mos: 会话未设置")
 	}
+	// 技能：每轮一份激活状态（ctx 携带）+ 事件记录器（接会话）。
+	//
+	// 状态用**指针**语义：宿主若自己注入了一份，Run 结束后能读到这轮加载过
+	// 哪些技能；没注入就由框架建一份（用完即弃，不跨轮共享）。
+	if a.skills != nil {
+		if skill.StateFrom(ctx) == nil {
+			ctx = skill.WithState(ctx, skill.NewState())
+		}
+		ctx = skill.WithRecorder(ctx, skillRecorder{sess: sess})
+	}
 	// 每轮用运行上下文的**浅拷贝**：旋钮值写进副本，驱动只读副本——
 	// 并行会话之间没有共享可变状态（钩子/守卫/注册表是共享的，那是有意）。
 	rt := *a.rt
 	rt.Concurrency = int(a.concurrency.Load())
 	rt.MaxDecisionRounds = int(a.maxRounds.Load())
 	return a.driver.Run(ctx, &rt, sess, input)
+}
+
+// ExpandSkill 展开用户文本里的技能手势（/name）。
+//
+// 框架**不自动扫**用户文本（误触发风险，且 SDK 没有用户命令面）：宿主拿到
+// 用户输入时自己调一次即可。命中就把手势换成技能正文块，其后的文字作为参数
+// 追加在正文之后（PI 的 args 追加语义）。
+//
+// 没装技能、或不是已知技能 → 原样返回 + false（不是错误）。
+//
+// 仅用户可调用的技能（disable-model-invocation）在这里**能**展开——用户可以，
+// 模型不行。
+func (a *Agent) ExpandSkill(text string) (string, bool) {
+	if a == nil || a.skills == nil {
+		return text, false
+	}
+	return a.skills.ExpandInvocation(text)
+}
+
+// Skills 返回装配期发现的技能清单（含仅用户可调用的那些——宿主展示什么由
+// 宿主决定）。
+func (a *Agent) Skills() []skill.Skill {
+	if a == nil || a.skills == nil {
+		return nil
+	}
+	return a.skills.All()
+}
+
+// skillRecorder 把技能事件写进会话（装配层接线）。
+//
+// 只记元数据（名字 / 描述 / 目录），不记正文——正文已经在 tool/result 里。
+type skillRecorder struct {
+	sess *session.Session
+}
+
+// RecordActivate 实现 skill.Recorder：记一条 skill/activate 事件。
+//
+// 会话写失败即报错：技能正文会改变模型行为，没有留痕的加载等于没发生过的
+// 加载（审计链断在这里，事后查不到这轮加载了什么）。
+func (r skillRecorder) RecordActivate(name, description, dir string) error {
+	if r.sess == nil {
+		return nil
+	}
+	_, err := r.sess.Append(session.Event{
+		Kind: session.EventSkillActivate,
+		Skill: &session.SkillEvent{
+			Name:        name,
+			Description: description,
+			Dir:         dir,
+		},
+	})
+	return err
 }
 
 // RunContext 返回底层运行上下文的**模板**（只读用）。
@@ -677,6 +817,21 @@ func (a *Agent) Describe() string {
 		fmt.Fprintf(&b, "  上下文文件: %d 个（%d 字节）: %s\n",
 			len(a.contextFiles), a.contextBytes, strings.Join(a.contextFiles, ", "))
 		for _, w := range a.contextWarning {
+			fmt.Fprintf(&b, "    ⚠ %s\n", w)
+		}
+	}
+	switch {
+	case a.skills == nil:
+		b.WriteString("  技能: 未装配\n")
+	case a.skills.Len() == 0:
+		b.WriteString("  技能: 已装配，但没找到技能\n")
+	default:
+		fmt.Fprintf(&b, "  技能: %d 个（模型可见 %d 个）: %s\n",
+			a.skills.Len(), len(a.skills.ModelVisible()), strings.Join(a.skills.ModelVisibleNames(), ", "))
+	}
+	// 降级诊断照实写（技能没装上也是一条诊断）。
+	if a.skills != nil {
+		for _, w := range a.skills.Warnings() {
 			fmt.Fprintf(&b, "    ⚠ %s\n", w)
 		}
 	}

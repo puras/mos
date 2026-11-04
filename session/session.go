@@ -21,9 +21,13 @@
 //	            非预留。
 //	approval/asked   问了人工（审批请求发出；不投影，仅审计）
 //	approval/decided 人工答了（与 asked 用同一个 id 配对；不投影，仅审计）
+//	skill/activate   技能已加载（skill 工具成功返回正文时记一条；只记元数据，
+//	                不记正文；不投影，仅审计）
 //
-// 最后两种是 PRD 点名的例外（§可观测「approval/* 等事件全量落会话日志」、
-// G4「审批挂起-恢复 E2E」）：审批的审计链断在这里就不知道谁批的。
+// 最后三种是 PRD 点名的例外（§可观测「approval/* 等事件全量落会话日志」、
+// G4「审批挂起-恢复 E2E」、FR-D11「skill/* 事件」）：审批的审计链断在这里
+// 就不知道谁批的；技能加载同理——技能正文进了上下文，事后却查不到这轮
+// 加载了哪个技能，审计就缺了一条。
 package session
 
 import (
@@ -56,6 +60,13 @@ const (
 	// 这两个事件是 PRD 点名的（§可观测「approval/* 等事件全量落会话日志」、
 	// G4「审批挂起-恢复 E2E」），不走事件目录的预算制。
 	EventApprovalDecided EventKind = "approval/decided"
+	// EventSkillActivate 是「技能已加载」：skill 工具成功返回技能正文时记一条。
+	//
+	// 只记元数据（名字 / 描述 / 目录），不记正文——正文已经在 tool/result
+	// 里；这里补的是一条**人能读**的审计线索（这轮加载了哪个技能）。
+	//
+	// PRD 点名（FR-D11「skill/* 事件」），不走事件目录的预算制。
+	EventSkillActivate EventKind = "skill/activate"
 )
 
 // Approval 是审批事件载荷（approval/asked 与 approval/decided）。
@@ -71,6 +82,19 @@ type Approval struct {
 	// Outcome 是审批结果（decided 才有）：approved / rejected / cancelled /
 	// unavailable。
 	Outcome string `json:"outcome,omitempty"`
+}
+
+// SkillEvent 是技能事件载荷（skill/activate）。
+//
+// 只记元数据：技能正文已经在工具结果里（那是模型看到的东西），这里记的是
+// 「加载了哪个技能」这条审计线索。
+type SkillEvent struct {
+	// Name 是被加载的技能名。
+	Name string `json:"name"`
+	// Description 是技能的一句话说明（清单里那份）。
+	Description string `json:"description,omitempty"`
+	// Dir 是技能目录。
+	Dir string `json:"dir,omitempty"`
 }
 
 // ToolResult 是一次工具执行的回填（事件日志审计载荷；
@@ -116,6 +140,8 @@ type Event struct {
 	Reason     string         `json:"reason,omitempty"`
 	// Approval 是审批事件载荷（approval/asked 与 approval/decided）。
 	Approval *Approval `json:"approval,omitempty"`
+	// Skill 是技能事件载荷（skill/activate）。
+	Skill *SkillEvent `json:"skill,omitempty"`
 	// Compaction 是压缩事件载荷（见 EventCompaction 与 Compaction 类型）。
 	Compaction *Compaction `json:"compaction,omitempty"`
 	// Error 是 turn/end 的失败详情：分类之外的诊断信息（出错原因、终止理由）。

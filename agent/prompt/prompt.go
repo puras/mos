@@ -41,6 +41,10 @@ const (
 	// 紧跟行为约定之后、工具指引之前——项目约定是对框架约定的特化补充，
 	// 紧接着讲最自然；工具指引是能力说明，排在约定之后。
 	OrderProjectContext = 750
+	// OrderSkills 是技能清单的位置：在项目约定之后、工具指引之前——
+	// 技能清单是「额外有哪些能力可用」的索引，放在能力说明（工具指引）之前
+	// 更自然：先知道有什么，再看怎么用。
+	OrderSkills = 800
 	// OrderToolBase 是工具指引的起点：AddToolGuidelines 按注册序依次 +1。
 	OrderToolBase = 1000
 	// OrderRuntime 是易变部署事实的位置（工作目录、审批模式等，宿主自决是否加入）。
@@ -62,6 +66,9 @@ type Section struct {
 
 // SectionProjectContext 是项目上下文分节的名字（宿主用 contextfile 装配正文后注入）。
 const SectionProjectContext = "project_context"
+
+// SectionSkills 是技能清单分节的名字（宿主用 agent/skill 渲染正文后注入）。
+const SectionSkills = "skills"
 
 // Builder 收集分节并渲染最终字符串。零值可直接用；非并发安全——
 // 装配发生在启动期（或每个智能体实例各自装配），渲染结果随后只读。
@@ -141,6 +148,22 @@ func (b *Builder) AddProjectContext(text string) error {
 	return b.Add(Section{
 		Name:  SectionProjectContext,
 		Order: OrderProjectContext,
+		Text:  text,
+	})
+}
+
+// AddSkills 注入技能清单正文（agent/skill 渲染的 <available_skills> 块）：
+// 位置固定在 OrderSkills。
+//
+// 正文为空 = 没有技能：不加分节（不留空洞）。
+// 重名即报错——同一个 Builder 注入两次是装配错误，当场暴露。
+func (b *Builder) AddSkills(text string) error {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	return b.Add(Section{
+		Name:  SectionSkills,
+		Order: OrderSkills,
 		Text:  text,
 	})
 }
