@@ -43,7 +43,7 @@
 | `agent/contextfile` | 上下文文件（AGENTS.md / CLAUDE.md 等）发现与合并：候选名优先级 + 向上递归 + 同目录 override + 真实路径去重 + 字节预算裁剪；**I/O 以 Reader 接口注入**（框架不碰文件系统） | 新增 | S6 ✅ |
 | `agent`（上下文件） | 截断、压缩、Auditor | 重写瘦身 | S6 ✅ |
 | `mos`（根包） | 一行装配 `mos.New(Config)` + 运行期旋钮（并发/策略/规则/加根/**换模型**）+ 装配快照 | 重写 | S7 ✅ |
-| `agent/skill` | 技能元数据解析（frontmatter）+ 目录发现 + `<available_skills>` 清单渲染 + 专用 `skill` 工具按需加载正文；**不做技能级工具收窄**（§3.16） | 新增 | S8.1 ⬜ |
+| `agent/skill` | 技能元数据解析（frontmatter）+ 目录发现 + `<available_skills>` 清单渲染 + 专用 `skill` 工具按需加载正文；**不做技能级工具收窄**（§3.16） | 新增 | S8.1 ✅ |
 | `tool/mcp` | MCP 客户端（stdio / streamable-http）+ 工具适配（`mcp__<server>__<tool>` 命名、schema 直通、结果投影）+ 原子换代 | 新增 | S8.2 ⬜ |
 
 > S3 边界：`tool/builtin` 只带 `current_time`（无安全副作用）。涉及文件与命令执行的
@@ -672,7 +672,7 @@ llm.WithRetry(model, llm.RetryPolicy{
 | ② | （见右） | （见左） |
 | ③ | **共识 / 分歧** | **共识**：①渐进式披露——元数据进上下文、正文按需加载；②目录型发现 + `name`/`description` 必需 + kebab-case 名；③模型不可见必须显式标记（`disable-model-invocation`）；④正文渲染要转义（技能正文不能自己开框）；⑤用户显式调用是独立入口（PI `/skill:name`、DSH `/name`）。**分歧**：①**清单落位**——PI 进 system prompt（静态），DSH 进 user 消息（动态、可更新、带 source 元数据）；②**正文获取通道**——PI 复用 read 工具（不多一处工具面，但要受读文件权限约束），DSH 用专用 `skill` 工具（多一处工具面，但与「读工作区文件」的权限面分离）；③**注册表形态**——PI 无 scope/provider 分层（固定 user→project 顺序 + 先到先得），DSH 有 provider + scope 链 + rank + 运行期失效通知；④**用户显式调用的识别点**——PI 在输入入口展开命令，DSH 在 pre-step 钩子扫消息 |
 | ④ | **MoS 的取舍与理由** | **清单进系统提示词（PI 语义）**：MoS 的技能目录由宿主**装配期**给定（治理规则「不做运行期插件热加载」）→ 清单在装配期即固定 → 进静态 system prompt 最省（渲染一次、cache 友好），不必抄 DSH 的「会话级目录发布 + digest + 替换」动态机制。代价：技能集变了要重建 Agent（v2 再补运行期热加载，届时清单须改走 user 侧）。**专用 `skill` 工具（DSH 语义）**：技能正文来自宿主配置的目录（可能在工作区外），走 read 工具会与「模型只能读 jail 内路径」的纪律打架；专用工具让「读技能」与「读工作区文件」权限面分离。代价：多一处工具面。**不抄 DSH 的 scope/provider 分层**：MoS 现在没有 scope 概念（§3.4 已记「DSH 的 per-scope 限制层——MoS 还没有 scope 概念」）。v1 = 宿主给的目录列表 + 固定优先级（项目 > 用户）+ 同名先到先得 + 诊断告警（PI 语义）。代价：将来 FR-D3 多智能体要按 agent 分技能集时再补一层（届时「按 Agent 装配不同目录」即可，不必上注册表）。**用户显式调用 = 提供展开器，不自动扫描**：MoS 提供 `skill.ExpandInvocation(text, catalog)`，由宿主决定何时调用；**不**自动扫用户文本里的 `/name`（误触发风险，且 MoS SDK 无用户命令面）。**`allowed-tools`：不做技能级工具限制（拍板：参考 PI/DSH）**——实查：**PI 只在文档里认这个字段**（`packages/coding-agent/docs/skills.md:78` 的 spec 字段表；PI 代码里没有任何 `allowed-tools` 实现，`src/core/agent-session.ts:504` 的 `_allowedTools` 是 CLI `--tools` 的会话级名单，与 skill 无关）；**DSH 连字段都没有**（工具限制是运行时通用机制 `ToolRestriction{allow,deny}`，`packages/core/tools/src/index.ts:701`、`:1105 restrict()`，只用在 SubAgent 的 `toolFilter` 上）。两家都没有「技能激活 → 工具面收窄」的机制 → MoS 也不自创（旧 MoS 的守卫硬收窄**作废**）：`allowed-tools` **只解析 + 记进 `skill/activate` 事件与诊断**（PI 同款：识别但未执行），执行语义交给宿主——宿主用既有能力（`policy.Config` 名字级名单 + `Registry.AddVisibility`）自行把技能与工具面绑定。代价：MoS 不提供「开箱即用的技能级授权」；收益：不与两家的行为模型打架，宿主策略自由度更高。**frontmatter 改 kebab-case**（`when-to-use` / `allowed-tools` / `disable-model-invocation`，对齐 spec 与 DSH）；旧 MoS v1 的 snake_case 不再沿用（未发布、无兼容负担，按 NFR-8 在变更记录声明）。字段集合 = `name` / `description`（必需）+ `when-to-use` / `allowed-tools` / `disable-model-invocation` / `metadata`；`paths` / `references` / `source` / `schema_version` **不做**（旧评审 C2 已把 `paths` 判为「清单过滤属业务层」） |
-| ⑤ | **两家都没有的空白** | **① 技能级工具限制**：PI 有字段无实现、DSH 连字段都没有 → **MoS 不自创**（拍板，见④）：`allowed-tools` 只解析与留痕，执行语义归宿主。风险：宿主若不接策略，`allowed-tools` 就是装饰字段——处置：解析时给诊断（「该字段当前不生效」），别让它看起来像生效了。**② 技能目录的 jail 语义**：两家都直接读技能文件（PI `readFileSync`、DSH `ctx.fs`），没有「技能目录须登记为读根」之说。MoS 自创：技能目录由宿主显式配置，并挂进 `filesystem.RootSet` 读根，否则读不到（对齐 §3.5 文件边界纪律）。风险：多一道宿主配置（根集合要自己加） |
+| ⑤ | **两家都没有的空白** | **① 技能级工具限制**：PI 有字段无实现、DSH 连字段都没有 → **MoS 不自创**（拍板，见④）：`allowed-tools` 只解析与留痕，执行语义归宿主。风险：宿主若不接策略，`allowed-tools` 就是装饰字段——处置：解析时给诊断（「该字段当前不生效」），别让它看起来像生效了。**② 技能目录的授权边界**：两家都直接读技能文件（PI `readFileSync`、DSH `ctx.fs`），没有「技能目录须登记为读根」之说。MoS v1 **不**自创 Roots 校验：**技能目录列表 = 宿主显式声明的授权边界**，读操作走宿主注入的 `Reader`（框架不碰文件系统，也看不到 Reader 内部边界——越界判断只能是宿主的事，见治理规则 5 与 §3.5）。风险：宿主若要 jail 语义，得自己注入带边界的 `Reader`（框架默认给无边界的 `OSReader`）；缓解：每个技能的来源目录在装配快照与 `skill/activate` 事件里写明（可核对） |
 
 ##### PI / DSH 参考分析 — MCP
 
@@ -689,19 +689,19 @@ llm.WithRetry(model, llm.RetryPolicy{
 | 落点 | 内容 | 依赖 |
 | --- | --- | --- |
 | `tool`（增强） | ① `SchemaProvider` 可选接口（工具直给 JSON Schema，注册时优先于反射）；② `Registry.Replace`（原子换代：schema 缓存 + deferred 标记同步）；③ 可见性过滤器**可叠加**（`AddVisibility`，AND 语义）——policy 一层 + MCP hidden 一层（现在 `SetVisibility` 是单值，policy 已占用；技能不再贡献一层——拍板不做技能级工具面收窄） | 不变 |
-| `agent/skill`（新包） | `Metadata`（frontmatter：name/description/when-to-use/allowed-tools（**只解析，不执行**）/disable-model-invocation/metadata）+ `Loader`（目录发现；读文件走 `Reader` 接口，同 `contextfile` 形态；技能目录须挂进 `filesystem.RootSet` 读根）+ `Render`（`<available_skills>` 清单 + `<skill_content>` 正文，转义）+ `ExpandInvocation`（用户显式 `/name` 展开器，宿主调用）+ `State`（本次 Run 的激活集合，ctx 携带；供事件与宿主查询） | → `tool`, `agent/hook`, `agent/prompt`, `filesystem` |
+| `agent/skill`（新包） | `Metadata`（frontmatter：name/description/when-to-use/allowed-tools（**只解析，不执行**）/disable-model-invocation/metadata→`Extra`）+ `Load(Options)`/`Catalog`（目录发现；读文件走 `Reader` 接口，同 `contextfile` 形态；**技能目录列表 = 宿主声明的授权边界，不校验 Roots**）+ `Render`（`<available_skills>` 清单，三级预算降级 + `<skill_content>` 正文，转义）+ `ExpandInvocation`（用户显式 `/name` 展开器，宿主调用）+ `State`（本次 Run 的激活集合，ctx 携带）+ `Recorder`（事件接口，装配层接会话） | → `tool`, `gopkg.in/yaml.v3` |
 | `agent/skill` 的工具 | `skill` 工具（参数 `name`；校验 model 可调用——`disable-model-invocation` 的技能模型不可见也不可加载；返回正文 → 进工具结果 → 进历史）。**不挂技能守卫**（拍板：不做技能级工具限制） | → `tool` |
 | `agent/prompt` | 新增 `OrderSkills`（= 800：项目约定 750 之后、工具指引 1000 之前）+ `AddSkills(text)`；清单**装配期**渲染 → 静态，保 prompt cache（FR-C4） | 不变 |
-| `session` | 事件 `skill/load`、`skill/activate`（PRD §4.2 点名 `skill/*` → 走事件预算制例外）；载荷只记元数据（不记正文） | 不变 |
+| `session` | 事件 `skill/activate`（PRD §4.2 点名 `skill/*` → 走事件预算制例外）：skill 工具成功返回正文时记一条；载荷只记元数据（名字/描述/目录，不记正文——正文在 `tool/result` 里）。**不单设 `skill/load`**：正文每次进上下文都有 `tool/call` + `tool/result` 配对，再记一条是重复记账（事件预算制） | 不变 |
 | `tool/mcp`（新包） | `Config`（每服务器：Name/Transport/Command/Args/Env/CWD/URL/Headers/Timeout/Enabled/Description/Exposure/ToolExposure）+ `Client` 接口（`ListTools`/`CallTool`）+ `stdio`（子进程 + JSON-RPC）/ `streamable-http`（复用 `httpx`）两个 transport + `Server`（连接、发现、换代、重连）+ `Adapter`（→ `tool.Tool`：命名 `mcp__<server>__<tool>`、schema 直通、结果投影、默认独占） | → `tool`, `agent/truncate`, `httpx` |
-| `mos`（装配层） | `Config.Skills *SkillConfig`（目录列表 + 预算 + 读根登记）/ `Config.MCP *MCPConfig`（服务器列表 + 默认 exposure + 超时）；一开即装；`Describe()` 快照写明「装了什么 + **没装什么**」（连接失败的服务器也要写出来） | → `agent/skill`, `tool/mcp` |
+| `mos`（装配层） | `Config.Skills *SkillConfig`（目录列表 + 预算 + 可选 `Reader`；**不登记读根**——目录列表即授权边界）/ `Config.MCP *MCPConfig`（服务器列表 + 默认 exposure + 超时）；一开即装；`Describe()` 快照写明「装了什么 + **没装什么**」（降级诊断与连接失败的服务器也要写出来）；`Agent.ExpandSkill(text)`（宿主展开 `/name`）+ `Agent.Skills()` | → `agent/skill`, `tool/mcp` |
 | 驱动（react） | 工具清单每轮取 `List()`（deferred 不在其中）；**不加**新的驱动逻辑——技能正文走工具结果，MCP 工具走普通注册表 | 不变 |
 
 **切片顺序与验收门**（每片：`go test ./...` 全绿 + 本节状态同步 + 一页说明）：
 
 | 片 | 内容 | 验收 |
 | --- | --- | --- |
-| **S8.1** | `tool` 增强（SchemaProvider / Replace / 可见性叠加）+ `agent/skill` 全文 + `skill` 工具 + `skill/*` 事件 + 装配入口 | E2E：技能目录 → 模型调 `skill` → 正文进上下文 → `disable-model-invocation` 的技能既不进清单也不可加载（fail-closed）；`allowed-tools` 只解析留痕且给出「当前不生效」诊断；清单进系统提示词且两次 Render 逐字节一致（保 cache） |
+| **S8.1** ✅ | `agent/skill` 全文 + `skill` 工具 + `skill/activate` 事件 + 装配入口（`Config.Skills` / `Agent.ExpandSkill`）。**`tool` 增强（SchemaProvider / Replace / 可见性叠加）移到 S8.2**——它们的消费者是 MCP 适配器，先做会变成没人用的基础设施 | E2E：技能目录 → 模型调 `skill` → 正文进上下文 → `disable-model-invocation` 的技能既不进清单也不可加载（fail-closed）；`allowed-tools` 只解析留痕且给出「当前不生效」诊断；清单进系统提示词且两次 Render 逐字节一致（保 cache） |
 | **S8.2** | `tool/mcp` 客户端（stdio transport + JSON-RPC 最小实现：initialize / tools/list / tools/call / `notifications/tools/list_changed`）+ 工具适配（命名 / schema 直通 / 结果投影 / 两阶段换代）+ 单测用假 server | 命名/哈希后缀/换代回滚/超时/取消 单测；假 server 驱动端到端 |
 | **S8.3** | 装配层（MCP 一开即装、默认 deferred + `tool_search` 联动、服务器 instructions 一次性 user 侧注入、失败隔离、Describe 快照） | 单个 MCP 失败不阻塞其余加载（FR-D8 验收）；MCP 工具默认不进模型清单、搜到才进 |
 
@@ -710,7 +710,7 @@ llm.WithRetry(model, llm.RetryPolicy{
 | 自创点 | 理由 | 风险 | 缓解 |
 | --- | --- | --- | --- |
 | **不做**技能级工具限制（`allowed-tools` 只解析留痕） | PI 有字段无实现、DSH 连字段都没有；不自创 | 宿主不接策略时该字段形同装饰 | 解析即给诊断（「该字段当前不生效」），不假装生效；工具面收窄仍走宿主既有能力（Policy + `AddVisibility`） |
-| 技能目录须登记为文件读根 | 沿用 §3.5 文件边界纪律（两家都直接读技能文件） | 宿主多一道配置；漏登 = 技能读不到 | 装配期显式校验：技能目录不在 Roots → 装配报错（fail-closed） |
+| **不**校验技能目录的 Roots（目录列表 = 授权边界） | 框架不碰文件系统、也看不到宿主注入的 `Reader` 内部边界（治理规则 5 + §3.5）；PI/DSH 都没有「技能目录须登记为读根」 | 宿主误配目录 = 技能内容来自预期之外的位置 | 每个技能的来源目录写进装配快照与 `skill/activate` 事件（可核对）；要 jail 语义的宿主自己注入带边界的 `Reader` |
 | MCP 工具默认 deferred（PI 同款）+ 逐工具 exposure 覆盖 | MCP 工具面大，全量声明撑爆 prompt（FR-C3 口径） | 模型要多一次搜索才知道 MCP 存在 | `tool_search` 描述里点名 MCP；服务器摘要进搜索文档与激活回执 |
 | 注册表原子换代（`Registry.Replace`）+ 回滚 | MCP 是第一个需要热换工具面的消费者 | 换代瞬间清单不一致 | 两阶段（先取全量、再换代），冲突回滚不留半套（DSH 语义） |
 | `tool.SchemaProvider` 直给 schema | MCP 的 schema 是上游给的，不该反推 | 多一条 schema 来源 | 守护测试：结构体工具生成的 schema 逐字节不变 |
@@ -721,7 +721,7 @@ llm.WithRetry(model, llm.RetryPolicy{
 
 | # | 事项 | 结论 |
 | --- | --- | --- |
-| 1 | **Skills 状态冲突** | **选 A**：按新架构重做（不移植 `main_bak1015` 的旧实现）；PRD 已把 Skills 从「已交付」移到 FR-D11 待建 |
+| 1 | **Skills 状态冲突** | **选 A**：按新架构重做（不移植 `main_bak1015` 的旧实现）；PRD 已把 Skills 从「已交付」移到 FR-D11 待建 → **S8.1 已落地**（新包 `agent/skill` + 专用 `skill` 工具 + 清单进系统提示词 + `skill/activate` 事件 + 宿主展开器 `Agent.ExpandSkill`） |
 | 2 | **FR-D8「请求制定」** | 改为「**暴露策略（exposure）**」，与本节 exposure 设计对齐；PRD 措辞已同步 |
 | 3 | **`allowed-tools` 语义** | **参考 PI/DSH**：不做技能级工具限制（PI 有字段无实现、DSH 无字段）→ 只解析 + 留痕 + 诊断；执行语义归宿主（Policy + `AddVisibility`） |
 | 4 | **技能清单落位** | **系统提示词**（装配期固定 → 静态，保 prompt cache）；将来做运行期热加载再改走 user 侧（届时补 DSH 那套 digest + 替换） |

@@ -114,7 +114,8 @@ type SearchArgs struct {
 - **截断**：工具结果超限就地瘦身（行/字节双限），全文落工作区 `.mos-trunc/`，`read` 可回读；
 - **压缩**：超过 token 预算（contextWindow − reserve）时模型生成结构化摘要落会话日志，投影从此遮蔽旧历史；切割点永不切断 ToolCall-Result 对；
 - **提示词装配** `agent/prompt`：分节 Builder（身份 / 约定 / 项目上下文 / 工具指引 / 运行时事实，顺序中心化），装配期渲染一次、之后静态不变（利于 prompt cache）；
-- **上下文文件** `agent/contextfile`：AGENTS.md / CLAUDE.md 向上递归发现，`AGENTS.override.md` 同目录替换，字节预算裁剪，全局约定 `~/.mos`（SDK 内嵌模板，只写不覆盖）。
+- **上下文文件** `agent/contextfile`：AGENTS.md / CLAUDE.md 向上递归发现，`AGENTS.override.md` 同目录替换，字节预算裁剪，全局约定 `~/.mos`（SDK 内嵌模板，只写不覆盖）；
+- **技能** `agent/skill`（S8.1）：装配期发现技能目录（`SKILL.md` + frontmatter），清单（name + description）进系统提示词（静态，保 prompt cache），正文经专用 `skill` 工具按需加载；`disable-model-invocation` 的技能不进清单、模型不可加载；用户显式 `/name` 由宿主调 `Agent.ExpandSkill` 展开。
 
 ### 可观测
 
@@ -134,6 +135,7 @@ type SearchArgs struct {
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 目标架构与不变式（怎么立），含每个子系统契约
 - [docs/tutorial.html](docs/tutorial.html) — 从零上手教程（可复制可编译）
 - [docs/release-v0.1.0.md](docs/release-v0.1.0.md) — v0.1.0 发布说明（首个公开版本）
+- [docs/s8.1-skills.md](docs/s8.1-skills.md) — S8.1 Skills 重做一页说明（M3a / FR-D11）
 - 旧实现与旧文档考古：`main_bak1015` 分支（如 `git show main_bak1015:README.md`）
 
 ## 示例
@@ -149,7 +151,7 @@ type SearchArgs struct {
 - ✅ **已交付**：统一 LLM 接入、工具系统、ReAct 循环、执行通道、安全纵深、上下文工程、装配层、联网工具、工具规模化（M2.10）
 - ✅ **R（发布准备，P0）**：协议层脱离本地 replace，外部工程 `go get` 可构建（v0.1.0 已发布）
 - ⬜ **挂起-恢复**（`agent/checkpoint` + `agent/handle`，M2.8 重建未做）：G4 的另一半，M4「可恢复运行目录」的前置——见 [docs/PRD.md](docs/PRD.md) FR-G3
-- ⬜ **M3** 多智能体：SubAgent（agents-as-tools）、MCP 接入、AgentTeam、并行 DAG；其中 **S8 预切片**：Skills 重做 → MCP 客户端（stdio）→ MCP 装配（先 MCP 后 SubAgent），设计与 PI/DSH 对账见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §3.16
+- ⬜ **M3** 多智能体：SubAgent（agents-as-tools）、MCP 接入、AgentTeam、并行 DAG；其中 **S8 预切片**：Skills 重做 ✅（S8.1，2026-11-04）→ MCP 客户端（stdio）→ MCP 装配（先 MCP 后 SubAgent），设计与 PI/DSH 对账见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §3.16
 - ⬜ **M4** 生产化：Docker 强隔离、模型分级路由、评估与监控、可恢复运行目录
 - ⬜ **M5** 自我进化（实验性）
 

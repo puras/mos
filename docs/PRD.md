@@ -1,6 +1,7 @@
 # MoS PRD（产品需求文档）
 
-> 版本：v0.2（草案）｜ 日期：2026-11-03 ｜ 维护：puras
+> 版本：v0.2（草案）｜ 日期：2026-11-04 ｜ 维护：puras
+> 更新记录：**2026-11-04** —— **FR-D11 Skills 重做落地（S8.1）**：新包 `agent/skill`（frontmatter 解析 + 目录发现 + `<available_skills>` 清单 + `<skill_content>` 正文 + 用户显式 `/name` 展开器 + 本轮激活状态）+ 专用 `skill` 工具（正文按需加载，走普通工具结果/历史）+ `skill/activate` 事件 + 装配入口（`mos.Config.Skills` / `Agent.ExpandSkill`）；**技能目录不再要求登记为文件读根**——目录列表 = 宿主声明的授权边界，读操作走注入的 `Reader`。分析见 `docs/ARCHITECTURE.md` §3.16，说明见 `docs/s8.1-skills.md`。
 > 更新记录：**2026-11-03** —— 按重建树实况**回填与收口**：§4 改为「重建树现状 / 旧树未带回」两栏对照（原文整段描述的是 10-15 前的旧树，含重建未带回的 EventBus / seam / scope / telemetry / 4 驱动 / Skills / RAG / Doom Loop 等）；新增 **FR-G（重建期补齐）** 三条——FR-G1 上下文文件、FR-G2 联网工具、FR-G3 挂起-恢复（checkpoint + handle，**重建未做**，是 FR-E6 的前置）；FR-A1/FR-A2 标 ✅（协议层已独立发布、v0.1.0 已发）；失效文档引用（`docs/architecture-v2.md` / `docs/sdk-contracts.md` / `docs/agent/*` / `FEATURES.md` / `examples/{cli,protocli,agentcli}`）换成重建树实际文件。
 > 更新记录：**2026-11-02** —— Skills 状态从「已交付（M2.6）」改为 **FR-D11 待建**（重建树无实现；用户拍板：按新架构重做，不移植旧码）；FR-D8 五步交互的「请求制定」改为「**暴露策略（exposure）**」；开放问题 2（MCP transport）定「先 stdio」、5（SubAgent/MCP 先后）定「MCP 先」。分析见 `docs/ARCHITECTURE.md` §3.16。
 > 需求权威来源：`docs/ARCHITECTURE.md`（目标架构与不变式，含各子系统契约）+ `docs/platform-contract.md`（平台契约：事件 JSON / 状态序列化 / 并发）+ `docs/assembly.md`（装配层）+ `README.md` 路线图；本文将其整理为可跟踪的产品需求视图。
@@ -20,7 +21,7 @@ MoS（取自 Sapient）是基于 Go 的**智能体基础框架（Agent Base SDK�
 
 - **状态写文件不写上下文**：`TaskState` 外置、会话事件日志（append-only）是唯一事实来源；
 - **只接受环境独立验证过的事实**：`Auditor` 审计门，模型自述不算数；
-- **上下文越少越好**：截断（M2.3）+ fresh-context 压缩（M2.5）+ 槽位式系统提示词（M2.6）+ Skills 懒加载（**M3a 待建，FR-D11**）；
+- **上下文越少越好**：截断（M2.3）+ fresh-context 压缩（M2.5）+ 槽位式系统提示词（M2.6）+ Skills 懒加载（**M3a 已落地，FR-D11**）；
 - **能写成 Linter 的约束别写成文档**：`Policy` 执行前拦截 + `GuardBus` 单调守卫 + `Sandbox` 执行中隔离。
 
 ### 1.3 三层职责边界（MoS 是 SDK，不越界）
@@ -94,7 +95,7 @@ Harness Engineering 四铁律 + Loop Engineering 九杠杆 + Audit Gate 审计�
 | 工具系统 | `tool`：结构体 tag → JSON Schema（注册时缓存）+ 并发 opt-in 分类器 + deferred 懒加载（`tool/searchtools` 的 `tool_search`，BM25）；`tool/builtin` 9 个工具（`current_time` / `read` / `write` / `edit` / `grep` / `glob` / `ls` / `grant_access` / `shell`）；`tool/web`（`web_search` / `web_fetch` + SSRF 防御） | `tool/extension`（5 家搜索提供商）、`tool.SequentialTool` 串行回退 |
 | 安全 | `agent/policy` 名字级黑白名单（fail-closed）+ 参数级决策点（deny → 守卫 / ask → 审批，规则归宿主）；`agent/hook` HookBus（可改写）+ GuardBus（单调裁决）；`filesystem` 双层校验 jail + 运行期可加根（`RootSet`）+ 写前观察门；`sandbox` 进程隔离（超时 + 进程组击杀 + 输出上限 + 资源限制 + 环境裁剪）+ macOS Seatbelt 路径强制；`agent/approval` 四档人工审批 | `DefaultPolicy` 分级（绝对危险 / 受限危险）、`request_human_input` 工具 |
 | 会话与状态 | `session` append-only 事件日志 + 确定性投影 + JSONL 持久化（fail-fast）+ 崩溃恢复（孤儿 turn 合成 interrupted）+ `TaskState` 外置 + `agent` 的 Auditor 审计门 | fork（Header 已预留 `parentId` / `seedSeq` 字段，能力未做） |
-| 上下文工程 | `agent` 截断（行/字节双限 + 全文落盘可回读）+ fresh-context 压缩（token 预算触发 + 模型生成摘要落日志 + 投影遮蔽）；`agent/prompt` 分节装配（Add / Set / Complete + 工具自带指引通道）；`agent/contextfile` 上下文文件发现（AGENTS.md / CLAUDE.md 向上递归 + 同目录 override + 字节预算） | 40% Dumb Zone 告警、Doom Loop 守卫、RAG / `memory.Retriever`、Skills（→ FR-D11） |
+| 上下文工程 | `agent` 截断（行/字节双限 + 全文落盘可回读）+ fresh-context 压缩（token 预算触发 + 模型生成摘要落日志 + 投影遮蔽）；`agent/prompt` 分节装配（Add / Set / Complete + 工具自带指引通道）；`agent/contextfile` 上下文文件发现（AGENTS.md / CLAUDE.md 向上递归 + 同目录 override + 字节预算）；**`agent/skill` 技能（FR-D11，2026-11-04 落地）**：目录发现 + 清单进系统提示词 + 专用 `skill` 工具按需加载正文 | 40% Dumb Zone 告警、Doom Loop 守卫、RAG / `memory.Retriever` |
 | 循环生态 | `agent/driver` LoopDriver + `agent/driver/react` ReAct；批量工具三阶段执行（preflight → 屏障式有界并发 → 按调用序回填） | PlanExecute / Reflection / Scripted 驱动、HybridRouter、`agent/driver/scripted` |
 | 生命周期 | `agent/approval`（问人由宿主注入 + 审计落会话日志）；`filesystem.RootSet` 运行期加根 | `agent/scope`、`agent/checkpoint`、`agent/handle`（→ FR-G3） |
 | 可观测 | 事件类型覆盖 turn / assistant / tool / approval / compaction；`sess.Events()` 可遍历；`Describe()` 装配快照（装了什么 + 没装什么 + 降级警告） | `EventBus` 四模式、`Observer` 回调、Telemetry seam、`fs/resolve` 审计事件 |
@@ -114,7 +115,8 @@ Harness Engineering 四铁律 + Loop Engineering 九杠杆 + Audit Gate 审计�
 | M2.10 | FR-C 工具规模化：deferred 懒加载 + `tool_search` BM25 发现激活（C1 缓存在重建时已落地；C2/C4 守护测试锁定）；C3 的「超阈值自动启用」改为「deferred 集非空才装配 `tool_search`」（PI/DSH 均无阈值机制，不自创，分析见 ARCHITECTURE §3.15） | ✅（重建周期 S7.3） |
 | M2.9 | FR-B 经验记忆 | ❌ 已决定不做（2026-10，用户拍板） |
 | 重建补齐 | FR-G1 上下文文件（`agent/contextfile` + `agent/prompt`）/ FR-G2 联网工具（`tool/web`） | ✅（2026-10/11 落地，PRD 于 2026-11-03 回填登记） |
-| M3 ~ M5 | 见 §5 需求 | ❌ 未开始 |
+| M3a | FR-D11 Skills 重做：`agent/skill` 新包（frontmatter 解析 + 目录发现 + `<available_skills>` 清单 + `<skill_content>` 正文 + `/name` 展开器 + 本轮激活状态）+ 专用 `skill` 工具（正文走普通工具结果）+ `skill/activate` 事件 + 装配入口（`mos.Config.Skills` / `Agent.ExpandSkill`） | ✅（2026-11-04，S8.1；说明见 `docs/s8.1-skills.md`） |
+| M3 ~ M5 | 见 §5 需求 | ◐ M3a（FR-D11 Skills）已落地；M3b（SubAgent / MCP / AgentTeam / 并行 DAG）未开始 |
 
 ---
 
@@ -159,7 +161,7 @@ Harness Engineering 四铁律 + Loop Engineering 九杠杆 + Audit Gate 审计�
 | FR-D8 | MCP 接入：宿主以结构声明服务器与 transport（stdio / streamable-http；**先 stdio**；`mcp.json` 解析归宿主，框架不绑配置格式）；五步交互（发现 → **暴露策略**（exposure：`deferred`/`direct`/`hidden` + 逐工具覆盖）→ 调用 → 错误回传 → 结果注入）；不做 OAuth（凭据由宿主注入） | MCP 工具进 Registry 后与内置工具同受 Policy/Guard 管辖；单个 MCP 失败不阻塞其余加载；MCP 工具默认 deferred（经 `tool_search` 发现激活），工具面增长不吃线性 prompt |
 | FR-D9 | Agent Loop 升级：Turn 语义完善 + 错误注入反馈（错误信息解释"为何违反规则 + 正确做法"，Linter 报错即上下文工程） | 错误注入后模型自纠成功率可观测（测试集） |
 | FR-D10 | 显式图边界（判据门控）：节点 / 边 / 状态 schema + reducers / checkpointer；编译期校验（节点可达性、状态字段一致性、边类型合法性），不合法图拒绝运行 | **仅在满足分支/并行/持久/可审计判据时引入**——图是可选编排层，不是默认架构 |
-| FR-D11 | Skill 能力（Skills 重做，M3a）：装配期技能目录（`SKILL.md` + frontmatter：name/description/when-to-use/allowed-tools/disable-model-invocation/metadata）+ 专用 `skill` 工具（正文按需加载，进工具结果）+ 技能清单进系统提示词（静态，保 prompt cache）+ `skill/*` 事件 | 渐进式披露（元数据进上下文、正文按需）；**不做技能级工具收窄**（PI 有字段无实现、DSH 无字段 → 不自创；`allowed-tools` 只解析留痕 + 诊断）；用户显式 `/name` 由宿主调用展开器（框架不自动扫文本）；技能目录须登记为文件读根 |
+| FR-D11 | Skill 能力（Skills 重做，M3a）：装配期技能目录（`SKILL.md` + frontmatter：name/description/when-to-use/allowed-tools/disable-model-invocation/metadata）+ 专用 `skill` 工具（正文按需加载，进工具结果）+ 技能清单进系统提示词（静态，保 prompt cache）+ `skill/*` 事件 | 渐进式披露（元数据进上下文、正文按需）；**不做技能级工具收窄**（PI 有字段无实现、DSH 无字段 → 不自创；`allowed-tools` 只解析留痕 + 诊断）；用户显式 `/name` 由宿主调用展开器（框架不自动扫文本）；**技能目录列表 = 宿主声明的授权边界**（读走注入的 `Reader`，不重复登记 Roots）；`disable-model-invocation` 的技能不进清单、模型不可加载（fail-closed） |
 
 ### 5.5 FR-E：M4 生产化（P1）
 
