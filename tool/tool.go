@@ -27,6 +27,21 @@ type Tool interface {
 	Execute(ctx context.Context, args json.RawMessage) (any, error)
 }
 
+// SchemaProvider 是可选接口：工具自带 JSON Schema（跳过反射生成）。
+//
+// 为什么需要：MCP 工具的 schema 是**上游服务器给的**（tools/list 原样返回），
+// MoS 没有对应的结构体可以反射——反推等于瞎猜。实现本接口的工具，注册时
+// 直接缓存返回值，Parameters() 的反射结果被忽略。
+//
+// 契约：返回值必须是合法 JSON Schema 对象（建议 map[string]any 或
+// json.RawMessage）；返回 nil = 降级走 Parameters() 反射（fail-open 到老路，
+// 不让一个坏 schema 拖垮注册）。
+// 守护不变量（FR-C2）：本包产出的 schema 不含 title / $defs——实现者自己
+// 保证（MCP 上游 schema 什么形态都可能有，这里不做清洗：原样透传是契约）。
+type SchemaProvider interface {
+	Schema() any
+}
+
 // ConcurrencySafe 是可选接口：工具声明「本次调用可以与同批其他调用并发」。
 //
 // 契约（对齐 DSH 的 isConcurrencySafe(args)）：
@@ -72,17 +87,24 @@ type Registry struct {
 	// deferred 是懒加载集：注册但不进 List()（模型看不到），经 tool_search
 	// 激活后下一轮才声明。只记名字，顺序沿 order。
 	deferred map[string]bool
-	// visible 是可见性过滤器（可选）：返回 false 的工具不出现在 List() 里，
-	// 但仍可被 Call——执行与否由运行时守卫决定。
-	visible func(name string) bool
+	// replaceable 是「经 Replace 注册」的工具名集合：下次 Replace 时，集合里
+	// 不在新名单的工具整体消失（MCP 服务器换代语义）；手动 Register 的工具
+	// 不在集合里，永不被动。
+	replaceable map[string]bool
+	// visible 是可见性过滤器栈（可选）：所有过滤器都放行的工具才出现在
+	// List() 里，但仍可被 Call。多个过滤器按 Add 顺序叠加（AND 语义——
+	// policy 名单一层（S5c）、MCP hidden 档一层（S8.2）；SetVisibility 单值
+	// 语义保留兼容：再设一次替换整个栈）。
+	visible []func(name string) bool
 }
 
 // NewRegistry 创建空注册表。
 func NewRegistry() *Registry {
 	return &Registry{
-		tools:    make(map[string]Tool),
-		schemas:  make(map[string]map[string]any),
-		deferred: make(map[string]bool),
+		tools:       make(map[string]Tool),
+		schemas:     make(map[string]map[string]any),
+		deferred:    make(map[string]bool),
+		replaceable: make(map[string]bool),
 	}
 }
 
@@ -98,6 +120,14 @@ func (r *Registry) Register(t Tool) error {
 	}
 	r.tools[t.Name()] = t
 	r.order = append(r.order, t.Name())
+	// schema 来源：自带（SchemaProvider）优先，反射生成兜底。
+	// 自带返回 nil 同样降级反射（fail-open：一个坏 schema 不该拖垮注册）。
+	if sp, ok := t.(SchemaProvider); ok {
+		if s := sp.Schema(); s != nil {
+			r.schemas[t.Name()] = normalizeProvidedSchema(s)
+			return nil
+		}
+	}
 	r.schemas[t.Name()] = generateSchema(t.Parameters())
 	return nil
 }
@@ -110,19 +140,155 @@ func (r *Registry) Get(name string) (Tool, bool) {
 	return t, ok
 }
 
-// Names 返回已注册工具名（按注册顺序）。
+// normalizeProvidedSchema 把工具自带的 schema 归一成 map[string]any。
+//
+// 接受 map[string]any（最常见）与 json.RawMessage / []byte（透传字节）两类；
+// 其他类型 json.Marshal 兜底；失败返回宽松 object schema（不 panic）。
+func normalizeProvidedSchema(s any) map[string]any {
+	switch v := s.(type) {
+	case map[string]any:
+		return v
+	case json.RawMessage:
+		var m map[string]any
+		if err := json.Unmarshal(v, &m); err == nil {
+			return m
+		}
+	case []byte:
+		var m map[string]any
+		if err := json.Unmarshal(v, &m); err == nil {
+			return m
+		}
+	default:
+		if b, err := json.Marshal(s); err == nil {
+			var m map[string]any
+			if err := json.Unmarshal(b, &m); err == nil {
+				return m
+			}
+		}
+	}
+	return map[string]any{"type": "object"}
+}
+
+// Replace 原子换代：把一组工具（同名覆盖、新名追加）整体替换进注册表，
+// schema 缓存与 deferred 标记同步更新。
+//
+// 为什么是「换代」不是逐个 Register：MCP 工具面会随服务器的 tools/list
+// 变化整体换代（S8.2）。逐个换会让清单在中间态被模型看到——半套旧工具
+// + 半套新工具。Replace 在锁内一次完成；校验不过时注册表保持原样
+// （fail-closed：先校验后落盘，不留半套）。
+//
+// 已有的同名工具被覆盖（这正是换代的含义，与 Register 的重名报错相反）；
+// **上一批经 Replace 进来的工具，这次不在名单里的消失**（服务器不再提供
+// 它们）；手动 Register 的工具（内置工具）永不被动——两套生命周期，互不踩。
+// deferred[name]=true 的工具以 deferred 态注册；false = 普通注册。
+func (r *Registry) Replace(tools []Tool, deferred map[string]bool) error {
+	if len(tools) == 0 {
+		return fmt.Errorf("tool: Replace 需要至少一个工具")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// 先校验整批（名单内重名 + deferred 名单含名单外工具），再落盘。
+	seen := make(map[string]bool, len(tools))
+	schemas := make(map[string]map[string]any, len(tools))
+	for _, t := range tools {
+		if t == nil || t.Name() == "" {
+			return fmt.Errorf("tool: 不能替换 nil 或无名工具")
+		}
+		name := t.Name()
+		if seen[name] {
+			return fmt.Errorf("tool: Replace 名单内工具 %q 重名", name)
+		}
+		seen[name] = true
+		if sp, ok := t.(SchemaProvider); ok {
+			if s := sp.Schema(); s != nil {
+				schemas[name] = normalizeProvidedSchema(s)
+				continue
+			}
+		}
+		schemas[name] = generateSchema(t.Parameters())
+	}
+	for name := range deferred {
+		if !seen[name] {
+			return fmt.Errorf("tool: Replace 的 deferred 名单含未在名单中的工具 %q", name)
+		}
+	}
+	// 校验全过。第一步：上一代 replaceable 里不在新名单的消失
+	// （从 tools / schemas / deferred / replaceable / order 一起清）。
+	for _, name := range r.order {
+		if r.replaceable[name] && !seen[name] {
+			delete(r.tools, name)
+			delete(r.schemas, name)
+			delete(r.deferred, name)
+			delete(r.replaceable, name)
+		}
+	}
+	kept := r.order[:0]
+	for _, name := range r.order {
+		if _, gone := r.tools[name]; gone {
+			kept = append(kept, name)
+		}
+	}
+	r.order = kept
+	// 第二步：落新名单。已有的只换工具与 schema（order 位置不动）；
+	// 新名追加到尾部（顺序稳定，利于 prompt cache）。
+	for name, def := range deferred {
+		r.deferred[name] = def
+	}
+	for _, t := range tools {
+		name := t.Name()
+		if _, exists := r.tools[name]; !exists {
+			r.order = append(r.order, name)
+		}
+		r.tools[name] = t
+		r.schemas[name] = schemas[name]
+		r.replaceable[name] = true
+	}
+	return nil
+}
+
 // SetVisibility 设置可见性过滤器：返回 false 的工具不出现在 List()（模型看到的
 // 清单）里，但仍可被 Call。
 //
 // 过滤器必须是**无副作用的纯判定**——它会在每次组装工具清单时被调用。
-// nil = 不过滤（全部可见）。
+// nil = 清空过滤器。
 //
-// 本包只认一个函数值，不认识 policy / hook 之类的具体实现：可见性策略由宿主
+// 本包只认函数值，不认识 policy / hook 之类的具体实现：可见性策略由宿主
 // 在装配时接上（例：reg.SetVisibility(policy.New(cfg).Visible)）。
+// 注意：本方法是**替换**语义——把可见性栈重置为这一个过滤器。要叠加用
+// AddVisibility（policy 与 MCP hidden 各占一层，谁也不覆盖谁）。
 func (r *Registry) SetVisibility(visible func(name string) bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.visible = visible
+	if visible == nil {
+		r.visible = nil
+		return
+	}
+	r.visible = []func(name string) bool{visible}
+}
+
+// AddVisibility 追加一层可见性过滤器（AND 语义：所有层都放行才可见）。
+//
+// 为什么是栈不是单值：可见性天然有多个来源——policy 名单一层（S5c）、
+// MCP hidden 档一层（S8.2）。单值语义下后设的会覆盖先设的，两层互相
+// 踩；栈 + AND 让每层只表达自己那部分判断。
+// 过滤器同样必须无副作用；nil 参数忽略。
+func (r *Registry) AddVisibility(visible func(name string) bool) {
+	if visible == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.visible = append(r.visible, visible)
+}
+
+// visibleTo 判断工具在过滤器栈下是否可见（调用方须已持锁）。
+func (r *Registry) visibleTo(name string) bool {
+	for _, f := range r.visible {
+		if !f(name) {
+			return false
+		}
+	}
+	return true
 }
 
 // Names 返回**已注册**的全部工具名（不受可见性过滤影响）。
@@ -148,7 +314,7 @@ func (r *Registry) List() []llm.Tool {
 		if r.deferred[name] {
 			continue
 		}
-		if r.visible != nil && !r.visible(name) {
+		if !r.visibleTo(name) {
 			continue
 		}
 		t := r.tools[name]
@@ -173,7 +339,7 @@ func (r *Registry) Guidelines() []GuidelineText {
 		if r.deferred[name] {
 			continue
 		}
-		if r.visible != nil && !r.visible(name) {
+		if !r.visibleTo(name) {
 			continue
 		}
 		if gl, ok := r.tools[name].(Guideline); ok {
