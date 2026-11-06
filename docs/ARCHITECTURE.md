@@ -856,7 +856,7 @@ llm.WithRetry(model, llm.RetryPolicy{
 | 子片 | 内容 | 落点 | 状态 |
 | --- | --- | --- | --- |
 | S8.4-A | ⑥ 服务器摘要进**静态**系统提示词 | `tool/mcp/summary.go` + `agent/prompt` + `mos` | ✅ |
-| S8.4-B | ① 认证可诊断（401/403）+ `ServerConfig.TokenProvider` | `tool/mcp` | ⬜ |
+| S8.4-B | ① 认证可诊断（401/403）+ `ServerConfig.TokenProvider` | `tool/mcp` | ✅ |
 | S8.4-C | ⑤ 正文调用时现读 + `Agent.ReloadSkills()`（显式、幂等、全量重扫） | `agent/skill` + `mos` | ⬜ |
 | S8.4-D | ④ `allowed-tools` × 当前可见工具集 求交诊断（不收窄） | `agent/skill` + `mos` | ⬜ |
 | S8.4-E | ② MCP 资源工具（三个共享工具 + 显式 server 参数） | `tool/mcp` + `mos` | ⬜ |
@@ -871,6 +871,17 @@ llm.WithRetry(model, llm.RetryPolicy{
 - **预算算法不贪心**：`size(kept)` **非单调**（砍掉服务器会多出一行「另有 N 个」，那行可能比省下的还贵）→ 枚举取能放下的最大 `kept`，而不是从大往小递减。PI 的贪心版会错过最优解。
 - **提示词渲染时机后移**：`mos.New` 原来在注册表创建**之前**就 `pb.Render()`；MCP 摘要必须等 MCP 装配完才知道「哪些服务器连上了」→ 渲染点挪到**所有工具注册完之后**。工具注册序因此**不变**（注册序变了工具清单顺序就变，会同时抖 prompt cache 与模型行为）。
 - **连不上的服务器不进提示词**（PI 只列已启用的；MoS 更严：只列连上的）——否则模型会去搜一台不存在的服务器。连接失败只写 `Describe()` 快照警告。
+
+**S8.4-B 的实现取舍（与上文①对齐，差异处标出）**
+
+- **不做 OAuth 流程**（拍板）：框架不弹浏览器、不做动态注册、不起回调服务器——凭据生命周期归宿主。MoS 只提供「取凭据」的缝：`ServerConfig.TokenProvider func(ctx) (string, error)`。
+- **TokenProvider 契约**：**每次请求取一次**，**不缓存、不刷新**（缓存与刷新是宿主的事）；返回空串 = 不注入 `Authorization` 头；返回 error = 该请求失败（归认证类）。只对 **streamable-http** 生效（stdio 是本地子进程，不走 HTTP）。
+- **凭据注入点 = HTTP RoundTripper**（`tool/mcp/auth.go`）：官方 SDK 在 401/403 时只给含 `Unauthorized`/`Forbidden` 的**文本**错误，没有结构化状态码——按文本匹配既脆又会误伤；而 MoS 要注入 Bearer token 本来就得自定义 Transport，顺手把状态码变成结构化分类，零额外成本。**PI 的 OAuth 与 DSH 的静态 headers 都做不到这一点**（PI 靠 SDK 的 oauthHandler，DSH 靠手工填 headers）。
+- **401/403 直接转成错误**（不把响应交出去）：语义上「这台服务器现在不可用（缺凭据）」，不该让上层把它当协议错误继续走。
+- **`Headers` 此前是死配置**（声明了但没接线）→ 本片补上：静态头**每个请求都带**。
+- **克隆 `http.Client`**：`httpx.FromContext` 返回的 client 可能是宿主共享的（连接池、超时都是它的）——就地改 `Transport` 会污染宿主自己的请求。
+- **新增 `ErrorKind = "auth"`**：与 transport 分开——传输层错误重试有用，认证错误重试多少次都一样。`wrapError` 保留内层的结构化分类（SDK 会把 RoundTripper 的错误层层包装，一律当传输层就把「需要认证」这条诊断丢了）。
+- **快照写「需要认证」**：连接失败若是认证类 → `Describe()` 写「MCP 服务器 "x" 需要认证（不可用，请检查 token 或 TokenProvider）」。
 
 ##### 状态
 

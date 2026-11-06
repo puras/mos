@@ -93,7 +93,12 @@ func (m *Manager) Start(ctx context.Context) {
 			continue
 		}
 		if err := m.startServer(ctx, cfg); err != nil {
-			m.warn("MCP 服务器 %q 不可用: %v", cfg.Name, err)
+			// 认证失败单独说：处置不同——重试没用，得先把凭据给对。
+			if IsAuthError(err) {
+				m.warn("MCP 服务器 %q 需要认证（不可用，请检查 token 或 TokenProvider）: %v", cfg.Name, err)
+			} else {
+				m.warn("MCP 服务器 %q 不可用: %v", cfg.Name, err)
+			}
 			continue
 		}
 	}

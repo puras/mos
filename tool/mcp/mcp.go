@@ -73,7 +73,9 @@ type ServerConfig struct {
 	// Name 是服务器名（命名空间）：公开工具名 = mcp__<name>__<tool>。
 	// 必填；同一份配置里重名 = 装配错误。
 	Name string
-	// Description 是人类可读描述（宿主展示用；不进模型提示词）。
+	// Description 是人类可读描述（宿主展示用；**也进模型提示词**——
+	// 有 deferred 工具的服务器会进静态系统提示词的 mcp_servers 节，
+	// S8.4-A）。
 	Description string
 	// Transport 是传输方式（空 = stdio）。
 	Transport TransportKind
@@ -91,8 +93,16 @@ type ServerConfig struct {
 	// ── streamable http ──
 	// URL 是服务端点。
 	URL string
-	// Headers 是附加请求头（如宿主已取好的 token；OAuth 不在本包职责内）。
+	// Headers 是附加请求头（**每个请求都带上**）：宿主已取好的 token、
+	// 自定义租户标识等都归这里。OAuth 不在本包职责内。
 	Headers map[string]string
+	// TokenProvider 返回当前访问凭据（Bearer token）。
+	//
+	// 契约：框架**每次请求取一次**，**不缓存、不刷新**；返回空串 = 不注入
+	// Authorization 头；返回 error = 该请求失败（归认证类）。
+	// 只对 streamable-http 生效（stdio 是本地子进程，不走 HTTP）。
+	// 详见 TokenProvider 的完整契约。
+	TokenProvider TokenProvider
 
 	// ── 通用 ──
 	// Exposure 是服务器级默认暴露档（空 = deferred）。
@@ -166,11 +176,17 @@ const (
 	ErrorProtocol ErrorKind = "protocol"
 	// ErrorTransport：连接、超时、取消——连接不可用。
 	ErrorTransport ErrorKind = "transport"
+	// ErrorAuth：认证失败——HTTP 401/403，或取凭据失败。
+	//
+	// 单独分一类：处置不同。传输层错误是「这台服务器挂了，稍后重试」，
+	// 认证错误是「这台服务器要凭据，宿主得先把 token 给对」——后者
+	// 重试多少次都一样。
+	ErrorAuth ErrorKind = "auth"
 )
 
 // Error 是 MCP 侧的错误（带服务器与工具归属，便于快照与日志定位）。
 type Error struct {
-	// Kind 是失败层次（protocol / transport）。
+	// Kind 是失败层次（protocol / transport / auth）。
 	Kind ErrorKind
 	// Server 是服务器名。
 	Server string

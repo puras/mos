@@ -67,7 +67,7 @@ func Dial(ctx context.Context, cfg ServerConfig, opts Options) (Client, error) {
 	)
 	session, err := client.Connect(connectCtx, transport, nil)
 	if err != nil {
-		return nil, &Error{Kind: ErrorTransport, Server: cfg.Name, Err: err}
+		return nil, wrapError(cfg.Name, err)
 	}
 	c := &sdkClient{server: cfg.Name, session: session, callTimeout: opts.CallTimeout}
 	if init := session.InitializeResult(); init != nil {
@@ -101,9 +101,14 @@ func buildTransport(ctx context.Context, cfg ServerConfig) (sdk.Transport, error
 		if cfg.URL == "" {
 			return nil, errors.New("streamable-http 传输需要 URL")
 		}
+		hc := httpx.FromContext(ctx)
+		// 有静态头或凭据提供器 → 套一层（克隆客户端，不改宿主传进来的）。
+		if len(cfg.Headers) > 0 || cfg.TokenProvider != nil {
+			hc = withAuth(hc, cfg)
+		}
 		return &sdk.StreamableClientTransport{
 			Endpoint:   cfg.URL,
-			HTTPClient: httpx.FromContext(ctx),
+			HTTPClient: hc,
 		}, nil
 	default:
 		return nil, errors.New("未知传输方式 " + string(cfg.Transport))
@@ -161,13 +166,19 @@ func (c *sdkClient) ProtocolVersion() string { return c.protocol }
 // Close 关闭会话。
 func (c *sdkClient) Close() error { return c.session.Close() }
 
-// classify 区分传输层故障与协议语义错误。
+// classify 区分传输层故障、认证失败与协议语义错误。
 //
 // 超时与取消是**连接层**的事（连接不可用 / 上下文结束），连接断开（EOF /
-// 管道关闭）同样归传输层；其余按协议错误归类——两类错误在快照与日志里的
-// 处置不同：传输层意味着「这台服务器现在不可用」，协议层意味着「这次调用
-// 被上游拒绝」。
+// 管道关闭）同样归传输层；**HTTP 401/403 与取凭据失败归认证类**；其余按
+// 协议错误归类——三类错误在快照与日志里的处置不同：传输层意味着「这台
+// 服务器现在不可用」，认证层意味着「这台服务器要凭据」，协议层意味着
+// 「这次调用被上游拒绝」。
 func classify(err error) ErrorKind {
+	// 认证错误已经被结构化（authTransport 直接造 *Error）——优先认它。
+	var mcpErr *Error
+	if errors.As(err, &mcpErr) && mcpErr.Kind == ErrorAuth {
+		return ErrorAuth
+	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return ErrorTransport
 	}
@@ -177,6 +188,27 @@ func classify(err error) ErrorKind {
 		return ErrorTransport
 	}
 	return ErrorProtocol
+}
+
+// wrapError 给错误补上服务器归属，并**保留内层的结构化分类**。
+//
+// 认证错误必须保住：SDK 会把 RoundTripper 的错误层层包装（url.Error →
+// SDK 内部错误），若一律包成 transport，「需要认证」这条诊断就丢了。
+func wrapError(server string, err error) error {
+	var mcpErr *Error
+	if errors.As(err, &mcpErr) {
+		if mcpErr.Server == "" {
+			mcpErr.Server = server
+		}
+		return mcpErr
+	}
+	return &Error{Kind: classify(err), Server: server, Err: err}
+}
+
+// IsAuthError 判断错误是不是认证类（宿主据此提示「这台服务器要凭据」）。
+func IsAuthError(err error) bool {
+	var mcpErr *Error
+	return errors.As(err, &mcpErr) && mcpErr.Kind == ErrorAuth
 }
 
 // project 把上游结果投影成 MoS 的 Result。

@@ -319,6 +319,30 @@ func TestMCPServersSectionSkipsUnreachable(t *testing.T) {
 	}
 }
 
+// S8.4-B：认证失败在快照里写明「需要认证」（处置与传输层失败不同）。
+func TestMCPAuthFailureSnapshotNeedsAuth(t *testing.T) {
+	reg := newTestRegistry(t)
+	a, err := mos.New(mos.Config{
+		Model: &stubModel{reply: "ok"},
+		Tools: reg,
+		MCP: &mos.MCPConfig{
+			Servers: []mcp.ServerConfig{{Name: "gh", Transport: mcp.TransportHTTP, URL: "http://127.0.0.1:1/mcp"}},
+			Dial: func(context.Context, mcp.ServerConfig, mcp.Options) (mcp.Client, error) {
+				return nil, &mcp.Error{Kind: mcp.ErrorAuth, Server: "gh", Err: errors.New("HTTP 401 Unauthorized")}
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New 不该因单台服务器失败而报错: %v", err)
+	}
+	defer a.Close()
+
+	d := a.Describe()
+	if !strings.Contains(d, "需要认证") {
+		t.Fatalf("快照应写明需要认证:\n%s", d)
+	}
+}
+
 // newTestRegistry 造一个空注册表。
 func newTestRegistry(t *testing.T) *tool.Registry {
 	t.Helper()
