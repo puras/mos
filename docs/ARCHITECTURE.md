@@ -445,7 +445,7 @@ roots.Add(b)   // 运行期加根：文件工具与 shell 同时生效
 
 | 层 | 归属 | 内容 |
 | --- | --- | --- |
-| 同世界路径强制 | **MoS** | macOS Seatbelt ✅ / Linux Landlock（+ bubblewrap 备选）/ Windows 受限令牌 + ACL；统一 `PathScope` → 内核约束语义（只能收窄 / 写侧强制 / 默认派生）；后端不可用即 fail-closed；能力探针（当前强制强度） |
+| 同世界路径强制 | **MoS** | macOS Seatbelt ✅ / Linux Landlock ✅ / Windows 低完整性 token + 临时 ACL ✅（bubblewrap 未做，理由见待拍板项 b）；统一 `PathScope` → 内核约束语义（只能收窄 / 写侧强制 / 默认派生）；后端不可用即 fail-closed；能力上报见 §3.10.2 |
 | 策略 | **宿主** | 是否装配、默认档位与根集合、运行期加根、提权审批（`agent/approval`） |
 | 强隔离 | **宿主**（替换整条能力） | Docker / containerd / microVM / 远程执行——它替换的是“命令执行 + 文件访问”这条能力，不是路径强制后端 |
 
@@ -457,8 +457,8 @@ roots.Add(b)   // 运行期加根：文件工具与 shell 同时生效
 
 **MoS 的取舍与理由**——取 DSH 的位置（机制在 SDK，策略在宿主），三条理由：(1) **fail-closed 是框架纪律**：后端不可用必须 `ErrPathScopeUnsupported`，放给宿主实现必然出现“假装有边界”（§3.10 的立论）；(2) **范围语义是框架政策**：`PathScope` 的“只能收窄 / 写侧强制 / 默认派生”一旦放宿主，多宿主必然漂移——MoS 现在“文件 jail 与 shell 沙箱共用一份根集合”已经是**靠宿主自觉**的对齐点（§3.10），再把语义也放宿主等于放弃这条线；(3) **SDK 不能假设宿主有 runner**：DSH 的原话——`bwrap` 在最需要沙箱的机器上（最小容器、禁 userns、禁 `mount` 的 LSM）恰恰不可用，**备选 runner 必须随 SDK 走**。
 
-- **不做**：容器 / microVM / 远程执行后端——DSH 明说它们“不是这个接缝的后端，而是替换整条能力”（`ctx.shell` / `ctx.fs` 整体换）；MoS 保持同一判断，宿主以 `sandbox.Runner` 注入即可（见下方“现状差距”第 3 条，那条路现在被装配层堵着）。
-- **不做**：Windows 读侧强制——DSH 已论证代价（为任意路径读做全盘 DACL 改写），Windows 后端按“写侧强制 + 如实报告 partial”落地。
+- **不做**：容器 / microVM / 远程执行后端——DSH 明说它们“不是这个接缝的后端，而是替换整条能力”（`ctx.shell` / `ctx.fs` 整体换）；MoS 保持同一判断。**2026-11 决定：暂不接 Docker 等外部后端**，先用三个平台的原生后端（Seatbelt / Landlock / 低完整性 token）；接缝（`sandbox.Runner`）留在原地，宿主真要接时再改装配层（见下方“现状差距”第 3 条）。
+- **不做**：Windows 读侧强制——DSH 已论证代价（为任意路径读做全盘 DACL 改写），Windows 后端按“写侧强制 + 如实上报缺口”落地（MoS 的档位口径与 DSH 的 `full`/`partial` 不同，见 §3.10.2）。
 - **不做**：任何“平台不支持就降级为不隔离”的路径（PI 扩展的做法）。
 
 **两家都没有的空白 / MoS 自创**——MoS 现有的 `PathScope{ReadRoots, WriteRoots}` 双根 + “请求只能收窄”语义，两家都没有等价物（DSH 是三档 mode + 单 `workspaceRoot`；PI 扩展是 allow/deny 列表）。这是自创：好处是“读/写两根分别表达 + 运行期收窄”比三档 mode 细；代价是宿主要多理解一层语义，且**必须接受某些后端只强制写侧**（`ReadRoots` 在 Seatbelt 后端上就只是校验用的声明、不是强制项，§3.10 已如实标注）。风险：新后端若把“只强制写”悄悄说成“读写都强制”，就是 DSH 反复警告的“假装有边界”。→ 对策：**能力探针 + 强制完整度上报**（DSH 有 `full` / `partial` 的对位物，MoS 现在只有“支持 / 不支持”二值）：`sandbox.Capabilities()` 返回 `{Backend, Enforcement: none | write-only | read-write, Reason}`——宿主据此决策，框架据此 fail-closed。
@@ -467,9 +467,83 @@ roots.Add(b)   // 运行期加根：文件工具与 shell 同时生效
 
 1. **仓库在 Linux 上编译不过**：`tool/builtin/observe_version_unix.go`（`//go:build unix`）与 `tool/builtin/observe_version_linux.go`（`//go:build linux`）重复声明 `fileIdentity`，且前者用了 Linux 没有的 `st.Mtimespec`（Linux 是 `Mtim`）——**已修**（“Linux 沙箱的前置是先修可移植性”的判断兑现），按平台拆分落实。
 2. **Windows 编译不过**：`sandbox/sandbox.go` 曾用 `syscall.SysProcAttr{Setpgid: true}` 与 `syscall.Kill`（Unix 专有）——**已修**：进程组击杀与命令执行按平台拆文件（`sandbox/proc_unix.go` / `proc_windows.go` / `run_unix.go` / `run_windows.go`），Windows 侧进程组击杀改走 Job Object。
-3. **强隔离注不进来**：`mos.Config.Sandbox` 的类型仍是具体结构 `*sandbox.Local`（`mos.go:91`），不是 `sandbox.Runner` 接口——宿主想注 Docker / containerd 后端必须改框架源码。**这是“强隔离归宿主”路线仅剩的硬阻塞**：把该字段改成接口（`builtin.NewShell` 本来就收 `sandbox.Runner`，改动面很小），宿主才有地方放自己的后端。
+3. **强隔离注不进来（已知阻塞，2026-11 决定暂缓）**：`mos.Config.Sandbox` 的类型仍是具体结构 `*sandbox.Local`（`mos.go:91`），不是 `sandbox.Runner` 接口——宿主想注 Docker / containerd 后端必须改框架源码。**暂不修**：当前阶段只用三个平台的原生后端，不接外部后端；接缝（`sandbox.Runner`）已经留好，`builtin.NewShell` 本来就收它，将来真要接时改这一个字段即可（改动面很小）。
 
-**待拍板项（2026-11-06 更新）**：(a) 能力探针仍待做——`sandbox.Capabilities()`（返回 `{Backend, Enforcement, Reason}`）尚未实现，后端补齐后它的价值更高（Windows 后端语义是 partial，必须如实上报）；(b) Linux 后端**已定 Landlock 直接实现**（bwrap 备选未做，理由照旧——`PathScope` 双根语义更贴 Landlock 的 grant 模型）；(c) Windows 后端默认开还是默认关仍待拍板（它要改宿主 DACL，与 §4 治理规则 5 “框架层不碰文件系统”的取向有张力）。
+**待拍板项（2026-11-06 更新）**：(a) 能力上报的**设计已定**（`sandbox.Capabilities()` + `sandbox.Probe(ctx)` + 每次调用自报），见 §3.10.2——**尚未实现**，落地清单也在 §3.10.2；(b) Linux 后端**已定 Landlock 直接实现**（bwrap 备选未做，理由照旧——`PathScope` 双根语义更贴 Landlock 的 grant 模型）；(c) Windows 后端默认开还是默认关仍待拍板（它要改宿主 DACL，与 §4 治理规则 5 “框架层不碰文件系统”的取向有张力）。
+
+### 3.10.2 路径强制的能力上报：能力即证据（S5f-2c 设计，2026-11；**未实现**）
+
+**问题**——三个后端都落地了，宿主能看到的能力却只有“支持 / 不支持”二值。要回答的其实是三个不同的问题：(1) 这台机器有没有路径强制？(2) 强制到什么程度（写侧 / 读写）？(3) 已知缺口是什么（Landlock ABI 1 无 refer、Windows 低完整性的 MIC 语义、Seatbelt 写根按前缀匹配）？第 (3) 问现在**没有人回答**——缺口只写在源码注释里，宿主与用户看不到，模型也读不到。这正是 DSH 反复警告的“假装有边界”。
+
+**PI 的做法**——**没有**。PI 核心不沙箱（§3.10.1 已列出处）；示例扩展 `packages/coding-agent/examples/extensions/sandbox/index.ts` 只在不支持的平台**静默降级**为不隔离（一条 UI 提示），既不上报强度，也不区分“部分强制”。PI 全仓没有“能力 / 强度”这类类型。
+
+**DSH 的做法**——三层，都可核对：
+
+1. **静态强度表**：`packages/sandbox/sandbox-local/src/index.ts` 的 `STATIC_ENFORCEMENT` 把 runner 映射到 `'full' | 'partial'`，注释里逐条写明 partial 的原因——`windows-acl` 三条（NTFS 硬链接别名、读不隔离、AppContainer package SID 树不可读）；`bwrap` / `landlock` / `seatbelt` 为 full（它们连读一起关）。类型在 `packages/sandbox/sandbox/src/index.ts`：`SandboxEnforcement = 'full' | 'partial'`。
+2. **每次调用自报**：`ConfinedArgv` 带 `enforcement` 字段，`SandboxProvider.confine()` 返回它——DSH 的原话是 “Enforcement is reported per call”，不是配置期的一句话。
+3. **功能探针**（用途是**选型仲裁**，不是上报）：`defaultProbeBwrap` / `defaultProbeSeatbelt` / `defaultProbeWindowsAcl` / `defaultProbeLandlock` 都是真跑一条命令看是否被拒；Landlock 原生启动器有 `--probe` 模式——“装一个最大 ruleset 到短命子进程，只有内核真的在强制才退出 0”。但 DSH 的决策笔记**明确否掉**“单后端也探针”：*“probing arbitrates between candidates; with one there is nothing to decide, and probe cost taxes the first confined command of every session”*——探针只在 `PLATFORM_CHAINS` 有多个候选时用于仲裁。
+
+**共识 / 分歧**——共识：强度必须**机器可读**；partial 必须**说明原因**；边界由内核决定，不由字符串决定。分歧：DSH 只有 full / partial 两档，且它的 full = **读写都强制**（bwrap / landlock / seatbelt 都关读）——MoS 三个后端**都不关读**，按 DSH 的尺子全是 partial；但 MoS 的威胁模型明确“只收窄写”（§3.10.1），把“写侧强制”叫 partial 会让宿主以为沙箱坏了。代价各自明确：DSH 两档简单，代价是把“设计如此”与“能力不足”混在一档里；MoS 用“三档完整度 + 独立缺口清单”多一层，换来把“读不强制（设计如此）”与“ABI 1 无 refer（能力不足）”分开说。DSH 的探针是**仲裁器**，MoS 的探针要是**事实核验器**——用途不同，不能照抄。
+
+**MoS 的取舍与理由**——
+
+* **API（三件套）**：
+
+```go
+// Enforcement 描述路径强制的完整度。
+type Enforcement string
+
+const (
+	EnforcementNone      Enforcement = "none"       // 没有路径强制
+	EnforcementWriteOnly Enforcement = "write-only" // 写由内核强制；读不受限
+	EnforcementReadWrite Enforcement = "read-write" // 读写都由内核强制（当前没有后端到得了这一档）
+)
+
+// Capability 是当前平台上路径强制的**能力**。
+type Capability struct {
+	Backend     string      // "seatbelt" / "landlock" / "windows-low-integrity" / ""
+	Enforcement Enforcement // 完整度
+	Caveats     []string    // 已知缺口（机器可读）
+	Reason      string      // 人话总结
+}
+
+// Capabilities：静态判定，零副作用（不跑命令、不写文件）。装配期读。
+func Capabilities() Capability
+
+// Probe：功能探针——真跑一条受限命令，验证「写根外被拒 + 写根内可写」，
+// 把 Capabilities 的“宣称”升级为“事实”。有副作用，默认不跑。
+func Probe(ctx context.Context) (Capability, error)
+```
+
+* **每次调用自报**（DSH `ConfinedArgv.enforcement` 的对位）：`Result` 加 `Backend string` + `Enforcement Enforcement`——宿主与审计能知道“这一条命令实际有多强”，而不只是“装配时以为有多强”。
+
+* **判定表**：
+
+| 平台 | 后端 | 可用性判定（零副作用） | 完整度 | 缺口（Caveats） |
+| --- | --- | --- | --- | --- |
+| darwin | Seatbelt | `/usr/bin/sandbox-exec` 存在 | write-only | 读不强制；写根按**路径前缀**匹配（不绑 inode） |
+| linux | Landlock | `landlock_create_ruleset(version) ≥ 1` | write-only | ABI 1：无 refer（跨目录重命名被拒）、无 truncate；ABI 2：无 truncate；写根必须存在（不存在则跳过 → 写它被拒） |
+| windows | 低完整性 token | `winsandbox.Available()` | write-only | 读不强制；写根内**既有**文件若带中完整性标签，低完整性进程写不动（MIC）；Low 标签只对新建 / 继承生效 |
+| 其它 | 无 | —— | none | `ErrPathScopeUnsupported`（现状） |
+
+* **三档行为（fail-closed 的落点）**：
+
+| 情况 | 判定 | 行为 |
+| --- | --- | --- |
+| 后端不存在 / 不可用 | none | **fail-closed**：写根非全开 → `ErrPathScopeUnsupported`（现状已有）；宿主可据此**不装配** shell 工具，而不是等用户踩到 |
+| 可用但只到写侧 | write-only | 允许执行；`Result.Enforcement = write-only`；缺口进 `Caveats` |
+| 可用且读写都强制 | read-write | 允许执行（当前无后端到得了） |
+
+**关键**：不存在“none 但仍然执行”的路径——这正是 fail-closed 的含义；能力上报只是让宿主**提前**知道，而不是执行时才发现。
+
+* **不做**：把功能探针做成默认行为——照 DSH 否掉它的同一条理由（有副作用：要跑命令、要写临时目录），MoS 每平台只有一个候选，没有仲裁需求；默认只做零副作用的静态判定，功能探针留给宿主自检 / CI / 上线前。
+* **不做**：read-write 档的实现——三个平台都没有现成的“读写都强制”实现（Windows 读侧强制要全盘改 DACL，DSH 已论证代价）；枚举里占位，**不承诺**。
+
+* **落地清单（文件级）**：新增 `sandbox/capability.go`（类型 + `Capabilities()` + 结果缓存）与 `sandbox/capability_{darwin,linux,windows,other}.go`（各平台判定）；新增 `sandbox/probe.go`（功能探针：建临时写根 + 根外临时目录 → 经 `Local.Run` 跑一条写命令 → 校验“根外被拒、根内可写”）；改 `sandbox/sandbox.go`（`Result` 加 `Backend` / `Enforcement`，平台文件回填）；装配快照 `Describe()` 加一行“路径强制：landlock / write-only（ABI 2：无 truncate）”；测试 `sandbox/capability_test.go`（各平台判定）与 `sandbox/probe_test.go`（**根外未被拒时必须报 none，不许假装**）。
+
+* **验证要求（写明本机跑不了的部分）**：macOS lane（**非嵌套**沙箱）验 Seatbelt 判定 + 探针真跑；Linux lane（内核 ≥ 5.13）验 Landlock 判定 + 探针真跑；Windows 无自动化 lane，`winsandbox.Available()` 与 MIC 语义只能人工验证；嵌套环境（本会话所在）只能验**降级路径**：不可用 → none → fail-closed 报错。
+
+**两家都没有的空白 / MoS 自创**——“完整度三档 + 缺口清单”的组合是自创：DSH 的 full / partial 把“读不强制（设计如此）”与“能力不足（硬链接别名）”混在一档，PI 根本没有强度概念。自创的好处是宿主能分别对待“设计如此”与“能力不足”（前者可接受，后者要预警）；代价是多一层类型，且 `Caveats` 的粒度靠人维护——**必须随后端改动同步更新**，否则它会变成新的“过时描述”源（§3.10.1 已经吃过一次这种亏：bubblewrap / 受限令牌的说法留在文档里没跟上代码）。风险：枚举里留着 `read-write` 空档却对外承诺——约定：**没有后端到得了的档位不承诺**。
 
 ### 3.11 模型调用的重试（S2b）
 

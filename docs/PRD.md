@@ -178,7 +178,7 @@ Harness Engineering 四铁律 + Loop Engineering 九杠杆 + Audit Gate 审计�
 | 编号 | 需求 | 验收标准 |
 | --- | --- | --- |
 | FR-E1 | 异常处理与恢复三阶段：检测（工具输出验证 / API 错误码 / 超时）→ 处理（日志/重试/回退/优雅降级/通知）→ 恢复（状态回滚 / 诊断 / 自我纠正 / 升级） | 注入故障演练集通过；升级路径接 Approval |
-| FR-E2 | 沙箱强隔离后端（L3）：Docker / containerd 替换进程级实现——**宿主侧实现，经 `sandbox.Runner` 注入**（强隔离属宿主侧：它替换整条执行能力，不是同世界路径强制后端；MoS 出同世界后端，归属见 ARCHITECTURE §3.10.1。**已达成部分（2026-11-06）**：macOS Seatbelt / Linux Landlock / Windows 低完整性 token 的内核级**写范围**强制（§3.10）） | `sandbox.Runner` 接口不变，后端可切换（前置：`mos.Config.Sandbox` 从 `*sandbox.Local` 改成接口）；越狱测试通过 |
+| FR-E2 | 沙箱强隔离后端（L3）：Docker / containerd 替换进程级实现——**宿主侧实现，经 `sandbox.Runner` 注入**（强隔离属宿主侧：它替换整条执行能力，不是同世界路径强制后端；MoS 出同世界后端，归属见 ARCHITECTURE §3.10.1。**已达成部分（2026-11-06）**：macOS Seatbelt / Linux Landlock / Windows 低完整性 token 的内核级**写范围**强制（§3.10）；**能力上报**（`sandbox.Capabilities()` + `sandbox.Probe(ctx)` + 每次调用自报）设计已定、**未实现**，见 §3.10.2。**暂缓（2026-11）**：外部后端注入——`mos.Config.Sandbox` 仍是 `*sandbox.Local`，当前阶段只用三个平台原生后端，接缝留着） | `sandbox.Runner` 接口不变，后端可切换（前置：`mos.Config.Sandbox` 从 `*sandbox.Local` 改成接口，**未决**）；越狱测试通过 |
 | FR-E3 | 模型分级路由：按任务复杂度选档（简单→经济模型、复杂→强模型），附顺序回退链 | 分级决策可配置可审计；回退链演练通过 |
 | FR-E4 | 评估与监控（知识进化第 2 层 = 配置进化）：轨迹评估 Golden 测试集 + LLM-as-a-Judge 结构化评分 + 漂移检测 + 配置 A/B 择优（工具描述 / 提示词 / 路由与 Policy 规则版本化晋级） | 评估跑批可重复；版本化档案支持回滚 |
 | FR-E5 | 优先级调度与配额：紧急性/重要性/依赖关系，限流配额按优先级区分 | 调度策略接口化（策略由平台注入） |
@@ -255,7 +255,7 @@ Harness Engineering 四铁律 + Loop Engineering 九杠杆 + Audit Gate 审计�
 
 1. ~~`moproto` 拆独立 module 的时间点与版本策略~~ —— **已决（2026-11-03）**：已拆为独立 module 并发布 v0.1.0，`go get github.com/puras/mos@v0.1.0` 直接可用。
 2. ~~MCP transport 优先级~~ —— **已决（2026-11-02）**：先 stdio（无网络依赖、易测、与进程管理同构），streamable-http 紧随（`httpx` 已有）。
-3. 远程沙箱后端选型：Docker 还是 containerd（或两者都做适配器）？—— **归属已定（2026-11）**：强隔离属**宿主侧**（整体替换执行环境，不是 `sandbox.Runner` 的同世界后端，见 ARCHITECTURE §3.10.1），MoS 只出同世界路径强制后端（Landlock / Seatbelt / Windows 受限令牌）。剩余待决：宿主侧用 Docker 还是 containerd。
+3. 远程沙箱后端选型：Docker 还是 containerd（或两者都做适配器）？—— **归属已定（2026-11）**：强隔离属**宿主侧**（整体替换执行环境，不是 `sandbox.Runner` 的同世界后端，见 ARCHITECTURE §3.10.1），MoS 只出同世界路径强制后端（Landlock / Seatbelt / Windows 低完整性 token）。**暂缓（2026-11）**：当前阶段只跑三个平台的原生后端，不接外部后端——`mos.Config.Sandbox` 仍是 `*sandbox.Local`，接缝留着，宿主真要接时改这一个字段。剩余待决：宿主侧用 Docker 还是 containerd。另：能力上报（`sandbox.Capabilities()` / `sandbox.Probe(ctx)`）设计已定、未实现，见 §3.10.2。
 4. ~~M2.9 经验记忆的默认介质~~ —— **已作废（2026-10）**：M2.9 决定不做。
 5. ~~M3a 中 SubAgent 与 MCP 的先后~~ —— **已决（2026-11-02）**：**MCP 先**（边界独立可单测；工具面立稳后，SubAgent 的工具白名单才有稳定母集）。
 
