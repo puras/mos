@@ -44,7 +44,7 @@
 | `agent`（上下文件） | 截断、压缩、Auditor | 重写瘦身 | S6 ✅ |
 | `mos`（根包） | 一行装配 `mos.New(Config)` + 运行期旋钮（并发/策略/规则/加根/**换模型**）+ 装配快照 | 重写 | S7 ✅ |
 | `agent/skill` | 技能元数据解析（frontmatter）+ 目录发现 + `<available_skills>` 清单渲染 + 专用 `skill` 工具按需加载正文；**不做技能级工具收窄**（§3.16） | 新增 | S8.1 ✅ |
-| `tool/mcp` | MCP 客户端（stdio / streamable-http）+ 工具适配（`mcp__<server>__<tool>` 命名、schema 直通、结果投影）+ 原子换代 | 新增 | S8.2 ⬜ |
+| `tool/mcp` | MCP 客户端（官方 Go SDK；stdio / streamable-http）+ 工具适配（`mcp__<server>__<tool>` 命名、schema 直通、结果投影）+ 原子换代 | 新增 | S8.2/S8.3 ✅ |
 
 > S3 边界：`tool/builtin` 只带 `current_time`（无安全副作用）。涉及文件与命令执行的
 > 内置工具（read / write / grep / glob / ls / shell）等 S5 的 filesystem jail
@@ -682,19 +682,19 @@ llm.WithRetry(model, llm.RetryPolicy{
 | ② | （见右） | （见左） |
 | ③ | **共识 / 分歧** | **共识**：①命名空间 `mcp__<server>__<tool>`（Claude Code 同款）；②MCP 工具进**普通工具注册表**——与内置工具同一条流水线（守卫、权限、结果记录、并发规则）；③每服务器独立连接与生命周期，一个失败不阻塞其他；④发现/刷新失败**保留上一代**工具（不降级成空）；⑤工具列表变化要能重新同步；⑥调用超时必需（默认 60s，两家同）；⑦结果要投影成模型可读文本，原始结构另存。**分歧**：①**暴露模型**——PI 有 4 档 exposure（含 `codemode` 这种「脚本里调工具」的形态）+ 逐工具覆盖，DSH 没有 exposure 概念（工具一律声明给模型，只有资源工具按服务器可见度决定）；②**清单呈现**——PI 有 `mcp_servers` 提示词节 + 两条「怎么够到」的路，DSH 依赖普通工具清单；③**认证**——PI 有完整 OAuth，DSH 只有 header + env；④**富内容**——DSH 有附件系统 + 图片准入证明，PI 把二进制落临时文件 + 文本截断 |
 | ④ | **MoS 的取舍与理由** | **exposure 取 PI 的三档（`deferred` / `direct` / `hidden`）+ 逐工具覆盖，不做 `codemode`**：MoS 没有 codemode 形态（没有「脚本里调工具」的工具），那一档在 MoS 无对位物；`deferred` 直接落在 MoS 现成的 `Registry.RegisterDeferred` + `tool_search`（S7.3，FR-C3）上——**MCP 工具默认 deferred**：服务器工具面通常很大，全量声明会撑爆 prompt（FR-C3 的验收口径就是「工具数增长时 prompt token 亚线性」）。代价：模型要多一次 `tool_search` 才拿到 MCP 工具（PI 的 deferred 同款代价）。**服务器摘要走 `tool_search` 搜索文档 + 激活回执，不进系统提示词**：MoS 的系统提示词是**装配期渲染一次**的静态内容（FR-C4），而 MCP 连接在装配后才建立、还可能掉线重连 → 写进静态提示词会失真；服务器 instructions 在连接成功时以**一次性 user 消息**注入（DSH 语义，走 user 侧以免破 cache）。代价：模型不搜之前看不到有哪些 MCP 服务器（PI 一眼能看到）——MoS 明确接受的取舍，登记为风险。**认证不做 OAuth**：PRD §1.3 把密钥管理划给协议层/宿主，SDK 不碰凭据生命周期；stdio 给 `env`、http 给 `headers`，`${ENV}` 展开归宿主（框架不绑配置格式，治理规则 5）。代价：需要 OAuth 的服务器只能由宿主先取好 token 再装配。**不解析 `mcp.json`**：框架只认结构（`mcp.Config`），键名与格式归宿主（同 `policy.Config`）。**结果投影复用 MoS 既有截断网**：MCP content → 文本（text 拼接；image/audio/resource/resource_link → 文本占位诊断，原始 JSON 保留在返回值），超长由 `agent.Truncator`（`tool/post-execute` 钩子）截断 + 落盘 + 指针（PI 自带 20KB 截断 + 临时文件，DSH 走附件系统）。代价：MoS 没有图片入模（模型看不了图）。**工具调用默认独占**：MCP 工具不实现 `tool.ConcurrencySafe` → 走 MoS 的 fail-closed 默认（串行）；将来可按「服务器只读」再声明并发。**失败隔离**：装配期某服务器连不上 → 该服务器不注册工具（快照记警告），其余照常（FR-D8 验收）；调用期连接不可用 → 工具返回错误结果（模型看得见、可自纠） |
-| ⑤ | **两家都没有的空白** | **① MCP 工具的注册表换代**：MoS 的 `Registry` 只有 `Register`（重名报错）、**没有注销/替换**；MCP 工具列表会变（服务器增删工具）→ 需要 `Registry.Replace`（或 Unregister+Register），并同步清 schema 缓存与 deferred 标记。DSH 的两阶段换代（先取全量、失败回滚不留半套）可抄；PI 因工具不可注销只能「改注册为 hidden」——那是 PI 的框架限制而非好做法。**MoS 自创：注册表支持原子换代 + 回滚**，理由：MCP 是第一个需要热换工具面的消费者；风险：换代瞬间的清单一致性（半新半旧）→ 按 DSH 两阶段做。**② 上游 JSON Schema 直通**：MoS 的 `tool` 包只支持「Go 结构体反射生成 schema」（`tool/tool.go` 的 `generateSchema`/`typeToSchema`，map 走 default → **空 schema**）→ MCP 的参数 schema 会丢。**MoS 自创 `tool.SchemaProvider` 可选接口**（工具直接给 JSON Schema，优先于反射），理由：MCP schema 是上游给的，不该反推；风险：多一条 schema 来源路径 → 守护测试锁住（结构体工具行为不变）。**③ MCP 事件类型**：PRD 只点名 `skill/*` 等，治理规则 2（事件目录预算制）要求先删一个旧的 → **不加新的 `mcp/*` 事件**；MCP 调用留痕走既有 `tool/call`/`tool/result`（MCP 工具就是普通工具），连接状态进 `Describe()` 快照与宿主日志 |
+| ⑤ | **两家都没有的空白** | **① MCP 工具的注册表换代**：MoS 的 `Registry` 只有 `Register`（重名报错）、**没有注销/替换**；MCP 工具列表会变（服务器增删工具）→ 需要 `Registry.Replace`（或 Unregister+Register），并同步清 schema 缓存与 deferred 标记。DSH 的两阶段换代（先取全量、失败回滚不留半套）可抄；PI 因工具不可注销只能「改注册为 hidden」——那是 PI 的框架限制而非好做法。**MoS 自创：注册表支持原子换代 + 回滚**（S8.2 已落地：`Registry.Replace(scope, tools, deferred)`），理由：MCP 是第一个需要热换工具面的消费者；风险：换代瞬间的清单一致性（半新半旧）→ 按 DSH 两阶段做（先取全量、再换代，失败保留上一代）。**② 上游 JSON Schema 直通**：MoS 的 `tool` 包只支持「Go 结构体反射生成 schema」（`tool/tool.go` 的 `generateSchema`/`typeToSchema`，map 走 default → **空 schema**）→ MCP 的参数 schema 会丢。**MoS 自创 `tool.SchemaProvider` 可选接口**（工具直接给 JSON Schema，优先于反射；S8.2 已落地），理由：MCP schema 是上游给的，不该反推；风险：多一条 schema 来源路径 → 守护测试锁住（结构体工具行为不变）。**③ MCP 事件类型**：PRD 只点名 `skill/*` 等，治理规则 2（事件目录预算制）要求先删一个旧的 → **不加新的 `mcp/*` 事件**；MCP 调用留痕走既有 `tool/call`/`tool/result`（MCP 工具就是普通工具），连接状态进 `Describe()` 快照与宿主日志 |
 
 ##### MoS SDK 侧设计
 
 | 落点 | 内容 | 依赖 |
 | --- | --- | --- |
-| `tool`（增强） | ① `SchemaProvider` 可选接口（工具直给 JSON Schema，注册时优先于反射）；② `Registry.Replace`（原子换代：schema 缓存 + deferred 标记同步）；③ 可见性过滤器**可叠加**（`AddVisibility`，AND 语义）——policy 一层 + MCP hidden 一层（现在 `SetVisibility` 是单值，policy 已占用；技能不再贡献一层——拍板不做技能级工具面收窄） | 不变 |
+| `tool`（增强） | ① `SchemaProvider` 可选接口（工具直给 JSON Schema，注册时优先于反射）；② `Registry.Replace(scope, tools, deferred)`（原子换代：schema 缓存 + deferred 标记**按新名单重写**；`scope` = 代际归属，多台服务器互不踩，空名单 = 该代清空）；③ 可见性过滤器**可叠加**（`AddVisibility`，AND 语义）+ **具名槽**（`SetVisibilitySlot`：policy 热替换只动自己那层，不踩 MCP hidden 那层）——policy 一层 + MCP hidden 一层（技能不再贡献一层——拍板不做技能级工具面收窄） | 不变 |
 | `agent/skill`（新包） | `Metadata`（frontmatter：name/description/when-to-use/allowed-tools（**只解析，不执行**）/disable-model-invocation/metadata→`Extra`）+ `Load(Options)`/`Catalog`（目录发现；读文件走 `Reader` 接口，同 `contextfile` 形态；**技能目录列表 = 宿主声明的授权边界，不校验 Roots**）+ `Render`（`<available_skills>` 清单，三级预算降级 + `<skill_content>` 正文，转义）+ `ExpandInvocation`（用户显式 `/name` 展开器，宿主调用）+ `State`（本次 Run 的激活集合，ctx 携带）+ `Recorder`（事件接口，装配层接会话） | → `tool`, `gopkg.in/yaml.v3` |
 | `agent/skill` 的工具 | `skill` 工具（参数 `name`；校验 model 可调用——`disable-model-invocation` 的技能模型不可见也不可加载；返回正文 → 进工具结果 → 进历史）。**不挂技能守卫**（拍板：不做技能级工具限制） | → `tool` |
 | `agent/prompt` | 新增 `OrderSkills`（= 800：项目约定 750 之后、工具指引 1000 之前）+ `AddSkills(text)`；清单**装配期**渲染 → 静态，保 prompt cache（FR-C4） | 不变 |
 | `session` | 事件 `skill/activate`（PRD §4.2 点名 `skill/*` → 走事件预算制例外）：skill 工具成功返回正文时记一条；载荷只记元数据（名字/描述/目录，不记正文——正文在 `tool/result` 里）。**不单设 `skill/load`**：正文每次进上下文都有 `tool/call` + `tool/result` 配对，再记一条是重复记账（事件预算制） | 不变 |
-| `tool/mcp`（新包） | `Config`（每服务器：Name/Transport/Command/Args/Env/CWD/URL/Headers/Timeout/Enabled/Description/Exposure/ToolExposure）+ `Client` 接口（`ListTools`/`CallTool`）+ `stdio`（子进程 + JSON-RPC）/ `streamable-http`（复用 `httpx`）两个 transport + `Server`（连接、发现、换代、重连）+ `Adapter`（→ `tool.Tool`：命名 `mcp__<server>__<tool>`、schema 直通、结果投影、默认独占） | → `tool`, `agent/truncate`, `httpx` |
-| `mos`（装配层） | `Config.Skills *SkillConfig`（目录列表 + 预算 + 可选 `Reader`；**不登记读根**——目录列表即授权边界）/ `Config.MCP *MCPConfig`（服务器列表 + 默认 exposure + 超时）；一开即装；`Describe()` 快照写明「装了什么 + **没装什么**」（降级诊断与连接失败的服务器也要写出来）；`Agent.ExpandSkill(text)`（宿主展开 `/name`）+ `Agent.Skills()` | → `agent/skill`, `tool/mcp` |
+| `tool/mcp`（新包） | `ServerConfig`（每服务器：Name/Transport/Command/Args/Env/Dir/URL/Headers/Timeout/Disabled/Description/Exposure/ToolExposure）+ `Client` 接口（`ListTools`/`CallTool`/`Instructions`/`ProtocolVersion`/`Close`）+ `Manager`（多服务器：连接、发现、两阶段换代、失败隔离、hidden 集合）+ `Tool`（→ `tool.Tool`：命名 `mcp__<server>__<tool>`、schema 直通、结果投影、默认独占）。**协议层用官方 Go SDK**（`github.com/modelcontextprotocol/go-sdk` v1.8.0）：版本协商、分页、结果类型、边界情况都归 SDK；SDK 类型不外泄（对外只有本包的 `ServerConfig`/`Client`/`Tool`） | → `tool`, `httpx`, **官方 SDK**（依赖纪律破例，见下） |
+| `mos`（装配层） | `Config.Skills *SkillConfig`（目录列表 + 预算 + 可选 `Reader`；**不登记读根**——目录列表即授权边界）/ `Config.MCP *MCPConfig`（服务器列表 + 默认 exposure + 超时 + `Dial` 工厂）；一开即装（装配期连接 + 按 exposure 注册）；`Describe()` 快照写明「装了什么 + **没装什么**」（降级诊断与连接失败的服务器也要写出来）；`Agent.ExpandSkill(text)`（宿主展开 `/name`）+ `Agent.Skills()` + `Agent.Close()`（收 MCP 长连接）；服务器 instructions **每会话一次性** user 侧注入（`session.Claim` 标记） | → `agent/skill`, `tool/mcp` |
 | 驱动（react） | 工具清单每轮取 `List()`（deferred 不在其中）；**不加**新的驱动逻辑——技能正文走工具结果，MCP 工具走普通注册表 | 不变 |
 
 **切片顺序与验收门**（每片：`go test ./...` 全绿 + 本节状态同步 + 一页说明）：
@@ -702,8 +702,8 @@ llm.WithRetry(model, llm.RetryPolicy{
 | 片 | 内容 | 验收 |
 | --- | --- | --- |
 | **S8.1** ✅ | `agent/skill` 全文 + `skill` 工具 + `skill/activate` 事件 + 装配入口（`Config.Skills` / `Agent.ExpandSkill`）。**`tool` 增强（SchemaProvider / Replace / 可见性叠加）移到 S8.2**——它们的消费者是 MCP 适配器，先做会变成没人用的基础设施 | E2E：技能目录 → 模型调 `skill` → 正文进上下文 → `disable-model-invocation` 的技能既不进清单也不可加载（fail-closed）；`allowed-tools` 只解析留痕且给出「当前不生效」诊断；清单进系统提示词且两次 Render 逐字节一致（保 cache） |
-| **S8.2** | `tool/mcp` 客户端（stdio transport + JSON-RPC 最小实现：initialize / tools/list / tools/call / `notifications/tools/list_changed`）+ 工具适配（命名 / schema 直通 / 结果投影 / 两阶段换代）+ 单测用假 server | 命名/哈希后缀/换代回滚/超时/取消 单测；假 server 驱动端到端 |
-| **S8.3** | 装配层（MCP 一开即装、默认 deferred + `tool_search` 联动、服务器 instructions 一次性 user 侧注入、失败隔离、Describe 快照） | 单个 MCP 失败不阻塞其余加载（FR-D8 验收）；MCP 工具默认不进模型清单、搜到才进 |
+| **S8.2** ✅ | `tool/mcp` 客户端（**官方 Go SDK**，不自写 JSON-RPC：stdio + streamable-http 两个 transport、版本协商、分页、list_changed 通知）+ 工具适配（命名 / schema 直通 / 结果投影）+ 两阶段换代（先取全量、再换代，失败保留上一代） | 命名/哈希后缀/换代回滚/超时/取消 单测；**真 stdio 子进程**驱动端到端（连上 → tools/list → tools/call → list_changed → 换代落地） |
+| **S8.3** ✅ | 装配层（MCP 一开即装、默认 deferred + `tool_search` 联动、hidden 档可见性层、服务器 instructions 每会话一次性 user 侧注入、失败隔离、Describe 快照、`Agent.Close()`） | 单个 MCP 失败不阻塞其余加载（FR-D8 验收）；MCP 工具默认不进模型清单、搜到才进 |
 
 ##### 自创点与风险登记
 
@@ -712,7 +712,9 @@ llm.WithRetry(model, llm.RetryPolicy{
 | **不做**技能级工具限制（`allowed-tools` 只解析留痕） | PI 有字段无实现、DSH 连字段都没有；不自创 | 宿主不接策略时该字段形同装饰 | 解析即给诊断（「该字段当前不生效」），不假装生效；工具面收窄仍走宿主既有能力（Policy + `AddVisibility`） |
 | **不**校验技能目录的 Roots（目录列表 = 授权边界） | 框架不碰文件系统、也看不到宿主注入的 `Reader` 内部边界（治理规则 5 + §3.5）；PI/DSH 都没有「技能目录须登记为读根」 | 宿主误配目录 = 技能内容来自预期之外的位置 | 每个技能的来源目录写进装配快照与 `skill/activate` 事件（可核对）；要 jail 语义的宿主自己注入带边界的 `Reader` |
 | MCP 工具默认 deferred（PI 同款）+ 逐工具 exposure 覆盖 | MCP 工具面大，全量声明撑爆 prompt（FR-C3 口径） | 模型要多一次搜索才知道 MCP 存在 | `tool_search` 描述里点名 MCP；服务器摘要进搜索文档与激活回执 |
-| 注册表原子换代（`Registry.Replace`）+ 回滚 | MCP 是第一个需要热换工具面的消费者 | 换代瞬间清单不一致 | 两阶段（先取全量、再换代），冲突回滚不留半套（DSH 语义） |
+| 注册表原子换代（`Registry.Replace`）+ 回滚 | MCP 是第一个需要热换工具面的消费者 | 换代瞬间清单不一致 | 两阶段（先取全量、再换代），冲突回滚不留半套（DSH 语义）；代际按 `scope` 隔离（多服务器互不踩） |
+| **协议层用官方 Go SDK**（不手写 JSON-RPC） | 2026-07-28 规范废弃了 initialize/roots/sampling（SEP-2577），手写协议层要同时正确跑两代初始化流程；PI 自研止于 2025-11-25、DSH 用官方 SDK——MoS 取 DSH | **依赖纪律破例**（MoS 原纪律：近零依赖）：新增 9 个传递依赖 | SDK 只在 `tool/mcp` 内部使用，类型不外泄（对外仍是 MoS 自己的 `ServerConfig`/`Client`/`Tool`）；版本钉 `v1.8.0`；破例登记进 PRD / README |
+| **显式空 capabilities** | SDK 默认声明 roots 能力，而 MoS 不实现 roots（框架不碰宿主文件系统边界，治理规则 5） | 不声明就不会有「能力即证据」的假象 | 客户端初始化传 `&mcp.ClientCapabilities{}`（SDK 文档明确：这样才能关掉 roots） |
 | `tool.SchemaProvider` 直给 schema | MCP 的 schema 是上游给的，不该反推 | 多一条 schema 来源 | 守护测试：结构体工具生成的 schema 逐字节不变 |
 | 服务器 instructions 走一次性 user 消息 | 系统提示词是装配期静态（FR-C4），MCP 连接在其后建立且会重连 | 掉线重连后 instructions 不再刷新 | 语义定为「连接建立时注入一次」，重连后不重复注入（避免刷屏） |
 | 不做 OAuth / 不做资源工具 / 不做 codemode | 密钥归协议层与宿主；资源工具要分页 + 二进制 + URI 命名空间（面大）；MoS 无 codemode 形态 | 需要这些能力的用户要自己补 | v1 只保证「工具调用」这一条主链路；命名空间 `mcp__` 预留，MCP 资源列入 M3b |
@@ -727,16 +729,17 @@ llm.WithRetry(model, llm.RetryPolicy{
 | 4 | **技能清单落位** | **系统提示词**（装配期固定 → 静态，保 prompt cache）；将来做运行期热加载再改走 user 侧（届时补 DSH 那套 digest + 替换） |
 | 5 | **MCP transport 顺序**（PRD 开放问题 2） | **先 stdio**，http 紧随（`httpx` 已有） |
 | 6 | **SubAgent 与 MCP 先后**（PRD 开放问题 5） | **MCP 先**（边界独立可单测；工具面立稳后，SubAgent 的工具白名单才有稳定母集） |
+| 7 | **MCP 协议层实现方式**（2026-11-03 追拍板） | **引用官方 Go SDK**（`github.com/modelcontextprotocol/go-sdk` v1.8.0），**不手写 JSON-RPC**：版本协商、分页、结果类型与边界情况交给 SDK；协议基线 `2026-07-28`（SDK 默认协商到该版本，已实测）；SDK 类型不外泄。代价：依赖纪律破例（新增 9 个传递依赖），已在 PRD / README 登记 |
 
 ##### 状态
 
 | 项 | 状态 |
 | --- | --- |
 | PI/DSH 参考分析（Skill + MCP） | ✅（本节） |
-| `tool` 增强（SchemaProvider / Replace / 可见性叠加） | ⬜ |
-| `agent/skill` 包 + `skill` 工具 + 事件（**不做技能级守卫**） | ⬜ |
-| `tool/mcp` 包（客户端 + transport + 适配器） | ⬜ |
-| 装配层入口（`Config.Skills` / `Config.MCP`）+ deferred 联动 | ⬜ |
+| `tool` 增强（SchemaProvider / Replace / 可见性叠加 + 具名槽） | ✅ |
+| `agent/skill` 包 + `skill` 工具 + 事件（**不做技能级守卫**） | ✅（S8.1） |
+| `tool/mcp` 包（官方 SDK 客户端 + 两个 transport + 适配器 + 换代） | ✅（S8.2） |
+| 装配层入口（`Config.Skills` / `Config.MCP`）+ deferred 联动 + 失败隔离 + 说明注入 | ✅（S8.3） |
 | PRD 状态同步（Skills 状态、FR-D8 措辞、开放问题 2/5） | ✅（本片，PRD 已改） |
 
 ### 3.17 挂起-恢复（FR-G3：跨进程续跑）

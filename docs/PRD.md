@@ -1,6 +1,7 @@
 # MoS PRD（产品需求文档）
 
 > 版本：v0.2（草案）｜ 日期：2026-11-04 ｜ 维护：puras
+> 更新记录：**2026-11-04** —— **FR-D8 MCP 接入落地（S8.2 + S8.3）**：新包 `tool/mcp`（**官方 Go SDK** `github.com/modelcontextprotocol/go-sdk` v1.8.0，stdio + streamable-http 两个 transport，协议基线 `2026-07-28`）+ 工具适配（`mcp__<server>__<tool>` 命名、schema 直通、结果投影）+ 两阶段原子换代（换代失败保留上一代）+ 装配入口（`mos.Config.MCP`：一开即装、默认 deferred、hidden 档、失败隔离、服务器说明每会话一次性 user 侧注入、`Describe()` 快照、`Agent.Close()`）。**依赖纪律破例**：新增 9 个传递依赖，SDK 只在 `tool/mcp` 内部使用、类型不外泄。分析见 `docs/ARCHITECTURE.md` §3.16，说明见 `docs/s8.2-mcp.md`。
 > 更新记录：**2026-11-04** —— **FR-D11 Skills 重做落地（S8.1）**：新包 `agent/skill`（frontmatter 解析 + 目录发现 + `<available_skills>` 清单 + `<skill_content>` 正文 + 用户显式 `/name` 展开器 + 本轮激活状态）+ 专用 `skill` 工具（正文按需加载，走普通工具结果/历史）+ `skill/activate` 事件 + 装配入口（`mos.Config.Skills` / `Agent.ExpandSkill`）；**技能目录不再要求登记为文件读根**——目录列表 = 宿主声明的授权边界，读操作走注入的 `Reader`。分析见 `docs/ARCHITECTURE.md` §3.16，说明见 `docs/s8.1-skills.md`。
 > 更新记录：**2026-11-03** —— 按重建树实况**回填与收口**：§4 改为「重建树现状 / 旧树未带回」两栏对照（原文整段描述的是 10-15 前的旧树，含重建未带回的 EventBus / seam / scope / telemetry / 4 驱动 / Skills / RAG / Doom Loop 等）；新增 **FR-G（重建期补齐）** 三条——FR-G1 上下文文件、FR-G2 联网工具、FR-G3 挂起-恢复（checkpoint + handle，**重建未做**，是 FR-E6 的前置）；FR-A1/FR-A2 标 ✅（协议层已独立发布、v0.1.0 已发）；失效文档引用（`docs/architecture-v2.md` / `docs/sdk-contracts.md` / `docs/agent/*` / `FEATURES.md` / `examples/{cli,protocli,agentcli}`）换成重建树实际文件。
 > 更新记录：**2026-11-02** —— Skills 状态从「已交付（M2.6）」改为 **FR-D11 待建**（重建树无实现；用户拍板：按新架构重做，不移植旧码）；FR-D8 五步交互的「请求制定」改为「**暴露策略（exposure）**」；开放问题 2（MCP transport）定「先 stdio」、5（SubAgent/MCP 先后）定「MCP 先」。分析见 `docs/ARCHITECTURE.md` §3.16。
@@ -116,7 +117,8 @@ Harness Engineering 四铁律 + Loop Engineering 九杠杆 + Audit Gate 审计�
 | M2.9 | FR-B 经验记忆 | ❌ 已决定不做（2026-10，用户拍板） |
 | 重建补齐 | FR-G1 上下文文件（`agent/contextfile` + `agent/prompt`）/ FR-G2 联网工具（`tool/web`） | ✅（2026-10/11 落地，PRD 于 2026-11-03 回填登记） |
 | M3a | FR-D11 Skills 重做：`agent/skill` 新包（frontmatter 解析 + 目录发现 + `<available_skills>` 清单 + `<skill_content>` 正文 + `/name` 展开器 + 本轮激活状态）+ 专用 `skill` 工具（正文走普通工具结果）+ `skill/activate` 事件 + 装配入口（`mos.Config.Skills` / `Agent.ExpandSkill`） | ✅（2026-11-04，S8.1；说明见 `docs/s8.1-skills.md`） |
-| M3 ~ M5 | 见 §5 需求 | ◐ M3a（FR-D11 Skills）已落地；M3b（SubAgent / MCP / AgentTeam / 并行 DAG）未开始 |
+| M3a | FR-D8 MCP 接入：`tool/mcp` 新包（**官方 Go SDK**：`github.com/modelcontextprotocol/go-sdk` v1.8.0；stdio + streamable-http 两个 transport；协议基线 `2026-07-28`）+ 工具适配（`mcp__<server>__<tool>` 命名、schema 直通、结果投影）+ 两阶段原子换代 + 装配入口（`mos.Config.MCP`：一开即装、默认 deferred、hidden 档、失败隔离、服务器说明每会话一次性注入、`Describe()` 快照） | ✅（2026-11-04，S8.2 + S8.3；说明见 `docs/s8.2-mcp.md`） |
+| M3 ~ M5 | 见 §5 需求 | ◐ M3a（FR-D11 Skills / FR-D8 MCP）已落地；M3b（SubAgent / AgentTeam / 并行 DAG）未开始 |
 
 ---
 
@@ -158,7 +160,7 @@ Harness Engineering 四铁律 + Loop Engineering 九杠杆 + Audit Gate 审计�
 | FR-D5 | LLMCompiler 多智能体并行 DAG：基于 `agent/driver/scripted`（单智能体先行版已落地）扩展 Map-Reduce——分支并发、结果经 TaskState 汇聚、合并只读分支摘要、并行度作为计划元数据 | DAG 校验 fail-closed（依赖环 / 节点存在性）；并发分支数有界 |
 | FR-D6 | AgentTeam 智能体团队：Team Lead + Teammates + Shared Task List（`pending → in_progress → completed` + `blocks/blockedBy` 依赖自动解锁）+ Mailbox 点对点消息；状态落盘（角色/上下文/决策/任务文件/名册写 `runs/<run-id>`，中断后可重建）；工作树隔离（独立工作目录/分支，测试通过才合并） | 事件 `subagent/*`、`task_claim/task_complete` 落日志；团队重建演练（kill 后一条命令恢复） |
 | FR-D7 | 合约化任务 + Elo 择优：可验证交付物 + 协商澄清 + 子合约分解；多方案生成按 Elo 排序择优 | 交付物可机器验证（退出码 / 路径命中 / 事件日志），禁止 LLM 自评闭环 |
-| FR-D8 | MCP 接入：宿主以结构声明服务器与 transport（stdio / streamable-http；**先 stdio**；`mcp.json` 解析归宿主，框架不绑配置格式）；五步交互（发现 → **暴露策略**（exposure：`deferred`/`direct`/`hidden` + 逐工具覆盖）→ 调用 → 错误回传 → 结果注入）；不做 OAuth（凭据由宿主注入） | MCP 工具进 Registry 后与内置工具同受 Policy/Guard 管辖；单个 MCP 失败不阻塞其余加载；MCP 工具默认 deferred（经 `tool_search` 发现激活），工具面增长不吃线性 prompt |
+| FR-D8 | MCP 接入：宿主以结构声明服务器与 transport（stdio / streamable-http；**先 stdio**；`mcp.json` 解析归宿主，框架不绑配置格式）；五步交互（发现 → **暴露策略**（exposure：`deferred`/`direct`/`hidden` + 逐工具覆盖）→ 调用 → 错误回传 → 结果注入）；不做 OAuth（凭据由宿主注入）。**协议层用官方 Go SDK**（v1.8.0，基线 `2026-07-28`；SDK 类型不外泄） | MCP 工具进 Registry 后与内置工具同受 Policy/Guard 管辖；单个 MCP 失败不阻塞其余加载；MCP 工具默认 deferred（经 `tool_search` 发现激活），工具面增长不吃线性 prompt |
 | FR-D9 | Agent Loop 升级：Turn 语义完善 + 错误注入反馈（错误信息解释"为何违反规则 + 正确做法"，Linter 报错即上下文工程） | 错误注入后模型自纠成功率可观测（测试集） |
 | FR-D10 | 显式图边界（判据门控）：节点 / 边 / 状态 schema + reducers / checkpointer；编译期校验（节点可达性、状态字段一致性、边类型合法性），不合法图拒绝运行 | **仅在满足分支/并行/持久/可审计判据时引入**——图是可选编排层，不是默认架构 |
 | FR-D11 | Skill 能力（Skills 重做，M3a）：装配期技能目录（`SKILL.md` + frontmatter：name/description/when-to-use/allowed-tools/disable-model-invocation/metadata）+ 专用 `skill` 工具（正文按需加载，进工具结果）+ 技能清单进系统提示词（静态，保 prompt cache）+ `skill/*` 事件 | 渐进式披露（元数据进上下文、正文按需）；**不做技能级工具收窄**（PI 有字段无实现、DSH 无字段 → 不自创；`allowed-tools` 只解析留痕 + 诊断）；用户显式 `/name` 由宿主调用展开器（框架不自动扫文本）；**技能目录列表 = 宿主声明的授权边界**（读走注入的 `Reader`，不重复登记 Roots）；`disable-model-invocation` 的技能不进清单、模型不可加载（fail-closed） |

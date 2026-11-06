@@ -128,6 +128,7 @@ type SearchArgs struct {
 - 进程沙箱是**纵深防御的一层**，不是强隔离边界（黑名单可被解释器绕过）；面向不可信工作负载请叠加强隔离后端（规划中，PRD FR-E2）；
 - 框架**不碰文件系统与网络**：需要 I/O 的能力以接口注入（`session.Persistence`、`contextfile.Reader`），宿主选实现；
 - 近零依赖：协议层 + `google/uuid` + `gopkg.in/yaml.v3`，无其他第三方依赖。
+  **例外（2026-11-04，S8.2）**：MCP 协议层引入**官方 Go SDK** `github.com/modelcontextprotocol/go-sdk` v1.8.0（另带 9 个传递依赖）——换取 `2026-07-28` 协议的正确性、版本协商、分页与边界情况；SDK 只在 `tool/mcp` 内部使用，对外仍是 MoS 自己的 `ServerConfig`/`Client`/`Tool`（SDK 类型不外泄）。
 
 ## 文档
 
@@ -136,6 +137,7 @@ type SearchArgs struct {
 - [docs/tutorial.html](docs/tutorial.html) — 从零上手教程（可复制可编译）
 - [docs/release-v0.1.0.md](docs/release-v0.1.0.md) — v0.1.0 发布说明（首个公开版本）
 - [docs/s8.1-skills.md](docs/s8.1-skills.md) — S8.1 Skills 重做一页说明（M3a / FR-D11）
+- [docs/s8.2-mcp.md](docs/s8.2-mcp.md) — S8.2/S8.3 MCP 接入一页说明（FR-D8；官方 SDK / 协议基线 2026-07-28）
 - 旧实现与旧文档考古：`main_bak1015` 分支（如 `git show main_bak1015:README.md`）
 
 ## 示例
@@ -151,7 +153,7 @@ type SearchArgs struct {
 - ✅ **已交付**：统一 LLM 接入、工具系统、ReAct 循环、执行通道、安全纵深、上下文工程、装配层、联网工具、工具规模化（M2.10）
 - ✅ **R（发布准备，P0）**：协议层脱离本地 replace，外部工程 `go get` 可构建（v0.1.0 已发布）
 - ⬜ **挂起-恢复**（`agent/checkpoint` + `agent/handle`，M2.8 重建未做）：G4 的另一半，M4「可恢复运行目录」的前置——见 [docs/PRD.md](docs/PRD.md) FR-G3
-- ⬜ **M3** 多智能体：SubAgent（agents-as-tools）、MCP 接入、AgentTeam、并行 DAG；其中 **S8 预切片**：Skills 重做 ✅（S8.1，2026-11-04）→ MCP 客户端（stdio）→ MCP 装配（先 MCP 后 SubAgent），设计与 PI/DSH 对账见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §3.16
+- ⬜ **M3** 多智能体：SubAgent（agents-as-tools）、AgentTeam、并行 DAG；其中 **S8 预切片**：Skills 重做 ✅（S8.1，2026-11-04）→ MCP 客户端 + 装配 ✅（S8.2 / S8.3，2026-11-04，官方 SDK）→ SubAgent（先 MCP 后 SubAgent），设计与 PI/DSH 对账见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §3.16
 - ⬜ **M4** 生产化：Docker 强隔离、模型分级路由、评估与监控、可恢复运行目录
 - ⬜ **M5** 自我进化（实验性）
 
