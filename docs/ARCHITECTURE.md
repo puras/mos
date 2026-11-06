@@ -731,6 +731,84 @@ llm.WithRetry(model, llm.RetryPolicy{
 | 6 | **SubAgent 与 MCP 先后**（PRD 开放问题 5） | **MCP 先**（边界独立可单测；工具面立稳后，SubAgent 的工具白名单才有稳定母集） |
 | 7 | **MCP 协议层实现方式**（2026-11-03 追拍板） | **引用官方 Go SDK**（`github.com/modelcontextprotocol/go-sdk` v1.8.0），**不手写 JSON-RPC**：版本协商、分页、结果类型与边界情况交给 SDK；协议基线 `2026-07-28`（SDK 默认协商到该版本，已实测）；SDK 类型不外泄。代价：依赖纪律破例（新增 9 个传递依赖），已在 PRD / README 登记 |
 
+##### 六项「不做」的可用性优化（2026-11-04 追加分析）
+
+> **状态：建议，未拍板。** 本节只做参考分析与取舍建议，**不改 PRD**；拍板后才开建。
+> 起因：S8.1/S8.2/S8.3 交付后复查——六项「明确不做」里有几项挡在**真实可用**的路上（接真实远程服务器、
+> 模型知道有哪些 MCP 服务器），另几项其实不挡路。下面逐项给 PI/DSH 出处与 MoS 的取舍。
+
+**① OAuth（认证）**
+
+- **PI 的做法**：`packages/mcp/src/oauth/` 整包。`discovery.ts` 从 `/.well-known/oauth-protected-resource` 与 `/.well-known/oauth-authorization-server` 读元数据（`discoverOAuthServerInfo`），校验 issuer（`OAuthIssuerMismatchError`），`selectResource` 选 resource 参数；`errors.ts` 有 `OAuthInsecureEndpointError`（拒绝向非 HTTPS 端点发凭据）、`OAuthRegistrationError`（动态客户端注册失败）、`McpOAuthAuthorizationRequiredError`（需用户交互）；`callback.ts` 起本地回调服务器（`OAuthCallbackServer.listen` / `waitForCallback`，校验 state + 超时）。
+- **DSH 的做法**：没有 OAuth。`packages/mcp/mcp-client/src/index.ts:136` 只有 `headers: z.dict(String).default({})`，`transport.ts:43` 直接 `requestInit: { headers: config.headers }`——凭据由宿主注入，框架不管获取与刷新。
+- **共识 / 分歧**：共识：凭据不进框架状态机（PI 的 token 也是外部交互取得后交给 client）。分歧：PI 全自动（发现 + 动态注册 + 回调服务器 + 用户交互），DSH 纯手工注入。
+- **MoS 的取舍与理由**：**不做 OAuth 协议层**——框架不该弹浏览器、不该管凭据生命周期（治理规则 5：框架不绑外部系统）。但**当前形态对真实服务器不可用**：HTTP 401/403 在 `tool/mcp/client.go` 的 `classify` 里落成 protocol 错误，宿主看不出「这台服务器要认证」，快照也不写。
+  → **优化（两小步，都不做 OAuth）**：① `ErrorKind` 增 `ErrorAuth`（401/403 归认证类），快照写「需要认证」；② `ServerConfig` 增 `TokenProvider func(ctx) (string, error)`——宿主接自己的 OAuth / 刷新逻辑，框架只在请求前问一次。
+- **两家都没有的空白**：两家都没有「凭据过期后如何对账」的机制。MoS 自创 `TokenProvider` 的理由是「把凭据来源留在框架边界上」；风险：接口一旦被当成「框架会刷新」的承诺 → 文档必须写明「框架只取一次，不缓存、不刷新」。
+
+**② MCP 资源工具**
+
+- **PI 的做法**：`packages/mcp/src/client.ts:301-338` 有 `listResources`（自动翻页 `listAll`）、`listResourcesPage`、`readResource`；`packages/coding-agent/src/extensions/mcp/resources.ts` 造三个工具（`createMcpResourceToolDefinitions`）：`list_mcp_resources` / `list_mcp_resource_templates` / `read_mcp_resource`；`extensions/mcp/index.ts:16-18` 说明「带资源的服务器通过这三个工具到达」，`:467-469` 只对**非 hidden 暴露且确实有资源**的服务器注册资源工具。
+- **DSH 的做法**：独立包 `packages/mcp/mcp-resources/`——同样三个共享工具，**每个都要显式 server 名**（「Call `list_mcp_resources` … with one of those names as `server`」），分页由 SDK 收集（无 cursor 时收完所有页，有 cursor 走单页），资源文本进对话历史、**二进制留给程序化调用方**（模型只看 base64 长度描述）；`server-context.ts` 把连接的资源能力注入 `mcpResources`。
+- **共识 / 分歧**：**两家高度一致**：资源不是「每服务器一个工具」，而是**三个共享工具 + 显式 server 参数**（工具面恒为 3，不随服务器数增长）；资源工具按服务器可见度注册；二进制不进模型上下文。
+- **MoS 的取舍与理由**：**建议做**，形态照抄两家（工具面恒定，正好契合 MoS 的 exposure 思路）。MoS 已有 `OpaquePart` 占位机制（与 DSH 的「二进制给程序化调用方」同款），资源二进制走同一条路；多服务器映射现成（`Manager` 已按服务器分客户端）。代价：三个工具要跨服务器寻址（需一张 server → client 的路由表，`Manager` 已有）。**排期：M3b，不进 S8.4。**
+- **两家都没有的空白**：两家的资源工具都不带 `mcp__` 前缀（PI 的 `list_mcp_resources`、DSH 同名），与工具命名不统一。MoS 若做，建议统一成 `mcp_resource_*` 前缀（与工具 `mcp__<server>__<tool>` 区分开，避免模型混淆）。
+
+**③ codemode 暴露档**
+
+- **PI 的做法**：`packages/coding-agent/src/core/extensions/types.ts:503-516` 五档 `ToolExposure` = `direct` / `model-only` / `codemode` / `deferred` / `hidden`；`codemode` 语义（types.ts:508-510）是「注册即可被调用，但**不向模型声明**」。codemode 本体是 QuickJS WASM 里的脚本工具（`config.ts:491-526` 解析 `quickjs.wasm` 与 worker 入口），脚本用 `searchTools()` 找工具再调；`core/mcp-servers.ts:44-49` 说明 MCP 服务器的 `codemode` 档：工具可从脚本调用，既不向模型声明也不进 codemode 描述（描述只列服务器命名空间）。
+- **DSH 的做法**：**没有 exposure 概念**——工具一律声明给模型。
+- **共识 / 分歧**：分歧极大：codemode 是 PI 独有的形态，代价是**引入脚本沙箱**（QuickJS/WASM）+ 一个额外工具。
+- **MoS 的取舍与理由**：**不做**——MoS 没有脚本执行器，「脚本里调工具」无对位载体；官方 SDK 不提供脚本沙箱，要做等于自建 QuickJS/WASM 沙箱（新依赖 + 新安全面），而 codemode 是 PI 扩展体系里最重的一块。MoS 已有 **hidden 档**（模型看不见、可被程序化调用），语义上覆盖 codemode 的「可被别处调用但不声明」这半边。代价：模型无法一次调用批量上游工具（token 成本高）——deferred + `tool_search` 已缓解大部分。**登记为候选**：若出现「MCP 工具调用次数 / token 爆炸」的实证再评估（届时可选「批量调用工具」形态，而非脚本沙箱）。
+- **两家都没有的空白**：两家都没有「批量调用」形态（PI 的 codemode 是脚本，但上游调用仍逐次发生）。若 MoS 将来做，代价是**审计粒度变粗**（一次工具调用对应 N 次上游调用）——与「每次调用都留痕、可审批」的取向冲突，需单独拍板。
+
+**④ 技能级工具收窄（`allowed-tools`）**
+
+- **PI 的做法**：frontmatter 有字段（`packages/coding-agent/docs/skills.md:78` 记为 experimental 的 pre-approved list），**代码里没有实现**；PI 的 `_allowedTools` 是**会话级**名单（CLI `--tools`），与 Skill 无关。
+- **DSH 的做法**：**没有 Skill 级限制**；通用 `ToolRestriction{allow, deny}` 在 `packages/core/tools/src/index.ts:701` 与 `:1105`，作用于工具注册表，与 Skill 无关联。
+- **共识 / 分歧**：两家都没有「技能级工具收窄」的实现（PI 有字段无实现 = 事实上没有）→ MoS 不自创机制（与拍板 #3 一致）。
+- **MoS 的取舍与理由**：**机制仍不做**，但**可用性缺口要补**：技能正文说「用 X 工具」，而 X 被宿主 Policy 挡住 → 模型收到的是通用拒绝，看不出「技能要的工具不可用」。
+  → **优化（只诊断、不执行）**：技能激活时把该技能 `allowed-tools` 与当前可见工具集求交，把「这些工具当前不可用」写进 `skill/activate` 事件与 `Describe()` 快照。这不违反拍板（不收窄工具面），但把「装饰性字段」变成真诊断。
+- **两家都没有的空白**：两家都没有「技能声明的工具与运行时策略的冲突检测」。MoS 自创的理由是它**只是求交诊断**（无执行语义、零安全面）；风险：宿主误以为字段生效 → 诊断文案必须沿用现有措辞「当前不生效」。
+
+**⑤ 运行期热加载（技能目录刷新）**
+
+- **PI 的做法**：**显式 reload**，不自动 watch——`packages/coding-agent/src/core/resource-loader.ts:164` 暴露 `reload()`，`:513` 实现，`:845` 在重载流程里重新 `loadSkills()`；清单随后由 `core/system-prompt.ts:180` 的 `formatSkillsForPrompt` 重渲染（技能与 AGENTS.md 等资源共用同一套重载机制）。
+- **DSH 的做法**：`packages/skill/skill-filesystem/`——Chokidar 监视根目录（深度 1）、缺失根逐段探测（`fs.watchFile`）、每微任务批次合并为一次失效；**目录与正文分离**（`skill-filesystem/README.zh.md:99`：发现阶段只解析 frontmatter 成摘要，**每次加载都重读文件**，所以正文编辑不需要 hash / 修订号 / 缓存失效）；**只有目录 digest 变化才替换目录**，正文编辑不动 digest（`:138`）；替换目录以**追加到请求历史**的方式给模型（`packages/skill/tool-skill/src/index.ts:288`：「Use only names in this replacement catalog」）；第一方 `write`/`edit` 变更通过 `fs/observed` 同步失效。
+- **共识 / 分歧**：共识：技能应当能随文件系统变化更新（不用重启）。分歧：PI 靠**显式 reload**（宿主/命令触发，重渲染系统提示词），DSH 靠**watch + user 侧替换目录**（不动系统提示词）。
+- **MoS 的取舍与理由**：治理规则「不做运行期插件热加载」针对的是**组件装配**（运行期换插件 = 架构性风险），而技能目录重扫是**数据面刷新**——两者不同类，可分开处理。MoS 的硬约束是技能清单在**静态系统提示词**里（保 prompt cache）→ 抄 DSH 的形态：
+  1. **正文改为调用时现读**（抄 DSH 的「目录/正文分离」）——MoS 现在是装配期读全文（`agent/skill/skill.go:227` `Load` → `buildSkill` 读全文），改成 skill 工具调用时才读 → **正文编辑立即生效，零监视成本**；
+  2. **清单变化（frontmatter 改 / 增删改名）走 user 侧「替换目录」消息**（DSH 语义），**不动静态提示词**；
+  3. 触发源：宿主显式 `Agent.ReloadSkills()`（PI 式，最省事）或宿主注入的文件监视（DSH 式）——框架不自带文件监视（治理规则 5）。
+  代价：正文不再在装配期校验预算（超限从「装配期跳过」变成「调用时报错」）；清单仍是静态提示词之外的 user 侧内容（cache 不受影响）。
+- **两家都没有的空白**：两家都没定义「目录变化时**已经加载进上下文的技能正文**怎么办」（PI 重载后旧正文仍在上下文里）。MoS 需定义：替换目录消息里是否提示「以下技能已变化，请重新加载」。属措辞层自创，风险低。
+
+**⑥ 服务器摘要进系统提示词**
+
+- **PI 的做法**：`packages/coding-agent/src/extensions/mcp/index.ts:156-224`——`MCP_SERVERS_SECTION = "mcp_servers"`；**只列有间接工具（codemode/deferred）的服务器**（`:191-193`，因为 direct 的模型已经看得见）；首行只讲「怎么够到」（`serversSectionIntro`：codemode 服务器从脚本调、tool_search 服务器用 tool_search 加载）；每行 `- <namespace> (<reach>): <summary>`；**整节上限 4096 字符、单条描述上限 250 字符**（`:157-163`），放不下时按名字排序保留前 N 个（描述均分剩余预算），末尾写「- … N more servers; find their tools with searchTools()」；摘要取 `config.description` 首行，缺省用连接的 `instructions` 首行（`serverSummary` `:184-188`）。
+- **DSH 的做法**：普通工具清单（无 exposure）；但 `packages/mcp/mcp-resources/README.md` 明确：「When system-prompt assembly is mounted, the prompt lists **server names visible to the calling agent**」——系统提示词里列可见服务器名，资源工具靠这个名字选服务器。
+- **共识 / 分歧**：共识：**「模型看不见的工具」必须由系统提示词补一条路**——PI 给「哪台服务器 + 怎么够到」，DSH 给「有哪些服务器名」。分歧：PI 给描述（帮模型判断该用哪台），DSH 只给名字。
+- **MoS 的取舍与理由**：**建议做**（六项里最便宜、收益最高）——MoS 现在完全没有，模型不搜不知道 MCP 存在（已登记为风险）。`ServerConfig.Description` 是**宿主静态配置** → 可装配期渲染进**静态**系统提示词（不破 prompt cache）；`instructions` 是连接后可能变的 → 仍走现有 user 侧一次性注入（语义不变）。形态抄 PI：`- <namespace> (tool_search): <summary>`，首行说明「这些服务器的工具不在你的清单里，用 tool_search 加载」，整节 ≤4KB、单条 ≤250 字符、放不下写「N more servers」。
+  代价：系统提示词多一节（≤4KB，静态 → 不影响 cache 命中）。
+- **两家都没有的空白**：PI 只列**已启用**的服务器；MoS 还要处理**连不上**的服务器——只列**已连上**的（连不上的写快照警告，不进提示词，否则模型会去搜一台不存在的服务器）。
+
+**建议的优先级与分期**
+
+| 优先 | 项 | 落点 | 成本 | 收益 |
+| --- | --- | --- | --- | --- |
+| P0 | ⑥ 服务器摘要进静态提示词 | `agent/prompt` 新增节 + `mos` 装配期渲染 | 小 | 高（直接消掉「模型不知道有 MCP」） |
+| P0 | ① 认证可诊断 + `TokenProvider` 接口 | `tool/mcp`（`ErrorKind` + `ServerConfig`） | 小 | 高（接真实远程服务器的前提） |
+| P1 | ④ 技能 `allowed-tools` × 可见集 求交诊断 | `agent/skill` + `mos` 快照 | 小 | 中 |
+| P1 | ⑤ 正文调用时现读 + 清单 user 侧替换（宿主触发 reload） | `agent/skill` + `mos` | 中 | 中（技能开发体验） |
+| P2 | ② MCP 资源工具（三个共享工具） | `tool/mcp` + `mos` | 中 | 中（排 M3b） |
+| — | ③ codemode | **不做**（登记候选） | 大 | 低（需脚本沙箱 + 牺牲审计粒度） |
+
+**待拍板项**
+
+1. **⑤ 的形态**：只做「正文现读 + 宿主显式 `ReloadSkills`」（PI 式，最省），还是也接宿主注入的文件监视（DSH 式）？若拍板做，需同时澄清治理规则「不做运行期插件热加载」的适用范围（**组件装配** vs **数据面目录刷新**），措辞澄清而非改规则。
+2. **② 的排期**：进 M3b 还是插一个 S8.5？
+3. **③ 的触发条件**：建议维持不做，只在「MCP 工具调用次数 / token 爆炸」有实证时重开；届时先评估「批量调用」而非脚本沙箱。
+
 ##### 状态
 
 | 项 | 状态 |
@@ -740,6 +818,7 @@ llm.WithRetry(model, llm.RetryPolicy{
 | `agent/skill` 包 + `skill` 工具 + 事件（**不做技能级守卫**） | ✅（S8.1） |
 | `tool/mcp` 包（官方 SDK 客户端 + 两个 transport + 适配器 + 换代） | ✅（S8.2） |
 | 装配层入口（`Config.Skills` / `Config.MCP`）+ deferred 联动 + 失败隔离 + 说明注入 | ✅（S8.3） |
+| 六项「不做」的可用性优化（参考分析已出，**待拍板**） | ⬜（见上节「六项「不做」的可用性优化」） |
 | PRD 状态同步（Skills 状态、FR-D8 措辞、开放问题 2/5） | ✅（本片，PRD 已改） |
 
 ### 3.17 挂起-恢复（FR-G3：跨进程续跑）
