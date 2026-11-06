@@ -388,9 +388,10 @@ func New(cfg Config) (*Agent, error) {
 	var skillCatalog *skill.Catalog
 	if cfg.Skills != nil {
 		skillCatalog = skill.Load(skill.Options{
-			Dirs:         cfg.Skills.Dirs,
-			Reader:       cfg.Skills.Reader,
-			MaxBodyBytes: cfg.Skills.MaxBodyBytes,
+			Dirs:            cfg.Skills.Dirs,
+			Reader:          cfg.Skills.Reader,
+			MaxBodyBytes:    cfg.Skills.MaxBodyBytes,
+			MaxCatalogBytes: cfg.Skills.MaxCatalogBytes,
 		})
 		if text := skillCatalog.Render(); text != "" {
 			if pb != nil {
@@ -481,6 +482,10 @@ func New(cfg Config) (*Agent, error) {
 				}
 				systemPrompt += text
 			}
+		}
+		// 资源工具（S8.4-E）：任一台可见服务器有资源才注册（工具面恒为 0 或 3）。
+		if err := mcpMgr.RegisterResourceTools(); err != nil {
+			return nil, fmt.Errorf("mos: 注册 MCP 资源工具: %w", err)
 		}
 	}
 

@@ -151,6 +151,46 @@ type OpaquePart struct {
 	JSON string `json:"json,omitempty"`
 }
 
+// ResourceInfo 是上游服务器给的一个资源的原始描述（resources/list 投影）。
+type ResourceInfo struct {
+	// URI 是资源的标识符（原样；读取时用它）。
+	URI string
+	// Name 是人类可读名。
+	Name string
+	// Description 是资源的描述（可空）。
+	Description string
+	// MIMEType 是 MIME 类型（可空）。
+	MIMEType string
+	// Size 是已知大小（字节数；服务器不知道就不管）。
+	Size int64
+}
+
+// ResourceTemplateInfo 是上游给的一个资源模板（resources/templates/list 投影）。
+type ResourceTemplateInfo struct {
+	// URITemplate 是 RFC 6570 URI 模板（例：file://logs/{date}.txt）。
+	URITemplate string
+	// Name 是人类可读名。
+	Name string
+	// Description 是模板的描述（可空）。
+	Description string
+	// MIMEType 是匹配资源的 MIME 类型（可空）。
+	MIMEType string
+}
+
+// ResourceContents 是资源读取结果的一段内容（resources/read 投影）。
+//
+// SDK 类型不外泄：Text 非空 = 文本资源；Blob 非空 = 二进制资源（base64）。
+type ResourceContents struct {
+	// URI 是这段内容的来源 URI。
+	URI string
+	// MIMEType 是 MIME 类型（可空）。
+	MIMEType string
+	// Text 是文本内容（非文本资源为空）。
+	Text string
+	// Blob 是二进制内容（base64；文本资源为 nil）。
+	Blob []byte
+}
+
 // Client 是一个已连接的 MCP 服务器会话的最小接口。
 //
 // 框架层只认这个接口：宿主可以自己实现它（测试替身、远程网关代理……），
@@ -160,6 +200,12 @@ type Client interface {
 	ListTools(ctx context.Context) ([]ToolInfo, error)
 	// CallTool 调用一个工具（name 是**上游原始名**）。
 	CallTool(ctx context.Context, name string, args map[string]any) (*Result, error)
+	// ListResources 列出服务器的资源（自动翻页）。
+	ListResources(ctx context.Context) ([]ResourceInfo, error)
+	// ListResourceTemplates 列出服务器的资源模板（自动翻页）。
+	ListResourceTemplates(ctx context.Context) ([]ResourceTemplateInfo, error)
+	// ReadResource 读取一个资源（uri 是资源标识符）。
+	ReadResource(ctx context.Context, uri string) ([]ResourceContents, error)
 	// Instructions 是服务器给的说明（连接建立时一次性注入给模型）。
 	Instructions() string
 	// ProtocolVersion 是协商后的协议版本（快照与诊断用）。

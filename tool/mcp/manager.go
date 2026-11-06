@@ -26,6 +26,8 @@ type Manager struct {
 	skipped  []string
 
 	hidden *hiddenSet
+	// resRegistered：资源工具是否已注册（RegisterResourceTools 幂等守卫）。
+	resRegistered bool
 
 	refreshCh  chan string
 	closeCh    chan struct{}
@@ -43,6 +45,8 @@ type Server struct {
 	tools        []*Tool
 	instructions string
 	protocol     string
+	// hasRes：连接后是否声明了资源/模板（startServer 探测一次）。
+	hasRes bool
 }
 
 // NewManager 造一个 MCP 编排器（不连接——连接发生在 Start）。
@@ -105,6 +109,38 @@ func (m *Manager) Start(ctx context.Context) {
 	go m.refreshLoop()
 }
 
+// RegisterResourceTools 注册三个共享资源工具（mcp_resource_list / templates
+// / read，S8.4-E）。装配层在 Start 之后调。
+//
+// 没有任何一台可见服务器有资源时不注册（工具面恒定为 0——模型不会拿到
+// 一组永远「未知服务器」的工具）；已注册过则幂等返回。
+// 只要有一台可达就注册全部三个：工具面是共享的（显式 server 参数寻址），
+// 不随有资源的服务器数变化。
+func (m *Manager) RegisterResourceTools() error {
+	m.mu.Lock()
+	if m.resRegistered {
+		m.mu.Unlock()
+		return nil
+	}
+	for _, s := range m.servers {
+		if s.hasResources() && !m.serverHidden(s.cfg) {
+			// 先占坑再注册：并发调用下第二个调用者看到 resRegistered=true
+			// 直接返回，不会重名报错（注册失败才回滚标记）。
+			m.resRegistered = true
+			m.mu.Unlock()
+			if err := m.registerResourceTools(); err != nil {
+				m.mu.Lock()
+				m.resRegistered = false
+				m.mu.Unlock()
+				return err
+			}
+			return nil
+		}
+	}
+	m.mu.Unlock()
+	return nil
+}
+
 // startServer 连接一台服务器并注册它的工具。
 func (m *Manager) startServer(ctx context.Context, cfg ServerConfig) error {
 	dial := m.opts.Dial
@@ -125,9 +161,20 @@ func (m *Manager) startServer(ctx context.Context, cfg ServerConfig) error {
 		_ = client.Close()
 		return err
 	}
+	// 资源能力探测：失败按没有资源处理（不把偶发抖动拦在资源工具之外）。
+	// 探测失败不再另外记警告——一台没有资源的服务器是常态，不是故障。
+	hasRes := false
+	resCtx, cancel := context.WithTimeout(ctx, m.opts.CallTimeout)
+	if _, err := client.ListResources(resCtx); err == nil {
+		hasRes = true
+	} else if _, err := client.ListResourceTemplates(resCtx); err == nil {
+		hasRes = true
+	}
+	cancel()
 	s.mu.Lock()
 	s.instructions = client.Instructions()
 	s.protocol = client.ProtocolVersion()
+	s.hasRes = hasRes
 	s.mu.Unlock()
 	m.mu.Lock()
 	m.servers = append(m.servers, s)
@@ -362,6 +409,19 @@ func (s *Server) Tools() []*Tool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return append([]*Tool(nil), s.tools...)
+}
+
+// HasResources 报告这台服务器连接后是否声明了资源或模板。
+//
+// startServer 里探测一次并缓存：资源列表会变，但「有没有资源能力」在
+// 会话生命周期里当作不变处理（与 instructions 同口径——探测失败按没有
+// 资源处理，不把一台偶发抖动的服务器整个拦在资源工具之外）。
+func (s *Server) HasResources() bool { return s.hasResources() }
+
+func (s *Server) hasResources() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.hasRes
 }
 
 // scopeOf 造一个服务器的代际标识（注册表换代按它隔离）。

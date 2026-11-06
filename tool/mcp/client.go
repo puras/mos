@@ -157,6 +157,75 @@ func (c *sdkClient) CallTool(ctx context.Context, name string, args map[string]a
 	return project(res), nil
 }
 
+// ListResources 列出全部资源（SDK 迭代器自动翻页），投影成 MoS 类型。
+func (c *sdkClient) ListResources(ctx context.Context) ([]ResourceInfo, error) {
+	var out []ResourceInfo
+	for r, err := range c.session.Resources(ctx, nil) {
+		if err != nil {
+			return nil, &Error{Kind: classify(err), Server: c.server, Err: err}
+		}
+		if r == nil {
+			continue
+		}
+		out = append(out, ResourceInfo{
+			URI:         r.URI,
+			Name:        r.Name,
+			Description: r.Description,
+			MIMEType:    r.MIMEType,
+			Size:        r.Size,
+		})
+	}
+	return out, nil
+}
+
+// ListResourceTemplates 列出全部资源模板（SDK 迭代器自动翻页）。
+func (c *sdkClient) ListResourceTemplates(ctx context.Context) ([]ResourceTemplateInfo, error) {
+	var out []ResourceTemplateInfo
+	for rt, err := range c.session.ResourceTemplates(ctx, nil) {
+		if err != nil {
+			return nil, &Error{Kind: classify(err), Server: c.server, Err: err}
+		}
+		if rt == nil {
+			continue
+		}
+		out = append(out, ResourceTemplateInfo{
+			URITemplate: rt.URITemplate,
+			Name:        rt.Name,
+			Description: rt.Description,
+			MIMEType:    rt.MIMEType,
+		})
+	}
+	return out, nil
+}
+
+// ReadResource 读取一个资源，把内容段投影成 MoS 类型。
+//
+// 判别靠 Blob 是否为 nil（SDK 的 ResourceContents 是单结构体双字段）。
+func (c *sdkClient) ReadResource(ctx context.Context, uri string) ([]ResourceContents, error) {
+	if c.callTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.callTimeout)
+		defer cancel()
+	}
+	res, err := c.session.ReadResource(ctx, &sdk.ReadResourceParams{URI: uri})
+	if err != nil {
+		return nil, &Error{Kind: classify(err), Server: c.server, Err: err}
+	}
+	out := make([]ResourceContents, 0, len(res.Contents))
+	for _, rc := range res.Contents {
+		if rc == nil {
+			continue
+		}
+		out = append(out, ResourceContents{
+			URI:      rc.URI,
+			MIMEType: rc.MIMEType,
+			Text:     rc.Text,
+			Blob:     rc.Blob,
+		})
+	}
+	return out, nil
+}
+
 // Instructions 返回服务器说明。
 func (c *sdkClient) Instructions() string { return c.instructions }
 

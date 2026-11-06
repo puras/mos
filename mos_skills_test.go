@@ -341,3 +341,25 @@ func TestBrokenSkillDegradesWithWarning(t *testing.T) {
 		t.Fatalf("快照应写明降级诊断：\n%s", snap)
 	}
 }
+
+// MaxCatalogBytes 接线：宿主配置的字节上限要真的生效（默认 8KB）。
+func TestSkillMaxCatalogBytesWired(t *testing.T) {
+	skillDir := t.TempDir()
+	writeSkillFile(t, filepath.Join(skillDir, "deploy"), "name: deploy\ndescription: 部署流程", "步骤")
+
+	a, err := mos.New(mos.Config{
+		Model: &stubModel{reply: "ok"},
+		Skills: &mos.SkillConfig{
+			Dirs:            []string{skillDir},
+			MaxCatalogBytes: 64, // 小到装不下完整清单 → 触发降级说明
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	prompt := a.RunContext().SystemPrompt
+	// 64 字节预算装不下完整清单 → 描述被降级丢掉（默认 8KB 时不会）。
+	if strings.Contains(prompt, "部署流程") {
+		t.Fatalf("预算应生效（描述应被丢掉）：\n%s", prompt)
+	}
+}

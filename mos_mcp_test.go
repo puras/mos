@@ -14,11 +14,15 @@ import (
 )
 
 // mcpStubClient 是 MCP 客户端的测试替身。
+//
+// 资源能力：显式配置 resources 才有（能力即证据——没声明就报不支持）。
 type mcpStubClient struct {
 	mu           sync.Mutex
 	tools        []mcp.ToolInfo
 	instructions string
 	protocol     string
+	resources    []mcp.ResourceInfo
+	templates    []mcp.ResourceTemplateInfo
 }
 
 func (c *mcpStubClient) ListTools(context.Context) ([]mcp.ToolInfo, error) {
@@ -29,6 +33,24 @@ func (c *mcpStubClient) ListTools(context.Context) ([]mcp.ToolInfo, error) {
 
 func (c *mcpStubClient) CallTool(_ context.Context, name string, _ map[string]any) (*mcp.Result, error) {
 	return &mcp.Result{Content: "ok:" + name}, nil
+}
+
+func (c *mcpStubClient) ListResources(context.Context) ([]mcp.ResourceInfo, error) {
+	if c.resources == nil {
+		return nil, errors.New("不支持 resources/list")
+	}
+	return append([]mcp.ResourceInfo(nil), c.resources...), nil
+}
+
+func (c *mcpStubClient) ListResourceTemplates(context.Context) ([]mcp.ResourceTemplateInfo, error) {
+	if c.templates == nil && c.resources == nil {
+		return nil, errors.New("不支持 resources/templates/list")
+	}
+	return append([]mcp.ResourceTemplateInfo(nil), c.templates...), nil
+}
+
+func (c *mcpStubClient) ReadResource(_ context.Context, uri string) ([]mcp.ResourceContents, error) {
+	return []mcp.ResourceContents{{URI: uri, Text: "内容 " + uri}}, nil
 }
 
 func (c *mcpStubClient) Instructions() string { return c.instructions }
@@ -87,6 +109,75 @@ func TestMCPDefaultsToDeferred(t *testing.T) {
 	// 有 deferred 就有 tool_search。
 	if !strings.Contains(a.Describe(), "tool_search: 已装配") {
 		t.Fatalf("应装上 tool_search:\n%s", a.Describe())
+	}
+}
+
+// 资源工具（S8.4-E）：有资源的服务器 → 三个共享工具直出（非 deferred），
+// 无资源/hidden 的服务器不可达；hidden 服务器资源不泄露。
+func TestMCPResourceToolsFromAgent(t *testing.T) {
+	reg := newTestRegistry(t)
+	docs := &mcpStubClient{
+		tools: []mcp.ToolInfo{{Name: "search", Description: "搜"}},
+		resources: []mcp.ResourceInfo{
+			{URI: "file:///b.md", Name: "b"},
+			{URI: "file:///a.md", Name: "a"},
+		},
+	}
+	secret := &mcpStubClient{
+		resources: []mcp.ResourceInfo{{URI: "file:///key.pem"}},
+	}
+	plain := &mcpStubClient{tools: []mcp.ToolInfo{{Name: "ping", Description: "拼"}}}
+	a, err := mos.New(mos.Config{
+		Model: &stubModel{reply: "ok"},
+		Tools: reg,
+		MCP: &mos.MCPConfig{
+			Servers: []mcp.ServerConfig{
+				{Name: "docs"},
+				{Name: "secret", Exposure: mcp.ExposureHidden},
+				{Name: "plain"},
+			},
+			Dial: mcpDialer(map[string]*mcpStubClient{"docs": docs, "secret": secret, "plain": plain}),
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer a.Close()
+
+	// 三个共享工具直出模型清单（不是 deferred）。
+	seen := map[string]bool{}
+	for _, tl := range reg.List() {
+		seen[tl.Name] = true
+	}
+	for _, name := range []string{"mcp_resource_list", "mcp_resource_templates", "mcp_resource_read"} {
+		if !seen[name] {
+			t.Fatalf("资源工具 %s 应直出模型清单：%v", name, seen)
+		}
+	}
+
+	// docs 可达；secret（hidden）与 plain（无资源）不可达。
+	list, _ := reg.Get("mcp_resource_list")
+	if _, err := list.Execute(context.Background(), []byte(`{"server":"docs"}`)); err != nil {
+		t.Fatalf("docs 应可达: %v", err)
+	}
+	for _, name := range []string{"secret", "plain", "nope"} {
+		if _, err := list.Execute(context.Background(), []byte(`{"server":"`+name+`"}`)); err == nil {
+			t.Fatalf("%s 不该可达", name)
+		}
+	}
+
+	// 读取：文本直返 + 回显 server/uri。
+	read, _ := reg.Get("mcp_resource_read")
+	res, err := read.Execute(context.Background(), []byte(`{"server":"docs","uri":"file:///a.md"}`))
+	if err != nil {
+		t.Fatalf("读取: %v", err)
+	}
+	out := res.(map[string]any)
+	if out["content"] != "内容 file:///a.md" {
+		t.Fatalf("文本应直返：%v", out["content"])
+	}
+	if out["server"] != "docs" || out["uri"] != "file:///a.md" {
+		t.Fatalf("应回显 server/uri：%v", out)
 	}
 }
 

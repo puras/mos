@@ -868,7 +868,7 @@ llm.WithRetry(model, llm.RetryPolicy{
 | S8.4-B | ① 认证可诊断（401/403）+ `ServerConfig.TokenProvider` | `tool/mcp` | ✅ |
 | S8.4-C | ⑤ 正文调用时现读 + `Agent.ReloadSkills()`（显式、幂等、全量重扫） | `agent/skill` + `mos` | ✅ |
 | S8.4-D | ④ `allowed-tools` × 当前可见工具集 求交诊断（不收窄） | `agent/skill` + `mos` | ✅ |
-| S8.4-E | ② MCP 资源工具（三个共享工具 + 显式 server 参数） | `tool/mcp` + `mos` | ⬜ |
+| S8.4-E | ② MCP 资源工具（三个共享工具 + 显式 server 参数） | `tool/mcp` + `mos` | ✅ |
 
 **S8.4-A 的实现取舍（与上文⑥对齐，差异处标出）**
 
@@ -913,6 +913,18 @@ llm.WithRetry(model, llm.RetryPolicy{
 - **事件独立成 `skill/allowed-tools-mismatch`**（拍板原文「写进 skill/activate 事件与快照」——实现拆成单独事件：激活事件的 fail-fast 语义（写失败不拦加载）与诊断的降级语义（写失败只损失可观测性）不同，混在一个事件里会让审计链口径含糊；独立事件也更好查「哪些技能声明了缺失工具」）。`Recorder` 接口增 `RecordAllowedToolsMismatch`（独立方法，老实现补一个空实现即可）。
 - **快照（`Describe()`）逐技能写缺失**：`⚠ 技能 "x": 技能声明的工具当前不可用: …`，沿用装配期「该字段当前不生效」的措辞风格（不假装生效）。
 
+**S8.4-E 的实现取舍（与上文②对齐，差异处标出）**
+
+- **三个共享工具 + 显式 server 参数**（`tool/mcp/resource.go`）：`mcp_resource_list` / `mcp_resource_templates` / `mcp_resource_read`——工具面恒为 0 或 3，不随服务器数增长（PI/DSH 共识直抄）。**名字带 `mcp_resource_` 前缀**（§3.16 空白项拍板：两家的 `list_mcp_resources` 与工具命名 `mcp__<server>__<tool>` 不统一；前缀既保留 MCP 归属感，又不会让模型把服务器名混进工具名）。
+- **注册门 = 「任一台可见服务器有资源」**（`Manager.RegisterResourceTools`）：一台都没有就不注册（模型不拿一组永远「未知服务器」的工具，PI 的 hasResources 同款口径）；有一台就注册全部三个（共享工具按 server 参数寻址，不为每台服务器造一套）。
+- **「有资源」探测一次、调用时同口径判定**（`Server.hasRes` + `visibleServer`）：startServer 时 `resources/list` / `templates/list` 探一下（失败按没有处理——没资源是常态不是故障）；调用时 `visibleServer` 复查「已连接 + 非 hidden + hasRes」，注册门与调用门同一套判定，不会「注册时说有、调用时说无」。
+- **hidden 服务器的资源不泄露**：服务器级 hidden 或 `ToolExposure["*"] = hidden` 的服务器，`visibleServer` 返回 nil——与「未知服务器」同待遇（模型拿不到服务器名，资源更不能给）。逐工具 hidden 不拦资源（hidden 的语义是「工具不声明」，资源工具是另一条入口）。
+- **资源工具直出（非 deferred）**：资源工具是「公共设施」不是某台服务器的 deferred 能力——进 deferred 集会让模型先 tool_search 才能用上「读资源」这个基础动作，违背本片的可用性初衷；它也不进 mcp_servers 摘要节（摘要只管 deferred 工具的服务器）。
+- **读取投影**：文本段直返（`content`）；**二进制段（Blob 非空）降级成 OpaquePart 占位**（带字节数与 MIME 说明，原始 JSON 截断保留）——模型读不了 base64（DSH 同口径：二进制留给程序化调用方），复用 CallTool 已有的 OpaquePart 机制，不是自创。
+- **结果列表按 URI 排序**（确定性输出）：同份资源两次调用顺序一致。
+- **SDK 类型不外泄**：`Client` 接口增三个资源方法，投影成 MoS 自己的 `ResourceInfo` / `ResourceTemplateInfo` / `ResourceContents`（判别靠 Blob 是否非空——SDK 的 ResourceContents 是单结构体双字段）；分页由 SDK 迭代器自动收集（`Resources` / `ResourceTemplates` 的 iter.Seq2）。
+- **注册幂等**（`resRegistered` 守卫）：Start 之后装配层调一次；并发/重复调用不重名报错。注册走 `Register`（scope 为空，不参与代际清理）——单台服务器的工具换代不该带走共享资源工具。
+
 ##### 状态
 
 | 项 | 状态 |
@@ -922,7 +934,7 @@ llm.WithRetry(model, llm.RetryPolicy{
 | `agent/skill` 包 + `skill` 工具 + 事件（**不做技能级守卫**） | ✅（S8.1） |
 | `tool/mcp` 包（官方 SDK 客户端 + 两个 transport + 适配器 + 换代） | ✅（S8.2） |
 | 装配层入口（`Config.Skills` / `Config.MCP`）+ deferred 联动 + 失败隔离 + 说明注入 | ✅（S8.3） |
-| 六项「不做」的可用性优化（参考分析已出，**已拍板**） | 🔄（S8.4-A ✅ / B ✅ / C ✅ / D ✅ / E ⬜，见上节） |
+| 六项「不做」的可用性优化（参考分析已出，**已拍板**） | ✅（S8.4-A/B/C/D/E 全部落地，见上节） |
 | PRD 状态同步（Skills 状态、FR-D8 措辞、开放问题 2/5） | ✅（本片，PRD 已改） |
 
 ### 3.17 挂起-恢复（FR-G3：跨进程续跑）

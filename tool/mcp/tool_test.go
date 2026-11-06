@@ -12,6 +12,9 @@ import (
 )
 
 // fakeClient 是 Client 的测试替身。
+//
+// 资源能力：显式配置 resources / templates 才有（能力即证据——没声明就
+// 报不支持，资源探测按失败处理）；readContents / readErr 控制 reads。
 type fakeClient struct {
 	mu           sync.Mutex
 	tools        []ToolInfo
@@ -21,6 +24,11 @@ type fakeClient struct {
 	callErr      error
 	result       *Result
 	calls        []string
+
+	resources    []ResourceInfo
+	templates    []ResourceTemplateInfo
+	readContents []ResourceContents
+	readErr      error
 }
 
 func (f *fakeClient) ListTools(context.Context) ([]ToolInfo, error) {
@@ -50,6 +58,35 @@ func (f *fakeClient) ProtocolVersion() string {
 	return f.protocol
 }
 func (f *fakeClient) Close() error { return nil }
+
+// ListResources 报告预置资源（nil = 不支持，探测按失败处理）。
+func (f *fakeClient) ListResources(context.Context) ([]ResourceInfo, error) {
+	if f.resources == nil {
+		return nil, &Error{Kind: ErrorProtocol, Server: "fake", Err: errors.New("不支持 resources/list")}
+	}
+	return append([]ResourceInfo(nil), f.resources...), nil
+}
+
+// ListResourceTemplates 报告预置模板（nil = 不支持）。
+func (f *fakeClient) ListResourceTemplates(context.Context) ([]ResourceTemplateInfo, error) {
+	if f.templates == nil && f.resources == nil {
+		return nil, &Error{Kind: ErrorProtocol, Server: "fake", Err: errors.New("不支持 resources/templates/list")}
+	}
+	return append([]ResourceTemplateInfo(nil), f.templates...), nil
+}
+
+// ReadResource 返回预置内容段。
+func (f *fakeClient) ReadResource(_ context.Context, uri string) ([]ResourceContents, error) {
+	if f.readErr != nil {
+		return nil, f.readErr
+	}
+	out := make([]ResourceContents, 0, len(f.readContents))
+	for _, rc := range f.readContents {
+		rc.URI = uri
+		out = append(out, rc)
+	}
+	return out, nil
+}
 
 // setTools 换掉工具集（模拟服务器换代）。
 func (f *fakeClient) setTools(tools []ToolInfo) {
