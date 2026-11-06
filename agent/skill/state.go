@@ -78,6 +78,10 @@ func StateFrom(ctx context.Context) *State {
 type Recorder interface {
 	// RecordActivate 记一条「技能已激活」事件（只记元数据，不记正文）。
 	RecordActivate(name, description, dir string) error
+	// RecordAllowedToolsMismatch 记一条 allowed-tools 求交诊断（S8.4-D）。
+	// missing 是当前不可用的工具名；激活事件已记过，这里只记差异。
+	// 单独一个方法：老实现可以空实现，不破坏已有接线。
+	RecordAllowedToolsMismatch(name string, missing []string) error
 }
 
 // recorderKey 是 ctx 里 Recorder 的键。

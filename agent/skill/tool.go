@@ -75,6 +75,15 @@ func (t *Tool) Execute(ctx context.Context, args json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	// allowed-tools × 可见工具集 求交诊断（S8.4-D，只诊断不收窄）：技能要的
+	// 工具当前看不见就记进事件——把「装饰字段」变成真诊断。框架不改工具面
+	// （模型照旧能用/不能用由策略决定），诊断也不进给模型的返回值（避免模型
+	// 困惑——工具面它自己看不见，说了也无从行动）。
+	if missing, _ := t.catalog.CheckAllowedTools(sk); len(missing) > 0 {
+		if rec := RecorderFrom(ctx); rec != nil {
+			_ = rec.RecordAllowedToolsMismatch(sk.Name, missing) // 诊断记不上不拦加载
+		}
+	}
 	// 留痕：**先事件、后状态**。顺序有讲究——审计写失败就不该留下「已激活」
 	// 的痕迹（状态变了、正文没返回 = 一笔糊涂账）。
 	// 两处都是可选接线——没接就不记（零开销降级），不报错。

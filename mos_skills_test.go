@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -181,6 +182,49 @@ func TestSkillToolEndToEnd(t *testing.T) {
 	}
 	if acts[0].Skill.Description != "部署流程" {
 		t.Fatalf("事件应带描述：%+v", acts[0].Skill)
+	}
+}
+
+// S8.4-D：allowed-tools × 可见工具集求交诊断（只诊断不收窄）——缺失写进
+// skill/allowed-tools-mismatch 事件与 Describe() 快照；不进模型可见返回值。
+func TestAllowedToolsMismatchDiagnostic(t *testing.T) {
+	skillDir := t.TempDir()
+	writeSkillFile(t, filepath.Join(skillDir, "deploy"),
+		"name: deploy\ndescription: 部署流程\nallowed-tools:\n  - gone_tool", "步骤 1")
+
+	m := &skillCallingModel{}
+	a, err := mos.New(mos.Config{
+		Model:  m,
+		Skills: &mos.SkillConfig{Dirs: []string{skillDir}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	sess := session.New("t", nil)
+	if _, err := a.Run(context.Background(), sess, "帮我部署"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// 缺失写进事件。
+	var mismatches []session.Event
+	for _, ev := range sess.Events() {
+		if ev.Kind == session.EventSkillToolMismatch {
+			mismatches = append(mismatches, ev)
+		}
+	}
+	if len(mismatches) != 1 {
+		t.Fatalf("mismatch 事件 = %d 条", len(mismatches))
+	}
+	if mismatches[0].Skill == nil || mismatches[0].Skill.Name != "deploy" ||
+		!reflect.DeepEqual(mismatches[0].Skill.MissingAllowed, []string{"gone_tool"}) {
+		t.Fatalf("事件载荷 = %+v", mismatches[0].Skill)
+	}
+	// 缺失写进快照（Describe）。
+	if !strings.Contains(a.Describe(), "gone_tool") || !strings.Contains(a.Describe(), "不收窄") {
+		t.Fatalf("Describe 应写明缺失：\n%s", a.Describe())
+	}
+	// 工具面**不**被收窄（诊断不改行为）：gone_tool 从未注册。
+	if _, ok := a.RunContext().Tools.Get("gone_tool"); ok {
+		t.Fatal("声明了没注册的工具，不该被自动注册")
 	}
 }
 

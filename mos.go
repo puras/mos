@@ -388,10 +388,9 @@ func New(cfg Config) (*Agent, error) {
 	var skillCatalog *skill.Catalog
 	if cfg.Skills != nil {
 		skillCatalog = skill.Load(skill.Options{
-			Dirs:            cfg.Skills.Dirs,
-			Reader:          cfg.Skills.Reader,
-			MaxBodyBytes:    cfg.Skills.MaxBodyBytes,
-			MaxCatalogBytes: cfg.Skills.MaxCatalogBytes,
+			Dirs:         cfg.Skills.Dirs,
+			Reader:       cfg.Skills.Reader,
+			MaxBodyBytes: cfg.Skills.MaxBodyBytes,
 		})
 		if text := skillCatalog.Render(); text != "" {
 			if pb != nil {
@@ -506,6 +505,11 @@ func New(cfg Config) (*Agent, error) {
 				return nil, fmt.Errorf("mos: 注册 skill 工具: %w", err)
 			}
 		}
+	}
+	// allowed-tools 求交诊断的探针（S8.4-D）：注册表已就位（可见性层会在
+	// 装配后继续叠加——探针每次激活时现查，自然跟上 policy / MCP 换代）。
+	if skillCatalog != nil {
+		skillCatalog.SetToolProbe(reg.Visible)
 	}
 
 	// 分节装配器到此才渲染：所有要进提示词的分节（项目约定、技能清单、
@@ -762,6 +766,26 @@ func (r skillRecorder) RecordActivate(name, description, dir string) error {
 	return err
 }
 
+// RecordAllowedToolsMismatch 实现 skill.Recorder：记一条 allowed-tools 求交
+// 诊断（S8.4-D）。
+//
+// 这是**诊断**不是激活：写失败不拦加载（工具照样能调/不能调由策略定，
+// 缺了这条诊断只损失可观测性，不损失安全性）——与 RecordActivate 的
+// fail-fast 不同。
+func (r skillRecorder) RecordAllowedToolsMismatch(name string, missing []string) error {
+	if r.sess == nil {
+		return nil
+	}
+	_, err := r.sess.Append(session.Event{
+		Kind: session.EventSkillToolMismatch,
+		Skill: &session.SkillEvent{
+			Name:           name,
+			MissingAllowed: append([]string(nil), missing...),
+		},
+	})
+	return err
+}
+
 // Close 释放装配期建立的长连接（目前是 MCP 服务器连接：stdio 子进程等）。
 //
 // 宿主用完智能体应调它——不调的话 stdio 子进程会一直活着。
@@ -1012,6 +1036,18 @@ func (a *Agent) Describe() string {
 	if a.skills != nil {
 		for _, w := range a.skills.Warnings() {
 			fmt.Fprintf(&b, "    ⚠ %s\n", w)
+		}
+		// allowed-tools 求交诊断（S8.4-D）：声明了该字段的技能 × 当前可见集，
+		// 缺什么如实写（激活时也会记 skill/allowed-tools-mismatch 事件）。
+		for _, s := range a.skills.All() {
+			if len(s.AllowedTools) == 0 {
+				continue
+			}
+			missing, notice := a.skills.CheckAllowedTools(s)
+			if len(missing) == 0 {
+				continue
+			}
+			fmt.Fprintf(&b, "    ⚠ 技能 %q: %s\n", s.Name, notice)
 		}
 	}
 	// MCP：装了什么 + 没装什么（连不上的服务器、换代失败都要写出来）。

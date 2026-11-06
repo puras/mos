@@ -17,6 +17,9 @@ type fakeRecorder struct {
 	name  string
 	dir   string
 	err   error
+	// mismatchName / missing 是 allowed-tools 求交诊断（S8.4-D）。
+	mismatchName string
+	missing      []string
 }
 
 func (r *fakeRecorder) RecordActivate(name, description, dir string) error {
@@ -26,6 +29,15 @@ func (r *fakeRecorder) RecordActivate(name, description, dir string) error {
 	r.name = name
 	r.dir = dir
 	return r.err
+}
+
+// RecordAllowedToolsMismatch 实现 skill.Recorder（记 allowed-tools 求交诊断）。
+func (r *fakeRecorder) RecordAllowedToolsMismatch(name string, missing []string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.mismatchName = name
+	r.missing = append([]string(nil), missing...)
+	return nil
 }
 
 // twoSkills 装两个技能，返回清单。

@@ -142,7 +142,29 @@ type Catalog struct {
 	reader          Reader
 	maxBodyBytes    int
 	maxCatalogBytes int
+	toolProbe       ToolProbe
 	snap            atomic.Pointer[Snapshot]
+}
+
+// CheckAllowedTools 把某技能声明的 allowed-tools 与当前可见工具集求交
+// （S8.4-D，只诊断不收窄）。返回 Missing（当前看不见的工具名，排序）与
+// Notice（给人看的文案；无缺失时空串）。没接探针 → 空结果。
+func (c *Catalog) CheckAllowedTools(s Skill) (missing []string, notice string) {
+	if c == nil {
+		return nil, ""
+	}
+	res := checkAllowedTools(s.AllowedTools, c.toolProbe)
+	return res.Missing, res.Notice
+}
+
+// SetToolProbe 注入可见工具集探针（装配层在注册表就位后调）。
+//
+// 每次**激活时现查**（不缓存）——policy 热替换、MCP 换代后自然跟上。
+func (c *Catalog) SetToolProbe(p ToolProbe) {
+	if c == nil {
+		return
+	}
+	c.toolProbe = p
 }
 
 // snapshot 返回当前快照（nil = 没扫过）。
@@ -239,6 +261,12 @@ type Options struct {
 	MaxBodyBytes int
 	// MaxCatalogBytes 是清单渲染的字节上限（≤0 = DefaultMaxCatalogBytes）。
 	MaxCatalogBytes int
+	// ToolProbe 探测「模型当前可见的工具名集合」（可选；nil = 不做
+	// allowed-tools 求交诊断，S8.4-D）。
+	//
+	// 装配层接 tool.Registry.Visible：技能激活时把声明的 allowed-tools
+	// 与可见集求交，结果进事件与快照（只诊断，不收窄）。
+	ToolProbe ToolProbe
 }
 
 // Load 发现并装配技能（首次扫描）。
@@ -266,6 +294,7 @@ func Load(opts Options) *Catalog {
 	if c.maxCatalogBytes <= 0 {
 		c.maxCatalogBytes = DefaultMaxCatalogBytes
 	}
+	c.toolProbe = opts.ToolProbe
 	c.snap.Store(c.scan())
 	return c
 }

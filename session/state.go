@@ -129,7 +129,7 @@ func deriveStatus(events []Event) TaskStatus {
 			if ev.Turn > lastTurn {
 				lastTurn, ended, ok = ev.Turn, false, false
 			}
-		case EventAssistant, EventToolCall, EventToolResult, EventApprovalAsked, EventApprovalDecided, EventSkillActivate:
+		case EventAssistant, EventToolCall, EventToolResult, EventApprovalAsked, EventApprovalDecided, EventSkillActivate, EventSkillToolMismatch:
 			active = true
 		case EventTurnEnd:
 			active = true

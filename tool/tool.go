@@ -342,6 +342,24 @@ func (r *Registry) Names() []string {
 	return append([]string(nil), r.order...)
 }
 
+// Visible 返回当前**模型可见**的工具名（与 List() 同一过滤：可见性层 +
+// deferred 未激活的不算，按注册顺序）。
+//
+// 用于技能激活时的 `allowed-tools` 求交诊断（S8.4-D）：判断技能要的工具
+// 当前模型用不用得上。
+func (r *Registry) Visible() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]string, 0, len(r.order))
+	for _, name := range r.order {
+		if r.deferred[name] || !r.visibleTo(name) {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
 // List 返回工具的协议层定义（按注册顺序），供 LLM 请求使用。
 // Schema 取自注册时的缓存，不在每轮调用中重复反射。
 // List 返回**模型可见且已激活**的工具清单。

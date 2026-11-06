@@ -67,6 +67,10 @@ const (
 	//
 	// PRD 点名（FR-D11「skill/* 事件」），不走事件目录的预算制。
 	EventSkillActivate EventKind = "skill/activate"
+	// EventSkillToolMismatch 是「技能声明的工具当前不可用」（S8.4-D）：
+	// skill 工具激活时把声明的 allowed-tools 与当前可见工具集求交，有缺失
+	// 就记一条（只诊断不收窄——工具面不变，这只是可观测性）。
+	EventSkillToolMismatch EventKind = "skill/allowed-tools-mismatch"
 )
 
 // Approval 是审批事件载荷（approval/asked 与 approval/decided）。
@@ -84,7 +88,7 @@ type Approval struct {
 	Outcome string `json:"outcome,omitempty"`
 }
 
-// SkillEvent 是技能事件载荷（skill/activate）。
+// SkillEvent 是技能事件载荷（skill/activate 与 skill/allowed-tools-mismatch）。
 //
 // 只记元数据：技能正文已经在工具结果里（那是模型看到的东西），这里记的是
 // 「加载了哪个技能」这条审计线索。
@@ -95,6 +99,9 @@ type SkillEvent struct {
 	Description string `json:"description,omitempty"`
 	// Dir 是技能目录。
 	Dir string `json:"dir,omitempty"`
+	// MissingAllowed 是 allowed-tools 里当前不可用的工具名
+	// （skill/allowed-tools-mismatch 时非空）。
+	MissingAllowed []string `json:"missingAllowed,omitempty"`
 }
 
 // ToolResult 是一次工具执行的回填（事件日志审计载荷；
