@@ -110,13 +110,13 @@ func (d *Driver) Run(ctx context.Context, rt *driver.RunContext, sess *session.S
 	for round := 0; maxRounds <= 0 || round < maxRounds; round++ {
 		action, err := decide(ctx, rt, sess, turn, defs)
 		if err != nil {
-			return "", d.abort(sess, turn, err)
+			return "", d.abort(ctx, sess, turn, err)
 		}
 
 		// 装配缺口：要求了工具却没装注册表。先收尾再报错，且不写 assistant——
 		// 否则日志里会留下带 ToolCalls 却无 tool/result 的非法历史。
 		if action.HasToolCalls() && rt.Tools == nil {
-			return "", d.abort(sess, turn, fmt.Errorf("%w: %s", ErrToolsUnsupported, action.ToolCalls[0].Name))
+			return "", d.abort(ctx, sess, turn, fmt.Errorf("%w: %s", ErrToolsUnsupported, action.ToolCalls[0].Name))
 		}
 
 		// 记录本次决策（作答或附带工具调用的思考），思维链与用量一并落库
@@ -214,19 +214,44 @@ func (d *Driver) Run(ctx context.Context, rt *driver.RunContext, sess *session.S
 		}
 		// 回到循环顶部：把工具结果投影进历史，再让决策器决策
 	}
-	return "", d.abort(sess, turn, fmt.Errorf("%w: 已达 %d 次决策上限", ErrMaxDecisionRounds, maxRounds))
+	return "", d.abort(ctx, sess, turn, fmt.Errorf("%w: 已达 %d 次决策上限", ErrMaxDecisionRounds, maxRounds))
 }
 
 // abort 以 error 原因收尾本轮并返回原错误（落盘失败时原样返回，收尾已尽力）。
 //
 // 错误详情一并落进 turn/end：分类说"失败了"，详情说"为什么"——审计时能直接
 // 看出是模型不可用、证书过期还是守卫拦截，不必再去翻终端输出。
-func (d *Driver) abort(sess *session.Session, turn int, cause error) error {
+func (d *Driver) abort(ctx context.Context, sess *session.Session, turn int, cause error) error {
+	cause = explainCancel(ctx, cause)
 	_, _ = sess.Append(session.Event{
 		Kind: session.EventTurnEnd, Turn: turn, Reason: "error",
 		Error: session.ErrorDetail(cause),
 	})
 	return cause
+}
+
+// explainCancel 在"这一轮是被取消的"时候，把取消原因接到错误前面。
+//
+// 裸的 context canceled 让宿主分不清是"用户点了停止""超时中止"还是
+// "进程退出"——这里用 driver.CancelCause 解释（宿主用 context.WithCancelCause
+// 取消时是它给的原因，否则是 RunWithCause 挂的兜底原因；ctx 超时到期时是
+// context.DeadlineExceeded）。原始错误保留在后面（说清在哪一步被掐的），
+// 错误链也保留（errors.Is 仍然认得出原始错误）。
+func explainCancel(ctx context.Context, err error) error {
+	if err == nil {
+		return err
+	}
+	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	reason := driver.CancelCause(ctx)
+	if reason == nil || errors.Is(reason, context.Canceled) {
+		return err // 没有更具体的原因（普通 cancel）：保持原样
+	}
+	if strings.Contains(err.Error(), reason.Error()) {
+		return err // 原因已经在错误里了，不重复写一遍
+	}
+	return fmt.Errorf("%w: %w", reason, err)
 }
 
 // terminateDetail 取出终止本轮那条调用的拒绝理由（作为 turn/end 的详情）。
@@ -314,6 +339,10 @@ func appendAssistant(sess *session.Session, turn int, action planner.Action) err
 // 然后模型生成结构化摘要 → 摘要作为 compaction 事件落日志。被遮蔽的
 // 事件留在日志里：审计走全量日志，模型投影从下一个决策起就是压缩后
 // 的视图。
+//
+// 摘要失败怎么办由 rt.CompactionFailurePolicy 定（默认 fail-closed：终止
+// 本轮；选 driver.CompactionSkipAndContinue 则记一条提示、跳过压缩、
+// 本轮继续——上下文可能已超预算，风险由宿主自担）。
 func maybeCompact(ctx context.Context, rt *driver.RunContext, sess *session.Session, turn int) error {
 	if rt.Compactor == nil {
 		return nil
@@ -338,7 +367,24 @@ func maybeCompact(ctx context.Context, rt *driver.RunContext, sess *session.Sess
 	}
 	text, usage, err := rt.Compactor.Summarize(ctx, msgs, plan.Previous)
 	if err != nil {
-		return fmt.Errorf("react: 上下文压缩失败: %w", err)
+		if rt.CompactionFailurePolicy != driver.CompactionSkipAndContinue {
+			return fmt.Errorf("react: 上下文压缩失败: %w", err)
+		}
+		// 宿主选了"跳过压缩继续"：记一条提示（压缩事件：没有摘要 = 没压缩成，
+		// 失败原因在 failed 里），本轮继续。上下文可能已经超预算——风险由宿主自担。
+		if _, aerr := sess.Append(session.Event{
+			Kind: session.EventCompaction, Turn: turn,
+			Compaction: &session.Compaction{
+				Failed:       session.ErrorDetail(err),
+				TokensBefore: contextTokens,
+			},
+		}); aerr != nil {
+			return aerr
+		}
+		if rt.OnCompactionFailure != nil {
+			rt.OnCompactionFailure(err)
+		}
+		return nil
 	}
 	ev := session.Event{
 		Kind: session.EventCompaction, Turn: turn,
@@ -369,8 +415,9 @@ func maybeCompact(ctx context.Context, rt *driver.RunContext, sess *session.Sess
 //     遮蔽旧历史（PI 同款：检查发生在工具结果追加之后、下一次响应之前）。
 //  2. pre-step 瀑布（宿主钩子）：对当前视图做 RAG / 注入等改写。
 //
-// 压缩失败以错误终止本轮：静默超预算只会在下一次调用时溢出，那种报错
-// 更难懂。两者均零开销降级（Compactor / Hooks 为 nil 时与未注入一致）。
+// 压缩失败默认以错误终止本轮：静默超预算只会在下一次调用时溢出，那种报错
+// 更难懂（宿主可用 rt.CompactionFailurePolicy 改成"跳过压缩继续"）。两者均
+// 零开销降级（Compactor / Hooks 为 nil 时与未注入一致）。
 func decide(ctx context.Context, rt *driver.RunContext, sess *session.Session, turn int, defs []llm.Tool) (planner.Action, error) {
 	if err := maybeCompact(ctx, rt, sess, turn); err != nil {
 		return planner.Action{}, err

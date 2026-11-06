@@ -51,6 +51,9 @@ const (
 	EventToolResult EventKind = "tool/result"
 	// EventCompaction 是压缩落点：从此处起，FirstKeptSeq 之前的历史被
 	// Summary 遮蔽（投影只发摘要 + 保留段），事件本身留在日志可审计。
+	//
+	// Summary 为空 = 这次压缩**没做出来**（宿主选了"压缩失败也继续"）：
+	// 投影不遮蔽（当作没发生过），失败原因记在 Compaction.Failed 里。
 	EventCompaction EventKind = "compaction"
 	// EventApprovalAsked 是「问了人工」：审批请求发出时记一条。
 	EventApprovalAsked EventKind = "approval/asked"
@@ -123,6 +126,13 @@ type Compaction struct {
 	FirstKeptSeq int64 `json:"firstKeptSeq"`
 	// TokensBefore 是压缩前的上下文 token 估算（审计用）。
 	TokensBefore int `json:"tokensBefore,omitempty"`
+	// Failed 是压缩**失败**的原因（非空 = 这次压缩没做出来）。
+	//
+	// 宿主选了"压缩失败也继续"（driver.CompactionSkipAndContinue）时记一条：
+	// Summary 为空 → 投影不遮蔽任何东西（这次压缩等于没发生），
+	// 但日志里看得见"试过、失败了、为什么"——对位 PI 的 compaction_end
+	// （result 为 undefined + errorMessage）。
+	Failed string `json:"failed,omitempty"`
 }
 
 // CompactionSummaryPrefix 是投影注入摘要消息时的标记前缀；压缩器靠它

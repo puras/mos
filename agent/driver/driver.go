@@ -72,8 +72,17 @@ type RunContext struct {
 	// 定切割点（永不落在 tool 结果上）→ 模型生成结构化摘要 → 摘要作为
 	// compaction 事件落会话日志（投影从此遮蔽旧历史，重放可复现）。
 	// 压缩失败以错误终止本轮（fail-fast：静默超预算会在下一次调用溢出，
-	// 那时报错更难懂）。参见 agent.LLMCompactor。
+	// 那时报错更难懂）。宿主可用 CompactionFailurePolicy 改成
+	// "记一条提示、跳过压缩、本轮继续"。参见 agent.LLMCompactor。
 	Compactor agent.Compactor
+	// CompactionFailurePolicy 决定"压缩失败"时本轮怎么办。
+	// 零值 = CompactionFailClosed（终止本轮，与默认行为一致）。
+	CompactionFailurePolicy CompactionFailurePolicy
+	// OnCompactionFailure 是"压缩失败但本轮继续"时的宿主通知（可选，
+	// nil = 只记日志）。策略为 CompactionSkipAndContinue 时调用一次：
+	// err 是压缩失败的原因，宿主据此在界面上提示"上下文压缩失败，
+	// 已跳过压缩"。fail-closed 策略下不调用（那一轮已经以错误收尾）。
+	OnCompactionFailure func(error)
 	// SystemPrompt 是静态系统引导词（可选，作为历史首条消息注入）。
 	SystemPrompt string
 	// Stream 为 true 时优先走决策器的流式接口（若实现），
@@ -82,6 +91,64 @@ type RunContext struct {
 	// OnChunk 是流式文本增量回调（可选，nil 时丢弃增量）。
 	// 推理增量以 dark=true 表示（应用层可据此区别渲染）。
 	OnChunk func(delta string, reasoning bool)
+}
+
+// CompactionFailurePolicy 决定上下文压缩失败时本轮怎么办。
+type CompactionFailurePolicy int
+
+const (
+	// CompactionFailClosed：压缩失败即终止本轮（默认，fail-closed）。
+	//
+	// 压缩是为了**继续对话**的机制；失败说明摘要没做出来，而上下文已经
+	// 超预算——下一次模型调用可能被服务商直接拒收。两种收尾都诚实：
+	// 终止并说清"压缩失败"，比硬撑着发一个必然溢出的请求好。
+	CompactionFailClosed CompactionFailurePolicy = iota
+	// CompactionSkipAndContinue：压缩失败 → 记一条提示、跳过压缩、本轮继续。
+	//
+	// 上下文可能已经超预算——**是否承担这个风险由宿主决定**（本策略不默认
+	// 启用）。对位 PI（阈值触发的自动压缩失败只发事件、不终止本轮）与
+	// DSH（步骤压力压缩失败 warn 后继续本轮）。
+	CompactionSkipAndContinue
+)
+
+// cancelCauseKey 是"取消原因"在 ctx 里的键（私有类型，避免撞键）。
+type cancelCauseKey struct{}
+
+// WithCancelCause 给 ctx 挂一个**取消原因**（例："用户点了停止"）。
+//
+// 为什么需要：宿主的轮次 ctx 通常只有 cancel 没有原因，被取消时框架只能
+// 报出裸的 context canceled——宿主分不清是"用户点了停止""超时中止"还是
+// "进程退出"。挂上原因后，turn/end 与返回错误都会用它解释。
+//
+// 优先级：宿主自己用 context.WithCancelCause 取消时，context.Cause(ctx) 更
+// 具体，优先用它；这里挂的是**兜底**（普通 cancel 时才用）。
+func WithCancelCause(ctx context.Context, cause error) context.Context {
+	if ctx == nil || cause == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, cancelCauseKey{}, cause)
+}
+
+// CancelCause 解析本次运行的取消原因：
+//
+//  1. ctx 被取消且宿主给了具体原因（context.WithCancelCause）→ 那个原因；
+//  2. 否则 WithCancelCause 挂的兜底原因；
+//  3. 否则 context.Canceled（普通取消，没有更具体的信息）。
+//
+// ctx 还没被取消时返回 nil——"没被取消"不是"被取消了"。
+func CancelCause(ctx context.Context) error {
+	if ctx == nil || ctx.Err() == nil {
+		return nil
+	}
+	// context.Cause：宿主用 WithCancelCause 取消时是它给的原因；
+	// ctx 超时到期时是 context.DeadlineExceeded（"超时中止"可分辨）。
+	if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
+		return cause
+	}
+	if cause, _ := ctx.Value(cancelCauseKey{}).(error); cause != nil {
+		return cause
+	}
+	return context.Canceled
 }
 
 // validate 校验运行上下文的必要能力（fail-closed）。
@@ -126,4 +193,21 @@ func (a *Agent) Run(ctx context.Context, sess *session.Session, input string) (s
 		return "", err
 	}
 	return a.Driver.Run(ctx, a.RT, sess, input)
+}
+
+// RunWithCause 与 Run 相同，但多带一个**取消原因**：
+//
+//	ctx 被取消、且没有更具体的原因（宿主没用 context.WithCancelCause）时，
+//	用 cause 解释——turn/end 的错误详情与返回错误都会写上它，
+//	宿主一眼能分清"用户点了停止"与"超时中止"。
+//
+// 典型用法（宿主有"停止"按钮）——两种等价写法：
+//
+//	ctx, cancel := context.WithCancelCause(parent)
+//	stop → cancel(errors.New("用户点了停止"))
+//	a.Run(ctx, sess, input)
+//
+//	a.RunWithCause(ctx, sess, input, errors.New("用户点了停止"))
+func (a *Agent) RunWithCause(ctx context.Context, sess *session.Session, input string, cause error) (string, error) {
+	return a.Run(WithCancelCause(ctx, cause), sess, input)
 }

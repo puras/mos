@@ -172,6 +172,26 @@ type Config struct {
 	ReserveTokens int
 	// KeepRecentTokens 是压缩后保留的近期上下文预算。0 = 默认 20K。
 	KeepRecentTokens int
+	// SummaryTimeout 是**压缩摘要调用**自己的超时。0 = 默认 3m；
+	// **负数 = 不限**（宿主自担挂住的风险）。
+	//
+	// 摘要是整轮里的阻塞点：宿主的轮次 ctx 往往只有 cancel 没有 deadline，
+	// 网关半开时若不设超时，这一轮会永远挂着（宿主拿不到 turn/end）。
+	// 超时后这一轮按失败收尾，错误文案写明「摘要调用超时」，宿主一眼能
+	// 分辨是上游挂了还是用户点了停止。
+	//
+	// 只影响摘要这一次调用：主对话的流式回答与宿主显式配置的 http_timeout
+	// 都不受它影响（宿主自备 Compactor 时本项忽略）。
+	SummaryTimeout time.Duration
+	// CompactionFailurePolicy 决定"压缩失败"时本轮怎么办。
+	// 零值 = driver.CompactionFailClosed（终止本轮，与默认行为一致）。
+	//
+	// 选 driver.CompactionSkipAndContinue：摘要失败 → 记一条提示、跳过压缩、
+	// 本轮继续（上下文可能已超预算，溢出风险由宿主自担）。
+	CompactionFailurePolicy driver.CompactionFailurePolicy
+	// OnCompactionFailure 是"压缩失败但本轮继续"时的宿主通知（可选，
+	// nil = 只记会话日志）。参数是压缩失败的原因，宿主据此在界面上提示。
+	OnCompactionFailure func(error)
 	// TruncateMaxBytes 是单次工具结果截断上限。0 = 默认 32KB；**负数 = 不截断**。
 	// 宿主自备 Truncator 时本项忽略。
 	TruncateMaxBytes int
@@ -587,6 +607,7 @@ func New(cfg Config) (*Agent, error) {
 			ContextWindow:    cfg.ContextWindow,
 			ReserveTokens:    cfg.ReserveTokens,
 			KeepRecentTokens: cfg.KeepRecentTokens,
+			SummaryTimeout:   cfg.SummaryTimeout,
 		})
 	}
 	a.compactor = compactor
@@ -613,17 +634,19 @@ func New(cfg Config) (*Agent, error) {
 	}
 
 	a.rt = &driver.RunContext{
-		Planner:           planner.NewReAct(model),
-		Tools:             reg,
-		Hooks:             hooks,
-		Guards:            guards,
-		Concurrency:       cfg.Concurrency,
-		MaxDecisionRounds: cfg.MaxDecisionRounds,
-		SystemPrompt:      systemPrompt,
-		Stream:            cfg.Stream,
-		OnChunk:           cfg.OnChunk,
-		Answerer:          cfg.Approval,
-		Compactor:         compactor,
+		Planner:                 planner.NewReAct(model),
+		Tools:                   reg,
+		Hooks:                   hooks,
+		Guards:                  guards,
+		Concurrency:             cfg.Concurrency,
+		MaxDecisionRounds:       cfg.MaxDecisionRounds,
+		SystemPrompt:            systemPrompt,
+		Stream:                  cfg.Stream,
+		OnChunk:                 cfg.OnChunk,
+		Answerer:                cfg.Approval,
+		Compactor:               compactor,
+		CompactionFailurePolicy: cfg.CompactionFailurePolicy,
+		OnCompactionFailure:     cfg.OnCompactionFailure,
 	}
 	a.concurrency.Store(int64(cfg.Concurrency))
 	a.maxRounds.Store(int64(cfg.MaxDecisionRounds))
@@ -633,6 +656,30 @@ func New(cfg Config) (*Agent, error) {
 // Run 执行一次任务（驱动自行决定流式/非流式路径）。会话由调用方持有——
 // 多会话与并行场景不被单会话 API 卡住。
 func (a *Agent) Run(ctx context.Context, sess *session.Session, input string) (string, error) {
+	return a.run(ctx, sess, input)
+}
+
+// RunWithCause 与 Run 相同，但多带一个**取消原因**：
+//
+//	ctx 被取消、且没有更具体的原因（宿主没用 context.WithCancelCause）时，
+//	用 cause 解释——turn/end 的错误详情与返回错误都会写上它，
+//	宿主一眼能分清"用户点了停止"与"超时中止"。
+//
+// 典型用法（宿主有"停止"按钮）：
+//
+//	a.RunWithCause(ctx, sess, input, errors.New("用户点了停止"))
+//
+// 等价写法（宿主自己管 cancel 函数时更直接）：
+//
+//	ctx, cancel := context.WithCancelCause(parent)
+//	stop → cancel(errors.New("用户点了停止"))
+//	a.Run(ctx, sess, input)
+func (a *Agent) RunWithCause(ctx context.Context, sess *session.Session, input string, cause error) (string, error) {
+	return a.run(driver.WithCancelCause(ctx, cause), sess, input)
+}
+
+// run 是 Run / RunWithCause 的共同实现。
+func (a *Agent) run(ctx context.Context, sess *session.Session, input string) (string, error) {
 	if a == nil || a.driver == nil {
 		return "", errors.New("mos: 智能体未装配")
 	}

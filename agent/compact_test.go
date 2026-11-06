@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/puras/mos/llm"
 	"github.com/puras/mos/session"
@@ -204,5 +205,112 @@ func TestSerializeConversation(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("缺 %q:\n%s", want, out)
 		}
+	}
+}
+
+// blockingModel 是"网关挂起"的桩：Chat 一直等到 ctx 结束才把 ctx.Err()
+// 带回来（模拟半开连接 / 上游不响应）。
+//
+// hasDeadline 记录收到的 ctx 是否带 deadline——用来验证超时确实包在 ctx 上
+// （而不是靠 http.Client.Timeout 砍整个 body）。
+type blockingModel struct {
+	block       bool
+	hasDeadline bool
+	req         *llm.Request
+}
+
+func (m *blockingModel) Chat(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+	m.req = req
+	_, m.hasDeadline = ctx.Deadline()
+	if !m.block {
+		return &llm.Response{Message: llm.Message{Content: "## Goal\nx"}}, nil
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (m *blockingModel) ChatStream(ctx context.Context, req *llm.Request, _ func(llm.StreamChunk) error) (*llm.Response, error) {
+	return m.Chat(ctx, req)
+}
+func (m *blockingModel) Capabilities() llm.Capability { return 0 }
+
+// 摘要调用自带超时：模型永不返回时这一轮**确定性地**以"超时"收尾，
+// 而不是永远挂着（宿主的轮次 ctx 往往只有 cancel 没有 deadline）。
+func TestSummarizeTimeout(t *testing.T) {
+	m := &blockingModel{block: true}
+	c := NewLLMCompactor(m, CompactorConfig{ContextWindow: 1000, SummaryTimeout: 50 * time.Millisecond})
+
+	start := time.Now()
+	_, _, err := c.Summarize(context.Background(), []llm.Message{u("x")}, "")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("挂起的模型应报错")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "超时") {
+		t.Fatalf("错误应说明是超时: %v", err)
+	}
+	if !strings.Contains(msg, "context deadline exceeded") {
+		t.Fatalf("错误应保留超时原因: %v", err)
+	}
+	if strings.Contains(msg, "context canceled") {
+		t.Fatalf("超时不该报成 context canceled: %v", err)
+	}
+	if !m.hasDeadline {
+		t.Fatal("摘要调用的 ctx 应带 deadline")
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("超时没生效，白等了 %s", elapsed)
+	}
+}
+
+// 默认摘要超时 3m；显式负数 = 不限（ctx 不带 deadline，宿主自担挂住风险）。
+func TestSummarizeTimeoutDefaultAndUnlimited(t *testing.T) {
+	def := NewLLMCompactor(&fakeModel{}, CompactorConfig{})
+	if def.cfg.SummaryTimeout != DefaultSummaryTimeout || DefaultSummaryTimeout != 3*time.Minute {
+		t.Fatalf("默认摘要超时应为 3m: %s", def.cfg.SummaryTimeout)
+	}
+	m := &blockingModel{}
+	c := NewLLMCompactor(m, CompactorConfig{ContextWindow: 1000, SummaryTimeout: -1})
+	if _, _, err := c.Summarize(context.Background(), []llm.Message{u("x")}, ""); err != nil {
+		t.Fatalf("Summarize: %v", err)
+	}
+	if m.hasDeadline {
+		t.Fatal("负数超时应表示不限（ctx 不带 deadline）")
+	}
+}
+
+// 迭代压缩（previous 非空）同样受超时约束：提示词仍带 previous-summary，
+// 挂起时同样以超时收尾。
+func TestSummarizeTimeoutAppliesToIterative(t *testing.T) {
+	m := &blockingModel{block: true}
+	c := NewLLMCompactor(m, CompactorConfig{ContextWindow: 1000, SummaryTimeout: 50 * time.Millisecond})
+	_, _, err := c.Summarize(context.Background(), []llm.Message{u("x")}, "旧摘要")
+	if err == nil || !strings.Contains(err.Error(), "超时") {
+		t.Fatalf("迭代压缩也应超时收尾: %v", err)
+	}
+	if !strings.Contains(m.req.Messages[1].Content, "<previous-summary>") {
+		t.Fatal("迭代路径应带 previous-summary")
+	}
+}
+
+// 宿主取消（用户点了停止）报"失败"而不是"超时"——两者在日志里必须能分辨。
+func TestSummarizeCallerCancelIsNotTimeout(t *testing.T) {
+	m := &blockingModel{block: true}
+	c := NewLLMCompactor(m, CompactorConfig{ContextWindow: 1000, SummaryTimeout: time.Minute})
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	_, _, err := c.Summarize(ctx, []llm.Message{u("x")}, "")
+	if err == nil {
+		t.Fatal("宿主取消应报错")
+	}
+	if strings.Contains(err.Error(), "超时") {
+		t.Fatalf("宿主取消不该报成超时: %v", err)
+	}
+	if !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("错误应保留取消原因: %v", err)
 	}
 }

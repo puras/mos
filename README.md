@@ -108,11 +108,12 @@ type SearchArgs struct {
 - append-only 事件日志：`Append` 同步落盘 fail-fast，日志不允许截断；崩溃恢复只补事件不改写（孤儿 turn 合成 interrupted）；
 - 消息投影确定性可重放；工具调用与结果按 CallID 配对，投影对服务商永远合法；
 - `session.Open(dir, id)` 一行建/恢复；`sess.TotalUsage()` 给出跨轮累计用量。
+- **取消原因可分辨**：轮次被取消时 `turn/end.error` 与返回错误写明**原因**（宿主用 `context.WithCancelCause` 给，或用 `mos.Agent.RunWithCause(ctx, sess, input, cause)` 兜底）——宿主一眼能分清「用户点了停止」「超时中止」「进程退出」，不是一个分不清的裸 `context canceled`；原因没给就仍是裸的（框架不猜）。
 
 ### 上下文工程
 
 - **截断**：工具结果超限就地瘦身（行/字节双限），全文落工作区 `.mos-trunc/`，`read` 可回读；
-- **压缩**：超过 token 预算（contextWindow − reserve）时模型生成结构化摘要落会话日志，投影从此遮蔽旧历史；切割点永不切断 ToolCall-Result 对；
+- **压缩**：超过 token 预算（contextWindow − reserve）时模型生成结构化摘要落会话日志，投影从此遮蔽旧历史；切割点永不切断 ToolCall-Result 对；摘要调用**自带超时**（默认 3m，`mos.Config.SummaryTimeout` 可调，负数 = 不限）——摘要是整轮里的阻塞点，宿主轮次 ctx 只有 cancel 没有 deadline 时，超时让这一轮确定性地以「摘要调用超时」收尾，而不是永远挂着；压缩失败**默认终止本轮**（fail-closed）；宿主可显式改策略：`mos.Config.CompactionFailurePolicy = driver.CompactionSkipAndContinue` → 摘要失败则记一条压缩事件（原因在 `Compaction.Failed`）、回调 `mos.Config.OnCompactionFailure`、**跳过压缩、本轮继续**（上下文可能已超预算，溢出风险由宿主自担）；
 - **提示词装配** `agent/prompt`：分节 Builder（身份 / 约定 / 项目上下文 / 工具指引 / 运行时事实，顺序中心化），装配期渲染一次、之后静态不变（利于 prompt cache）；
 - **上下文文件** `agent/contextfile`：AGENTS.md / CLAUDE.md 向上递归发现，`AGENTS.override.md` 同目录替换，字节预算裁剪，全局约定 `~/.mos`（SDK 内嵌模板，只写不覆盖）；
 - **技能** `agent/skill`（S8.1）：装配期发现技能目录（`SKILL.md` + frontmatter），清单（name + description）进系统提示词（静态，保 prompt cache），正文经专用 `skill` 工具按需加载；`disable-model-invocation` 的技能不进清单、模型不可加载；用户显式 `/name` 由宿主调 `Agent.ExpandSkill` 展开。

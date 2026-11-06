@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/puras/mos/llm"
 	"github.com/puras/mos/session"
@@ -60,6 +62,20 @@ type CompactorConfig struct {
 	// MaxToolResultChars 是序列化被压缩历史时单条工具结果的截断长度
 	//（默认 2000，PI 的 TOOL_RESULT_MAX_CHARS）：摘要不需要全文。
 	MaxToolResultChars int
+	// SummaryTimeout 是**摘要调用**自己的超时（0 = DefaultSummaryTimeout
+	//（3m）；**负数 = 不限**，留给自担挂住风险的宿主）。
+	//
+	// 为什么必须有：宿主的轮次 ctx 通常只有 cancel、没有 deadline
+	//（例：`context.WithCancel(context.Background())`）。网关半开（上游挂起）
+	// 时摘要请求会永远等下去，`driver.Run` 不返回，宿主拿不到 turn/end，
+	// 界面只能显示"正在处理"——用户分不清是模型在思考、在限流重试，
+	// 还是连接已经死了。摘要是**非流式、短、可重复**的调用，自带超时才能
+	// 让这一轮**确定性地收尾**。
+	//
+	// 用 ctx 超时而不是 http.Client.Timeout：后者管整个 body，会把主对话的
+	// 长流式回答一起砍掉；这里只包住摘要这一次调用，与宿主显式配置的
+	// http_timeout 相互独立（ctx 超时在内层，先到先算）。
+	SummaryTimeout time.Duration
 }
 
 // PI 的默认值（compaction.ts 的 DEFAULT_COMPACTION_SETTINGS）。
@@ -74,8 +90,16 @@ const (
 // 更大的配了也只在更晚才压（不损失正确性，只省了不必要的压缩）。
 const DefaultContextWindow = 128 * 1024
 
+// DefaultSummaryTimeout 是摘要调用的默认超时（3 分钟）。
+//
+// 取 3m 的理由：摘要是**非流式、短、可重复**的调用——正常几十秒内完成；
+// 3 分钟足够覆盖慢网关与重试，又不至于让用户面对"整轮挂住"而毫无提示。
+// 上游确实更慢时宿主可调大（CompactorConfig.SummaryTimeout），或置负数不限。
+const DefaultSummaryTimeout = 3 * time.Minute
+
 // NewLLMCompactor 创建默认压缩器。model 为 nil 时 Summarize 报错（fail-closed）。
 // ContextWindow <=0 时取 DefaultContextWindow（128K）。
+// SummaryTimeout == 0 时取 DefaultSummaryTimeout（3m）；**负数 = 不限**。
 func NewLLMCompactor(model llm.ChatModel, cfg CompactorConfig) *LLMCompactor {
 	if cfg.ReserveTokens <= 0 {
 		cfg.ReserveTokens = DefaultReserveTokens
@@ -88,6 +112,10 @@ func NewLLMCompactor(model llm.ChatModel, cfg CompactorConfig) *LLMCompactor {
 	}
 	if cfg.ContextWindow <= 0 {
 		cfg.ContextWindow = DefaultContextWindow
+	}
+	// 摘要超时：0 = 默认（3m）；**负数 = 不限**（宿主显式说"别掐"）。
+	if cfg.SummaryTimeout == 0 {
+		cfg.SummaryTimeout = DefaultSummaryTimeout
 	}
 	return &LLMCompactor{model: model, cfg: cfg}
 }
@@ -163,6 +191,11 @@ func (c *LLMCompactor) Plan(view []session.SeqMessage, _ int) (CutPlan, bool) {
 // 序列化被压缩历史（工具结果截到 MaxToolResultChars、思维链省略），包进
 // <conversation> 标签，有旧摘要时附 <previous-summary> 并换用"更新"提示词；
 // 模型若试图调用工具则直接报错（摘要是纯文本产出）。
+//
+// 摘要调用**自带超时**（CompactorConfig.SummaryTimeout，默认 3m）：宿主的
+// 轮次 ctx 往往只有 cancel 没有 deadline，网关半开时不能让它永远挂着。
+// 超时以明确的错误文案收尾（"摘要调用超时（… 内没有响应…）"），宿主一眼
+// 能分辨"上游挂了"与"用户点了停止"。
 func (c *LLMCompactor) Summarize(ctx context.Context, msgs []llm.Message, previous string) (string, llm.Usage, error) {
 	if c == nil || c.model == nil {
 		return "", llm.Usage{}, fmt.Errorf("compactor: 未装配模型（fail-closed）")
@@ -179,11 +212,31 @@ func (c *LLMCompactor) Summarize(ctx context.Context, msgs []llm.Message, previo
 	}
 	b.WriteString(prompt)
 
-	resp, err := c.model.Chat(ctx, &llm.Request{Messages: []llm.Message{
+	// 摘要调用自带超时：只包住这一次调用（主对话的流式回答不受影响），
+	// 与宿主显式配置的 http_timeout 相互独立（ctx 超时在内层，先到先算）。
+	parent := ctx
+	timeout := c.cfg.SummaryTimeout
+	callCtx := ctx
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		callCtx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	resp, err := c.model.Chat(callCtx, &llm.Request{Messages: []llm.Message{
 		{Role: llm.RoleSystem, Content: summarizationSystemPrompt},
 		{Role: llm.RoleUser, Content: b.String()},
 	}})
 	if err != nil {
+		// 超时要说清"是什么超时、可能是什么原因"：宿主日志里一眼能分辨，
+		// 不用再从裸的 context canceled 反推是谁掐的。
+		//
+		// 只有**我们自己**的 deadline 生效时才报超时（调用方 ctx 取消 /
+		// 调用方自带 deadline 过期都走"失败"分支——那是宿主的决定，不是超时）。
+		if timeout > 0 && errors.Is(err, context.DeadlineExceeded) && parent.Err() == nil {
+			return "", llm.Usage{}, fmt.Errorf(
+				"compactor: 摘要调用超时（%s 内没有响应，可能是上游限流或网关挂起）: %w", timeout, err)
+		}
 		return "", llm.Usage{}, fmt.Errorf("compactor: 摘要调用失败: %w", err)
 	}
 	if len(resp.Message.ToolCalls) > 0 {
