@@ -691,21 +691,21 @@ llm.WithRetry(model, llm.RetryPolicy{
 | ① | **PI 的做法** | 五档 `ToolExposure`（`core/extensions/types.ts:516`）：`direct`/`model-only` 注册即声明，`codemode`/`deferred`/`hidden` 不声明；active tool set（`getActiveTools`/`setActiveTools`）就是模型可见集。`tool_search` 工具（`extensions/tool-search/tool.ts`）：**Okapi BM25 排序**（k1=1.2, b=0.75；camelCase 分词 + 停用词 + 简单词干），搜索文档 = 名字 + 描述 + schema 属性名与描述（`createToolSearchDocument`）；搜索范围 = exposure 为 `codemode`/`deferred` 且未激活的工具（`isSearchable`:186）；命中即 `setActiveTools` 激活，**下一轮请求声明给模型**，激活记录进 transcript（survive resume/fork）。启用时机：MCP 扩展 `ensureDiscoveryActive`（`extensions/mcp/index.ts:502`）——配置里出现 `deferred` exposure 的服务器 → 自动激活 `tool_search`；**没有按上下文占比的自动阈值**。协议侧：Anthropic 原生 `defer_loading`（`packages/ai/src/api/anthropic-messages.ts:209`）+ `__pi_deferred_placeholder__` 占位工具常驻（Anthropic 的隐藏脚手架因此留在缓存前缀，实测注释：无占位则首次工具变更全缓存未命中）；Anthropic 拒绝全部工具均 deferred 的请求（:1180 注释），必须留至少一个初始激活工具；OpenAI Responses 走 `additional_tools` 增量 + `defer_loading`（`openai-responses-shared.ts:167-172` 实测记录、:455/:468） | `ToolSchema.deferLoading?: true`（`llm/llm/src/types.ts:497`，注释明写 "Uses Anthropic's defer_loading terminology"）；`defineTool` 选项 `deferLoading?: true`（`core/tools/src/schema.ts:499`）——**工具作者显式标记**，无自动阈值。投影链：registry `schemas()` → `schemaOf`（`core/tools/src/index.ts:1288-1302`）透传 deferLoading → system-prompt 组装（`core/system-prompt/src/index.ts:642-647`）→ 请求侧 `projectToolUpdates`（`llm/llm/src/content.ts:384`）按路由能力投影：支持 tool updates 的路由以 developer message 的 `tool_addition` block 激活（序列化为 `tool_reference`，`llm-deepseek/src/serialize.ts:95`、`defer_loading`:165）；不支持的路线剥掉 defer 标记全量声明（content.ts:432-436）。updates 里的 additions 以 defer 状态入声明表（content.ts:391），首次 addition 激活。激活事实走 `ToolHistory` 事件溯源 |
 | ② | **DSH 的做法** | （见右） | （见左） |
 | ③ | **共识 / 分歧** | **共识**：①不自创协议概念——对齐 Anthropic 原生 `defer_loading`（DSH 直接采用该术语；PI 占位符 + 各 API 适配）；②deferred 工具「声明但不加载」，经显式激活（PI `setActiveTools` / DSH `tool_addition`）进入可见集，**下一轮生效**；③激活必须留痕（PI transcript / DSH `ToolHistory`）；④**都没有**按上下文占比自动启用的机制。**分歧**：PI 有框架级 BM25 `tool_search` 工具（搜索即激活，协议无关）；DSH 的 deferLoading 只是协议投影标记，框架不提供 search 工具（激活走 developer message，谁发由上层定）。代价：PI 多一个排序器与搜索文档构造（~240 行）；DSH 需要上层自己解决「模型怎么发现 deferred 工具」 | 同左 |
-| ④ | **MoS 的取舍与理由** | 选 **PI 的 `tool_search` 语义（协议无关）**，**不做**协议原生 `defer_loading` 通道。理由：①MoS 三协议适配器自写（openai chat / anthropic / gemini），原生 defer_loading 只有 Anthropic（与 OpenAI Responses）支持，Gemini 无对应概念——做协议通道 = 三套投影 + 能力探测，复杂度高；②MoS 当前无 MCP / 大工具面，原生协议的缓存收益尚未兑现；③PI 的 BM25 排序器与搜索文档构造是纯函数，可直接移植成 Go。代价：激活走「下一轮生效」（MoS 现有「运行期旋钮下一轮生效」语义，与 `SetModel` 同构）；无原生 defer 时每轮 token 节省依赖「deferred 工具不进 `List()`」——这正是 FR-C3 的验收口径（工具数增长时 prompt token 亚线性） | 同左 |
+| ④ | **MoS 的取舍与理由** | 选 **PI 的 `tool_search` 语义（协议无关）**，**不做**协议原生 `defer_loading` 通道。理由：①MoS 三协议适配器自写（openai chat / anthropic / gemini），原生 defer_loading 只有 Anthropic（与 OpenAI Responses）支持，Gemini 无对应概念——做协议通道 = 三套投影 + 能力探测，复杂度高；②MoS 当前无 MCP / 大工具面，原生协议的缓存收益尚未兑现；③PI 的 BM25 排序器与搜索文档构造是纯函数，可直接移植成 Go。代价：激活走「**下一次请求**生效」（2026-11-06 起驱动每轮重取清单，同一轮内也生效；原口径是「下一轮」= 一次 `Run`，与 `SetModel` 同构）；无原生 defer 时每轮 token 节省依赖「deferred 工具不进 `List()`」——这正是 FR-C3 的验收口径（工具数增长时 prompt token 亚线性） | 同左 |
 | ⑤ | **两家都没有的空白** | **PRD FR-C3 的「超 10% 自动启用」两家都没有**（PI：配置驱动；DSH：作者标记）——MoS 也不自创阈值机制，改为「机制在框架、策略在宿主」：宿主用 `Registry.RegisterDeferred` 声明 deferred 集，deferred 集非空 = `tool_search` 自动注册（工具必须始终可见，否则鸡生蛋）；小工具集（不注册 deferred）行为与现状完全一致（零回归）。**激活态持久化是第二处空白**：PI 记 transcript、DSH 走 ToolHistory，MoS 的等价物是会话事件日志——但激活态属于 Registry（内存），重放到新进程后由宿主装配决定；为保投影合法性（assistant 的 tool_call 对应工具须在声明清单里，部分供应商强制），驱动组装工具清单时把「历史中出现过的工具名」强制并入（fail-safe：日志说它被用过，它就该在）——此兜底为 MoS 自创，风险登记在下面 | 同左 |
 
 ##### MoS SDK 侧设计
 
 | 落点 | 内容 | 依赖 |
 | --- | --- | --- |
-| `tool`（Registry 增强） | `RegisterDeferred`（注册但不进 `List()`）+ `DeferredTools()`（可搜清单：名 + 描述）+ `Activate(names)`（激活，下一轮 `List()` 生效）；`List()` 语义不变（可见 + 激活） | 不变 |
+| `tool`（Registry 增强） | `RegisterDeferred`（注册但不进 `List()`）+ `DeferredTools()`（可搜清单：名 + 描述）+ `Activate(names)`（激活，下一次请求起 `List()` 生效）；`List()` 语义不变（可见 + 激活） | 不变 |
 | `tool/builtin` | `tool_search` 工具：BM25 排序（移植 PI：k1/b 同参、camelCase 分词、停用词、简单词干）+ 命中即 `Activate`；回执列激活的工具名与描述首行（PI 同款文案语义）；自身始终可见 | → `tool` |
 | 驱动（react） | 组装决策工具清单时并入「历史投影中出现过的工具名」（投影合法性兜底） | 不变 |
 | 装配层（`mos`） | `Config` 检测 deferred 集非空 → 自动注册 `tool_search`（能力即证据；未注册 deferred 工具则什么都不发生） | → `tool/builtin` |
 
 - **与 Policy / Guard 的关系**：deferred 工具激活后照常受 Policy / 守卫管——可见性过滤在 `List()`，执行与否由运行时守卫决定（既有纪律不变）。`tool_search` 自身的执行照常走 execpath 三阶段。
 - **审计与留痕**：激活 = `tool_search` 的 `tool/call` + `tool/result` 落日志（既有通道），回执列明激活了哪些；无新事件类型（治理规则 2 预算不破）。
-- **并发安全**：`Activate` 在工具执行通道内调用（`tool_search` 的 execute），`List()` 在下一轮决策前调用，Registry 锁已覆盖。
+- **并发安全**：`Activate` 在工具执行通道内调用（`tool_search` 的 execute），`List()` 在每次请求前调用（驱动每轮重取清单），Registry 锁已覆盖。
 - **C2 / C4 守护测试**：C2 = 断言 `generateSchema` 输出无 `title`/`$defs`（现状天然满足，锁住防止回归）；C4 = 断言连续两轮决策收到的 system 段逐字节一致（`prompt.Builder` 装配期渲染一次已保证，锁住）。
 
 ##### 自创点与风险登记
@@ -773,7 +773,7 @@ llm.WithRetry(model, llm.RetryPolicy{
 | 片 | 内容 | 验收 |
 | --- | --- | --- |
 | **S8.1** ✅ | `agent/skill` 全文 + `skill` 工具 + `skill/activate` 事件 + 装配入口（`Config.Skills` / `Agent.ExpandSkill`）。**`tool` 增强（SchemaProvider / Replace / 可见性叠加）移到 S8.2**——它们的消费者是 MCP 适配器，先做会变成没人用的基础设施 | E2E：技能目录 → 模型调 `skill` → 正文进上下文 → `disable-model-invocation` 的技能既不进清单也不可加载（fail-closed）；`allowed-tools` 只解析留痕且给出「当前不生效」诊断；清单进系统提示词且两次 Render 逐字节一致（保 cache） |
-| **S8.2** ✅ | `tool/mcp` 客户端（**官方 Go SDK**，不自写 JSON-RPC：stdio + streamable-http 两个 transport、版本协商、分页、list_changed 通知）+ 工具适配（命名 / schema 直通 / 结果投影）+ 两阶段换代（先取全量、再换代，失败保留上一代） | 命名/哈希后缀/换代回滚/超时/取消 单测；**真 stdio 子进程**驱动端到端（连上 → tools/list → tools/call → list_changed → 换代落地）；`Start` 并发连接（2026-11-04 补齐：逐台 goroutine + WaitGroup，全部就绪才返回） |
+| **S8.2** ✅ | `tool/mcp` 客户端（**官方 Go SDK**，不自写 JSON-RPC：stdio + streamable-http 两个 transport、版本协商、分页、list_changed 通知）+ 工具适配（命名 / schema 直通 / 结果投影）+ 两阶段换代（先取全量、再换代，失败保留上一代） | 命名/哈希后缀/换代回滚/超时/取消 单测；**真 stdio 子进程**驱动端到端（连上 → tools/list → tools/call → list_changed → 换代落地）；`Start` 并发连接（2026-11-04 补齐：逐台 goroutine + WaitGroup，全部就绪才返回）；**2026-11-06 补齐**：真 MCP 工具经 `tool_search` 激活、MCP 工具受 policy/guard 拦截两组 E2E + streamable-http 真服务端联调（官方 SDK handler + httptest），并修掉两处问题——装配期 `Config.Policy` 守卫丢失（拒绝名单里的工具「看不见却调得动」的 fail-open）、`DeferredTools()` 不按可见性过滤（被拒的 deferred 工具仍能被搜到） |
 | **S8.3** ✅ | 装配层（MCP 一开即装、默认 deferred + `tool_search` 联动、hidden 档可见性层、服务器 instructions 每会话一次性 user 侧注入、失败隔离、Describe 快照、`Agent.Close()`） | 单个 MCP 失败不阻塞其余加载（FR-D8 验收）；MCP 工具默认不进模型清单、搜到才进 |
 
 ##### 自创点与风险登记
