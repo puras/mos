@@ -86,6 +86,9 @@ func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 // withAuth 给 HTTP 客户端套上凭据注入（克隆一份，不改宿主传进来的）。
 //
+// **无条件套上**（哪怕宿主没配凭据）：它的第二个职责是把 401/403 归成认证类
+// 错误——那与“有没有配凭据”无关，只与“服务器怎么回”有关。
+//
 // 克隆是必须的：httpx.FromContext 返回的 client 可能是宿主共享的
 // （连接池、超时设置都是它的）——就地改 Transport 会污染宿主自己的请求。
 func withAuth(hc *http.Client, cfg ServerConfig) *http.Client {

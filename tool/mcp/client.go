@@ -102,10 +102,10 @@ func buildTransport(ctx context.Context, cfg ServerConfig) (sdk.Transport, error
 			return nil, errors.New("streamable-http 传输需要 URL")
 		}
 		hc := httpx.FromContext(ctx)
-		// 有静态头或凭据提供器 → 套一层（克隆客户端，不改宿主传进来的）。
-		if len(cfg.Headers) > 0 || cfg.TokenProvider != nil {
-			hc = withAuth(hc, cfg)
-		}
+		// 认证层**无条件**套上（克隆客户端，不改宿主传进来的）：即使宿主没配
+		// 凭据，也要能把服务端的 401/403 归成认证类错误（“这台服务器要凭据”），
+		// 而不是糊成协议错误——否则宿主拿到的是一句看不懂的失败。
+		hc = withAuth(hc, cfg)
 		return &sdk.StreamableClientTransport{
 			Endpoint:   cfg.URL,
 			HTTPClient: hc,

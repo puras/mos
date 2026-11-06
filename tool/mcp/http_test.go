@@ -195,6 +195,30 @@ func TestHTTPClientAuthFailureClassified(t *testing.T) {
 	}
 }
 
+// TestHTTPClientUnauthorizedWithoutCredentials：宿主**没配凭据**而服务器要凭据
+// 时，失败也必须归**认证类**（“这台服务器要凭据”），而不是糊成协议错误——
+// 认证层是无条件装上的，与有没有配凭据无关。
+func TestHTTPClientUnauthorizedWithoutCredentials(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	srv := newHTTPTestServer(t, "Bearer right")
+	_, err := Dial(ctx, ServerConfig{
+		Name:      "http",
+		Transport: TransportHTTP,
+		URL:       srv.url,
+	}, Options{ConnectTimeout: 15 * time.Second})
+	if err == nil {
+		t.Fatal("没配凭据应当连不上")
+	}
+	if !IsAuthError(err) {
+		t.Fatalf("没配凭据时的 401 也应归认证类：%v", err)
+	}
+	if n := srv.calls.Load(); n != 0 {
+		t.Fatalf("鉴权门就拦下了，工具不该被调用：%d 次", n)
+	}
+}
+
 // TestManagerRealHTTP：装配路径（Manager.Start → 注册表 → 工具执行）在真 HTTP
 // 服务器上跑通；Close 收掉会话。这条覆盖的是宿主实际用法，不只是 Dial。
 func TestManagerRealHTTP(t *testing.T) {
