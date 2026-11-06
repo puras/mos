@@ -150,6 +150,8 @@ type SearchArgs struct {
 | [examples/minimal](examples/minimal/) | 装配层最小可跑示例：十几行装出一个真能跑的智能体 |
 | [examples/chat](examples/chat/) | 完整演示：流式输出、多协议切换、会话持久化与恢复、策略与审批、shell 验证回路、压缩与截断、AGENTS.md 注入、会话中途授权目录 |
 | [examples/agents](examples/agents/) | 多 Agent 协作：拆解 / 执行 / 验收三角色 + 任务列表驱动 |
+| [examples/mcp](examples/mcp/) | MCP 接入：连一台服务器、工具经 `tool_search` 搜到才进清单、暴露档与连接方式怎么换 |
+| [examples/skills](examples/skills/) | 技能：目录即授权边界、清单进提示词而正文现读、`/技能名` 手势展开 |
 
 ## 路线图
 
