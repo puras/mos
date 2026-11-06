@@ -576,7 +576,6 @@ func New(cfg Config) (*Agent, error) {
 
 		catalog: catalog,
 	}
-	a.SetPolicy(cfg.Policy) // 装初始策略（挂守卫 + 设可见性）
 	a.rules.set(cfg.Rules)
 	// 参数级规则的两个门：deny 档进守卫（单调拒绝），ask 档进 pre-execute
 	// 钩子（转人工确认）。守卫与钩子都通过 holder 读**当前**规则——所以
@@ -650,6 +649,11 @@ func New(cfg Config) (*Agent, error) {
 	}
 	a.concurrency.Store(int64(cfg.Concurrency))
 	a.maxRounds.Store(int64(cfg.MaxDecisionRounds))
+	// 装初始策略必须**在 a.rt 装好之后**：SetPolicy 把守卫挂到 a.rt.Guards 上，
+	// 而装配中途的 a.rt 是个空壳（Guards 为 nil，Add 是 no-op）——在那时挂
+	// 会静默丢掉守卫，只剩可见性生效，于是"模型看不见"与"调不动"脱节
+	// （点名调用照样执行）。放在这里，与热替换 SetPolicy 走同一条路。
+	a.SetPolicy(cfg.Policy)
 	return a, nil
 }
 
