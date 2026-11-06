@@ -1121,3 +1121,85 @@ llm.WithRetry(model, llm.RetryPolicy{
 3. 每片合入验收门 = `go test ./...` 全绿 + 本文件/README 状态同步 + 该片一页说明，缺一不合。
 4. 破坏性变更直接改、不留兼容层，但必须在提交信息与 PRD 变更记录声明。
 5. **框架层不碰文件系统与网络，也不绑定配置格式**：需要 I/O 的能力以接口注入（如 `session.Persistence`），由宿主选实现；配置以结构进，键名与解析规则归宿主（`policy.Config` 不带格式 tag）。归档惯例（`agent/config.Load(data []byte)`）即此，框架替宿主打开路径等于绕过自己的文件 jail。
+
+
+### 3.18 SubAgent（FR-D3：agents-as-tools 形态）
+
+> **范围与顺序**：PRD FR-D3 = 「SubAgent 子智能体（**首选 agents-as-tools 形态**）：声明式定义（`name` / `description` 自动委派匹配 / `model` 覆盖 / `tools` 白名单 / 提示词正文，对齐 `.claude/agents/` 风格）；实现 `tool.Tool` 包装进 Registry，主 Agent 经 function calling 调用只收结构化结果」。顺序依据 = PRD 开放问题 5「**MCP 先于 SubAgent**」（2026-11-02 拍板）：MCP 于 2026-11-06 收口（S8.2/S8.3 + 四项 E2E），SubAgent 顺位。
+> **分期勘误**：PRD §5 分期表把 FR-D3 列在 **M3a**（`M3a | FR-D1/D2/D3/D8/D9/D11`），而 PRD §4 状态行写「M3b（SubAgent / AgentTeam / 并行 DAG）未开始」——两处口径不一致，**以 §5 分期表为准**：FR-D3（SubAgent）属 M3a 收尾；AgentTeam（FR-D6）、并行 DAG（FR-D4/D5）、合约 + Elo（FR-D7/D10）属 M3b。PRD 已改。
+> **决策判据（PRD FR-D3 原文）**：「instructions / tools / policy 真正改变才拆」——拆子代理的前提是**至少一项真的与父不同**；否则只是多一层开销与一层上下文损耗。
+> **拍板**：2026-11-06 用户**六条全部按建议拍板**（交付形态 / 工具命名 / 白名单合成 / 模型覆盖 / 委派深度 / deferred 化）——结论见下方「拍板结果」表。
+
+##### PI / DSH 参考分析 — SubAgent
+
+| # | 维度 | PI（`packages/agent` / `packages/coding-agent`） | DSH（`packages/subagent/*`） |
+| --- | --- | --- | --- |
+| ① | **PI 的做法** / **DSH 的做法** | **PI 没有子代理委派层**（实查）：全仓 `subagent` 只出现在 `packages/coding-agent/src/extensions/codemode/execute.ts:67` 的一句注释（"an in-process subagent that uses codemode"）；`packages/coding-agent/src/extensions/` 只有 `codemode` / `llama` / `mcp` / `tool-search` 四个扩展，无 agent 扩展；`src/core/agent-session.ts` 无 spawn / child 概念。**PI 给的是「可复用的 agent loop」**：`packages/agent/src/agent.ts:188` 的 `Agent` 类（`initialState.tools` / `systemPrompt` / `model` / `thinkingLevel` 各自可设 → 天然能造「工具面不同的另一个 agent」）、`packages/agent/src/agent-loop.ts:38` 的 `agentLoop`（`:71` 的 `agentLoopContinue`）；权限检查挂在工具钩子 `beforeToolCall` / `afterToolCall`（`agent.ts:114` 的 `AgentOptions`）。**工具可以调工具**：`agent-loop.ts:803` 的 `callTool` 注释明写「Tools that call other tools use this so the hooks (for example permission checks)」——同进程编排，不是子代理。**PI 的替代路径是 codemode**：多步工具编排写成脚本交给运行时执行，用「脚本」换「子代理」，省的是模型回合、不是权限面。**工具面收窄只有会话级一处**：`src/core/agent-session.ts:504` 的 `_allowedTools`（CLI `--tools` 名单），非 per-agent | **接缝**：`packages/subagent/subagent/src/manager.ts` 的 `SubagentManager`（`ctx.subagents`）+ provider 注册表；`types.ts:313` 的 `SubagentProvider` 接口；后端六种（`packages/subagent/README.md` 包表）：`subagent-spawn-in-process` / `subagent-fork-in-process`（父历史播种）/ `subagent-acp` / `subagent-codex` / `subagent-claude-code` / `subagent-dsh-sdk`。**一次委派 = 一次 activation**：`types.ts:136` 的 `SubagentStartRequest`（`prompt` / `cwd` / `label` / `agentPreset` / `agentOptions` / `outputSchema` / `maxDepth` / `signal` / `parent`）+ `types.ts:47` 的 `SubagentActivationSpec`（`provider` / `delivery: 'parent' \| 'caller'` / `request` / `signal`）。**能力即证据**：`types.ts:123` 的 `SubagentCapabilities{agentOptions, agentPreset, outputSchema, depthLimit}`——请求带了后端不支持的能力就**拒绝启动**（fail-closed），不降级。**深度闸**：`child-agent.ts:49` 的 `resolveChildDepth` + `tool-subagent/src/index.ts` 的 `maxDepth`（默认读宿主设置，默认 1；`'provider-managed'` 交给子运行时）；注意 DSH 的口径——**工具始终对模型可见**，拒绝权在运行时策略（源码注释原话：the tool remains model-visible so runtime policy owns rejection）。**子代理的组合**：`child-agent.ts:157` 的 `ChildComposition` + `applyChildComposition`（`:186`）——`persona`（子代人设，覆盖部署 persona）+ `toolFilter`（`ToolRestriction{allow,deny}`，DSH `packages/core/tools/src/index.ts:701`、`:1105 restrict()`）+ **父的策略覆盖**（`captureDelegatedPolicyOverrides` `:248` / `appendDelegatedPolicyOverrides` `:266`）→ **策略向下委派，子不得比父宽**。**结果体裁**：`types.ts:252` 的 `SubagentResult{output: ContentBlock[], structured?: unknown, diagnostic?: string, stopReason}`——`structured` 是按请求 `outputSchema` 校验过的值；`diagnostic` 是后端写的失败说明，**明令禁止**含工具入参 / 文件内容 / 环境值 / 凭据 / 原始协议载荷，且限 4096 UTF-8 字节；子代理失败**不 reject**，而是 `stopReason: 'error'`（宿主映射成 `isError` 工具结果）。**模型可见工具面**：`packages/subagent/tool-subagent/src/index.ts`（工具名默认 `subagent`，`:159` 的 `config.toolName ?? 'subagent'`）——参数 `cwd` / `description`（3-5 词）/ `prompt` / `agent_preset` / `provider`+`model`+`reasoning_effort`；**输出只有 `{kind:'activation', subagentId}`**（`:212` 的 `defineTool`），立即返回 id，结果由运行时**异步通知**父代理（描述原文：The runtime notifies you when it finishes）；continuable 后端改走 `send_message` 交互。**控制面**：`packages/subagent/tool-subagent-control/src/index.ts` —— `send_message`（`:29`，只许相邻代理）/ `interrupt_agent`（`:75`）/ `list_agents`。**留痕**：`subagent/src/descriptor.ts` 的 `subagent/descriptor` 事件（版本 3，`:48`；字段白名单严格，`assertKnownKeys` 拒未知字段；continuable 模式额外记 `persona` + `toolFilter` 以便 resume 重放）+ `catalog.ts` 的 `subagent/catalog` 事件（`:28`，父方拥有的子代理目录：childId / createdAt / mode）。**契约文档**：`docs/subsystems/subagent.md`（delivery 语义 / 终止结果语义 / 安全细节要求） |
+| ② | （见右） | （见左） |
+| ③ | **共识 / 分歧** | **共识**：①委派要**能力探测 + fail-closed**（不支持就不启动）；②子代理有**独立身份**，父方能列举自己创建过谁；③子代理的**工具面与策略不得比父宽**；④**中间过程不进父上下文**，只回结果；⑤**深度有闸**（防无限套娃）；⑥结果必须**结构化 + 失败可辨**（`stopReason ≠ completed` 时输出可能残缺）；⑦留痕走事件溯源，可回放。**分歧**：①**交付形态**——DSH 异步（工具立即返回 id，结果另行通知），PRD FR-D3 要同步（function calling 直接收结构化结果）；②**定义来源**——DSH 的子代理是**运行期创建的会话**（`prompt` 即任务，无预声明的角色目录），PRD 要**声明式定义**（对齐 `.claude/agents/`）；③**工具收窄的表达**——DSH 是运行期 `ToolRestriction{allow,deny}` 挂在子组合上，PRD 是声明里的 `tools` 白名单；④**续跑**——DSH 有 one-shot / continuable 两态 + `send_message` 续跑，PI 与 PRD 都没有续跑要求 |
+| ④ | **MoS 的取舍与理由** | **形态：agents-as-tools + 声明式定义，但取同步交付**。MoS 取 PRD 的 agents-as-tools（子代理 = 一个 `tool.Tool`，模型点名调用），**不抄 DSH 的异步 id + 通知**：异步要另配「结果回到模型」的通道（MoS 现在没有运行期消息注入通道，只有 Skills 的装配期目录先例），还要处理「父轮次已结束」的竞态；同步则直接复用既有 `tool/call` → `tool/result` 记账与截断通道。代价：**父轮次被子代理耗时占住** → 必须有超时与取消（DSH 的 `signal` 同义）；**不做续跑**（continuable）：PRD 没要求，续跑要子会话冷启动 + 事件溯源，投入大收益未定 → 列入 M3b。**定义来源：目录 + frontmatter（与 Skills 同构）**：宿主给目录列表（= 授权边界，同 `agent/skill`，框架不校验 Roots），每个子代理一个目录含 frontmatter（`name` / `description` / `model` / `tools` / `instructions`）；清单**进静态系统提示词**（装配期渲染一次 → 保 prompt cache，同 Skills 的 FR-C4 口径），预算降级照抄 Skills 的「清单预算受限」。理由：`agent/skill` 的目录发现 + frontmatter 解析 + 预算降级已是成品，复制它的形态比另造一套便宜且一致。代价：子代理集**装配期固定**（同 Skills 的已知代价）。**执行体：宿主注入 Runner，框架不自己造 Agent**：`agent/subagent` 不 import 根包（会成环：根包要 import 它），只定义 `Definition` / `Catalog` / `Result` / `Runner` 接口；根包 `mos` 装配层提供实现——造子 Agent（独立 `session.Session` = 独立上下文；工具面 = 按白名单从父注册表重建的子注册表；模型 = 父模型或声明的覆盖）。理由：治理规则 5（框架不绑宿主形态）+ 包环。代价：宿主想自定义子代理执行体得自己实现 Runner（接口成本极低）。**白名单与策略：取交集，fail-closed**——子代理实际工具面 = 声明白名单 ∩ 父可见工具集 ∩ 宿主 `policy.Config`（deny 优先）；**声明不能放大宿主策略**。理由：PRD 说「工具白名单即 blast radius 收缩」，但白名单本身也是作者写的——**作者写了不等于策略**，两层都收窄才闭合；DSH 同款（`toolFilter` + 父策略向下委派）。代价：宿主想给子代理更多工具得先在父层放开，这是有意的阻力。**回传体裁：固定结构 + 自述与事实分离**——工具结果 = `{status: completed｜error｜timeout, summary, findings[]}`，`summary` 是**子代理自述**（标注为自述）；按 NFR-5「任何智能体（含 SubAgent）的自述不入 `TaskState`，环境验证说了算」→ 子代理的结论**不进父的 TaskState**，父模型只能当**线索**，要用 `findings` 里的路径 / 命令**自己复核**。不抄 DSH 的 `outputSchema` 动态校验（要后端能力探测那套）。代价：父模型要多花回合复核——这是纪律不是缺陷。**失败语义**：子代理失败**不是**父轮次失败——工具返回 `status: error` 的正常结果（模型看得见、可自纠，同 §3.1「工具报错是结果」）；超时 = 工具级超时（同 MCP 的 `callTimeout`）。子代理内部的工具调用**照常走 `agent/execpath`**（policy / guard / 审批都在），审批沿用**同一个宿主 `approval.Answerer`**（审批是宿主对人喊话，不是对 agent 说话）；子代理**沿用父的策略，不缩小也不放大**。**留痕**：不加 `subagent/*` 事件（治理规则 2 事件预算制；PRD §4.2 的 `subagent/*` 属 FR-D6 / M3b）——v1 只记父会话的 `tool/call` / `tool/result`，子代理内部的调用记在**子会话**日志里（父会话不投影 → 「中间工具调用留内部」自然成立）。代价：父会话里看不到子代理内部干了什么（宿主拿得到子 session id，可核对） |
+| ⑤ | **两家都没有的空白** | **① 声明式子代理目录（`.claude/agents/` 风格）**——PI 无（只有 codemode 与可复用 agent loop），DSH 有子代理但**没有声明式角色目录**（子代理是运行期创建的会话，描述写在 prompt 里）→ **MoS 自创**：frontmatter 声明 `name` / `description` / `model` / `tools` / `instructions`。理由：PRD 明确要求，且 `.claude/agents/` 已是生态事实。风险：多一套目录格式（与 Skills 的 `SKILL.md` 形态相似、语义不同：技能是「知识」，子代理是「角色 + 工具面」）→ 缓解：复用 `agent/skill` 的 frontmatter 解析与目录发现（同一套注入式 `Reader`）。**② 同步 + 结构化回执**——DSH 异步 id + 通知，PI 无 → **MoS 自创**「同步等结果 + 固定结构回执」。理由：MoS 没有异步结果回注通道。风险：父轮次被占住 → 超时与取消要做扎实；父轮次取消时子代理必须跟着取消（DSH 的 `signal` 同义）。**③ 机器可检的拆分判据**——PRD 写「instructions / tools / policy 真正改变才拆」，两家都没有对应的**可检判据** → **MoS 自创**：子代理定义至少一项与父不同（`instructions` 非空 / `tools` 非空且不等于父可见集 / `model` 非空），否则装配期给诊断「该子代理与父无差别，拆了只是多一层开销」。风险：判据过严会拦掉合法的「只换 instructions」→ 判据按「任一不同即可」实现。**④ 子代理的「独立 Context」在 MoS 的落点**——两家都有（DSH 子会话 / PI 的 Agent 实例），MoS 落法是**独立 `session.Session`**（父会话不投影子会话事件）——这一项不算自创，是实现选择 |
+
+##### MoS SDK 侧设计
+
+| 落点 | 内容 | 依赖 |
+| --- | --- | --- |
+| `agent/subagent`（新包） | `Definition`（frontmatter：`name` / `description` / `model` / `tools` / `instructions`）+ `Catalog`（目录发现；读文件走注入的 `Reader`，同 `agent/skill`；目录列表 = 宿主授权边界，不校验 Roots）+ `Render`（清单渲染进静态系统提示词，预算降级同 Skills）+ `Runner` 接口（宿主注入：`Run(ctx, spec) (Result, error)`）+ `Result{Status, Summary, Findings, Error}` | → `tool`, `gopkg.in/yaml.v3` |
+| `agent/subagent` 的工具 | 一个子代理 = 一个 `tool.Tool`（名字 `subagent__<name>`，2026-11-06 拍板）：参数 `task`（必填）+ 可选 `context`；执行时用**子注册表**跑一次子 Agent，回执 = 固定结构（status / summary / findings）；**并发分类**：默认独占（fail-closed，默认串行）——子代理内部要发模型请求 | → `tool`, `session` |
+| `mos`（装配层） | `Config.SubAgents *SubAgentConfig`（目录列表 + 清单预算 + 可选 `Reader` + 子代理超时）；装配期扫描 → 清单进系统提示词 → 每个子代理注册一个工具；**Runner 由装配层提供**（造子 Agent：独立 `session.Session` + 白名单子注册表 + 模型覆盖）；`Describe()` 快照写明「装了几个子代理 + 各自白名单 + 跳过 / 降级了什么」 | → `agent/subagent`, `agent/prompt` |
+| `agent/prompt` | 新增 `OrderSubAgents`（= 860：MCP 服务器节 850 之后、工具指引 1000 之前）+ `AddSubAgents(text)`；清单**装配期**渲染 → 静态，保 prompt cache | 不变 |
+| 驱动（react） | **不改**：子代理就是普通工具，走既有 `tool/call` / `tool/result` 通道与截断网 | 不变 |
+| `agent/policy` | 子代理**沿用父的同一套策略**（不缩小不放大）；白名单是**注册表层面**的收窄（子注册表只装白名单内的工具） | 不变 |
+| `session` | 子代理跑在**子会话**（`session.New`）里；父会话只留 `tool/call` / `tool/result`；**不加** `subagent/*` 事件（预算制，留给 M3b 的 AgentTeam 一起申请） | 不变 |
+
+**切片顺序与验收门**（每片：`go test ./...` 全绿 + 本节状态同步 + 一页说明）
+
+| 片 | 内容 | 验收 |
+| --- | --- | --- |
+| **S8.5-0** ✅ | PI/DSH 参考分析（本节）+ 一页说明 `docs/s8.5-subagent.md` + 拍板（六条全按建议，2026-11-06） | 本节落文档；拍板项有结论 |
+| **S8.5-A** | `agent/subagent` 包（`Definition` / `Catalog` / `Render` / `Runner` / `Result`）+ 目录发现与 frontmatter 解析（复用 `agent/skill` 的形态）+ 清单渲染 | 单测：frontmatter 解析、名字 / 描述校验（同 Skills 的 kebab-case 口径）、预算降级、拆分判据诊断 |
+| **S8.5-B** | 子代理 = 一个 `tool.Tool`：白名单子注册表（交集口径）+ 独立子会话 + 固定结构回执 + 超时与取消 | 单测：白名单交集（声明放大无效）、不可见工具不进子注册表、子代理失败 → `status: error` 正常结果、父轮次取消 → 子代理跟着取消 |
+| **S8.5-C** | 装配层接线（`Config.SubAgents` + Runner 实现 + 清单进静态提示词 + `Describe()` 快照）+ 模型覆盖与缺目录降级 | E2E：模型调子代理 → 子代理用受限工具面干活 → 结构化回执回填父上下文 → 父模型看得见 findings；未装子代理时零行为变化 |
+| **S8.5-D** | 文档同步（README / ARCHITECTURE / PRD）+ `examples/subagent` | 三处状态同步；示例可跑 |
+
+**自创点与风险登记**
+
+| 自创点 | 理由 | 风险 | 缓解 |
+| --- | --- | --- | --- |
+| 声明式子代理目录（frontmatter + `.claude/agents/` 风格） | PI 无、DSH 无（DSH 的子代理是运行期会话） | 多一套目录格式；与 Skills 语义混淆（知识 vs 角色） | 复用 `agent/skill` 的解析器与 `Reader` 注入；清单节标题不同（`<available_subagents>` vs `<available_skills>`）；文档写明两者区别 |
+| 同步交付（父轮次等结果） | DSH 异步 id + 通知需要运行期消息回注通道，MoS 没有 | 父轮次被占住；父取消时子代理泄漏 | 子代理超时（工具级，同 MCP `callTimeout`）+ 取消透传（ctx）；`Describe()` 写明超时档位 |
+| 回执固定结构 + 自述标注 | PRD「只收结构化结果」+ NFR-5 审计不变式 | 父模型把自述当事实（NFR-5 明令禁止） | 回执字段名即语义（`summary` 标为自述）；提示词节写明「结论需父模型复核」；子代理结论不进 `TaskState` |
+| 白名单取交集（声明不放大策略） | DSH 同款（`toolFilter` + 父策略向下委派） | 宿主想给子代理更多工具得先放开父层 | 诊断写明「被宿主策略挡掉 N 个」；白名单缺项在装配快照里点名 |
+| 不加 `subagent/*` 事件 | 治理规则 2 事件预算制；PRD 的 `subagent/*` 属 FR-D6（M3b） | 父会话看不到子代理内部 | 子会话 id 写进 `tool/call` 载荷与快照（宿主可查子会话日志） |
+| 框架只定义 `Runner` 接口、由装配层实现执行体 | 治理规则 5 + 避免根包与 `agent/subagent` 成环 | 宿主要自定义执行体得写代码 | 接口极小（一次调用进、一次结果出）；默认实现开箱即用 |
+
+##### 拍板结果（2026-11-06，用户已决）
+
+| # | 事项 | 结论 | 理由（要点） |
+| --- | --- | --- | --- |
+| 1 | 交付形态 | **同步**：父轮次等子代理跑完，结果作普通工具结果回填 | MoS 没有运行期消息回注通道；DSH 异步要另配通道 + 处理「父轮次已结束」的竞态。代价：父轮次被占住 → 工具级超时 + 取消透传兜底 |
+| 2 | 工具命名 | `subagent__<name>` | 对齐 MCP 的 `mcp__<server>__<tool>` 命名空间惯例；DSH 是单一工具名 `subagent` + `agent_preset` 枚举参数。代价：工具面随子代理数增长（子代理多时再考虑 deferred + `tool_search`） |
+| 3 | 白名单与父策略 | **取交集、deny 优先** | 声明的白名单不能放大宿主策略（作者写了不等于策略）；DSH 同款（`toolFilter` + 父策略向下委派）。代价：宿主要给子代理更多工具得先在父层放开 |
+| 4 | 模型覆盖 | 允许声明 `model`；宿主目录里没有 → **装配期报错** | 声明了却没装 = 假能力，fail-closed；不静默降级到父模型 |
+| 5 | 子代理能否再委派 | **禁止**（深度 0） | MoS v1 不做子代理套子代理；DSH 的深度闸（`resolveChildDepth`）是现成参照，M3b 再放开 |
+| 6 | 子代理工具面与 `tool_search` | 子代理工具面**不经** `tool_search`；子代理工具本身**不** deferred 化 | 白名单已显式声明，deferred 机制不适用；子代理少时全量声明更省心，数量多了再评估（M3b） |
+
+**状态**
+
+| 项 | 状态 |
+| --- | --- |
+| PI/DSH 参考分析（SubAgent） | ✅（本节，2026-11-06） |
+| PRD 分期口径勘误（FR-D3 属 M3a 收尾） | ✅（2026-11-06，PRD 已改） |
+| 拍板（交付形态 / 命名 / 白名单合成 / 模型覆盖 / 深度 / deferred 化） | ✅（2026-11-06，用户已决：六条全按建议） |
+| S8.5-A `agent/subagent` 包 | ⬜ |
+| S8.5-B 工具形态与执行体 | ⬜ |
+| S8.5-C 装配层接线 | ⬜ |
+| S8.5-D 文档与示例 | ⬜ |
+
+## 4. 治理规则（防再膨胀）
+
+1. 新增一个包 = PRD 有一条 FR 指名要它；否则留在 `main_bak1015` 不动。
+2. 钩子/守卫/事件目录预算制：新增一个 HookKind 或事件类型前，先删一个旧的。
+3. 每片合入验收门 = `go test ./...` 全绿 + 本文件/README 状态同步 + 该片一页说明，缺一不合。
+4. 破坏性变更直接改、不留兼容层，但必须在提交信息与 PRD 变更记录声明。
+5. **框架层不碰文件系统与网络，也不绑定配置格式**：需要 I/O 的能力以接口注入（如 `session.Persistence`），由宿主选实现；配置以结构进，键名与解析规则归宿主（`policy.Config` 不带格式 tag）。归档惯例（`agent/config.Load(data []byte)`）即此，框架替宿主打开路径等于绕过自己的文件 jail。

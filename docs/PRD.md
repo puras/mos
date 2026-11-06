@@ -1,6 +1,7 @@
 # MoS PRD（产品需求文档）
 
 > 版本：v0.2（草案）｜ 日期：2026-11-04 ｜ 维护：puras
+> 更新记录：**2026-11-06** —— **FR-D3 SubAgent 设计分析已出 + 六条拍板已定（未实现）**：PI/DSH 源码级对账落 `docs/ARCHITECTURE.md` §3.18（一页说明 `docs/s8.5-subagent.md`）——实查结论：**PI 没有子代理委派层**（只有可复用的 agent loop + codemode 替代路径），**DSH 有完整 `packages/subagent/*` 包族**（provider 接缝 + one-shot/continuable + 能力探测 fail-closed + 深度闸 + `toolFilter`/父策略向下委派 + 异步 id 通知）。**拍板（六条全按建议）**：①形态取 **agents-as-tools + 声明式 frontmatter 定义**（对齐 `.claude/agents/`，两家都没有 → MoS 自创），工具名 `subagent__<name>`；②交付取**同步**（不抄 DSH 的异步 id + 通知，MoS 没有运行期消息回注通道）；③白名单与父策略**取交集、deny 优先**（声明不能放大宿主策略）；④允许声明 `model`，但宿主目录里没有 → **装配期报错**（声明了却没装 = 假能力）；⑤子代理**不能再委派**（深度 0）；⑥子代理工具面**不经** `tool_search`，子代理工具本身**不** deferred 化。另两个自创点：回执固定结构且**自述与事实分离**（NFR-5：子代理自述不进 `TaskState`，父模型要自己复核）、**不加** `subagent/*` 事件（治理规则 2 预算制，那一档留给 M3b 的 AgentTeam）。**分期勘误**：§5 分期表把 FR-D3 列在 M3a，§4 状态行原写「M3b（SubAgent / AgentTeam / 并行 DAG）」——以 §5 为准，**FR-D3 属 M3a 收尾**，AgentTeam（FR-D6）/ 并行 DAG（FR-D4/D5）/ 合约 + Elo（FR-D7/D10）属 M3b。
 > 更新记录：**2026-11-06** —— **FR-D8 / FR-C 收尾（四项 E2E + 四处修复与口径变更）**：①**激活在同轮内生效**——驱动每轮重取声明清单，`tool_search` 激活后下一次请求即声明（原先要等下一个 turn；对齐 PI 的「下一轮请求声明给模型」）。②**装配期 `Config.Policy` 守卫 fail-open 已修**——装配中途的 `a.rt` 是空壳（`Guards` 为 nil，`GuardBus.Add` 是 no-op），`SetPolicy` 挂守卫等于丢掉：拒绝名单里的工具「模型看不见却调得动」；改为 `a.rt` 装好后再挂（与热替换同一条路）。③**`DeferredTools()` 与 `List()` 同口径**——被策略拒绝的 deferred 工具不再能被 `tool_search` 搜到并激活（「看不见」与「搜不到」一致）。④**401/403 恒归认证类**——认证层无条件装上，不再只在配了凭据时才装。另补三项验收：真 MCP 工具经 `tool_search` 激活 E2E、MCP 工具受 policy/guard 拦截 E2E、streamable-http 真服务端联调（官方 SDK handler + `httptest`）。说明见 `docs/s8.2-mcp.md`。
 > 更新记录：**2026-11-04** —— **FR-D8 可用性优化第四片（S8.4-E）**：**MCP 资源工具**——三个共享工具 `mcp_resource_list` / `mcp_resource_templates` / `mcp_resource_read`（显式 `server` 参数，工具面恒为 0 或 3，不随服务器数增长）；只对「非 hidden 且确实有资源」的服务器可达（hidden 资源不泄露）；文本直返、二进制降级 OpaquePart 占位；SDK 类型不外泄（`Client` 增三个资源方法，投影成 MoS 类型）。名字带 `mcp_resource_` 前缀（两家参考源不带前缀、与 `mcp__<server>__<tool>` 不统一）。分析见 `docs/ARCHITECTURE.md` §3.16，说明见 `docs/s8.4-usability.md`。
 > 更新记录：**2026-11-04** —— **FR-D11 可用性优化第三片（S8.4-D）**：**`allowed-tools` 求交诊断**——技能激活时把声明的 `allowed-tools` 与当前可见工具集求交，缺失写进新事件 `skill/allowed-tools-mismatch` 与 `Describe()` 快照；**只诊断、不收窄**（工具面不变，模型返回值不出现诊断文案）。注册表增 `Visible()`（模型可见工具名，与 `List()` 同一过滤）；`skill.Options.ToolProbe` 由装配层注入探针。分析见 `docs/ARCHITECTURE.md` §3.16，说明见 `docs/s8.4-usability.md`。
@@ -126,7 +127,7 @@ Harness Engineering 四铁律 + Loop Engineering 九杠杆 + Audit Gate 审计�
 | M3a | FR-D8 MCP 接入：`tool/mcp` 新包（**官方 Go SDK**：`github.com/modelcontextprotocol/go-sdk` v1.8.0；stdio + streamable-http 两个 transport；协议基线 `2026-07-28`）+ 工具适配（`mcp__<server>__<tool>` 命名、schema 直通、结果投影）+ 两阶段原子换代 + 装配入口（`mos.Config.MCP`：一开即装、默认 deferred、hidden 档、失败隔离、服务器说明每会话一次性注入、`Describe()` 快照） | ✅（2026-11-04，S8.2 + S8.3；**2026-11-06 补齐**四项 E2E + 四处修复/口径变更，说明见 `docs/s8.2-mcp.md`） |
 | M3a | FR-D8 可用性优化 **S8.4-A**：MCP 服务器摘要进**静态**系统提示词（`agent/prompt` 新增 `mcp_servers` 节 + `tool/mcp` 渲染器 + 装配期接线；只列连上且有 deferred 工具的服务器） | ✅（2026-11-04，S8.4-A；说明见 `docs/s8.4-usability.md`） |
 | M3a | FR-D8/D11 可用性优化 **S8.4-B/C/D/E**：认证可诊断 + `TokenProvider`、技能正文现读 + `Agent.ReloadSkills()`、`allowed-tools` 求交诊断、MCP 资源工具（三个共享工具） | ✅ 全部落地（B/C/D/E 2026-11-04；分析见 `docs/ARCHITECTURE.md` §3.16） |
-| M3 ~ M5 | 见 §5 需求 | ◐ M3a（FR-D11 Skills / FR-D8 MCP）已落地；M3b（SubAgent / AgentTeam / 并行 DAG）未开始 |
+| M3 ~ M5 | 见 §5 需求 | ◐ M3a（FR-D11 Skills / FR-D8 MCP）已落地；**FR-D3 SubAgent 设计分析已出 + 六条拍板已定（2026-11-06，见 ARCHITECTURE §3.18），实现待做（S8.5-A/B/C/D）**；M3b（AgentTeam / 并行 DAG / 合约 + Elo）未开始 |
 
 ---
 
@@ -163,7 +164,7 @@ Harness Engineering 四铁律 + Loop Engineering 九杠杆 + Audit Gate 审计�
 | --- | --- | --- |
 | FR-D1 | Coordinator 路由与编排拓扑：按意图分派（规则硬路由保证确定性可审计，LLM 分类兜底）；拓扑先「监督者/层次化」，后演进「批评者-审查者」 | 基于 `agent/router` 扩展；路由决策落会话日志可回放 |
 | FR-D2 | 三权分离 Manager / Executor / Auditor：派发、执行、审计职责分属不同角色 | 审计不变式对每个成员独立生效（NFR-5） |
-| FR-D3 | SubAgent 子智能体（首选 agents-as-tools 形态）：声明式定义（`name` / `description` 自动委派匹配 / `model` 覆盖 / `tools` 白名单 / 提示词正文，对齐 `.claude/agents/` 风格）；实现 `tool.Tool` 包装进 Registry，主 Agent 经 function calling 调用只收结构化结果 | 工具白名单即 blast radius 收缩（fail-closed）；独立 Context，中间工具调用留内部；回传自述仍须 Auditor 验证；决策判据入文档——instructions/tools/policy 真正改变才拆 |
+| FR-D3 | SubAgent 子智能体（首选 agents-as-tools 形态）：声明式定义（`name` / `description` 自动委派匹配 / `model` 覆盖 / `tools` 白名单 / 提示词正文，对齐 `.claude/agents/` 风格）；实现 `tool.Tool` 包装进 Registry，主 Agent 经 function calling 调用只收结构化结果 | 工具白名单即 blast radius 收缩（fail-closed）；独立 Context，中间工具调用留内部；回传自述仍须 Auditor 验证；决策判据入文档——instructions/tools/policy 真正改变才拆（**2026-11-06 设计分析已出、六条拍板已定，见 ARCHITECTURE §3.18；实现待做 S8.5-A/B/C/D**） |
 | FR-D4 | 双阶段架构（Plan&Solve）：Initializer 写 plan.md 退出 → Executor 接力执行，不共享 Context Window；Replanner 随新约束修订计划 | 计划文件落 `runs/<run-id>`（依赖 FR-E6 可先落工作目录）；跨窗口接力 E2E |
 | FR-D5 | LLMCompiler 多智能体并行 DAG：基于 `agent/driver/scripted`（单智能体先行版已落地）扩展 Map-Reduce——分支并发、结果经 TaskState 汇聚、合并只读分支摘要、并行度作为计划元数据 | DAG 校验 fail-closed（依赖环 / 节点存在性）；并发分支数有界 |
 | FR-D6 | AgentTeam 智能体团队：Team Lead + Teammates + Shared Task List（`pending → in_progress → completed` + `blocks/blockedBy` 依赖自动解锁）+ Mailbox 点对点消息；状态落盘（角色/上下文/决策/任务文件/名册写 `runs/<run-id>`，中断后可重建）；工作树隔离（独立工作目录/分支，测试通过才合并） | 事件 `subagent/*`、`task_claim/task_complete` 落日志；团队重建演练（kill 后一条命令恢复） |
