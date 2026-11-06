@@ -87,24 +87,30 @@ type Registry struct {
 	// deferred 是懒加载集：注册但不进 List()（模型看不到），经 tool_search
 	// 激活后下一轮才声明。只记名字，顺序沿 order。
 	deferred map[string]bool
-	// replaceable 是「经 Replace 注册」的工具名集合：下次 Replace 时，集合里
-	// 不在新名单的工具整体消失（MCP 服务器换代语义）；手动 Register 的工具
-	// 不在集合里，永不被动。
-	replaceable map[string]bool
-	// visible 是可见性过滤器栈（可选）：所有过滤器都放行的工具才出现在
-	// List() 里，但仍可被 Call。多个过滤器按 Add 顺序叠加（AND 语义——
-	// policy 名单一层（S5c）、MCP hidden 档一层（S8.2）；SetVisibility 单值
-	// 语义保留兼容：再设一次替换整个栈）。
-	visible []func(name string) bool
+	// scope 记每个工具的**代际归属**（Replace 的 scope 参数）：同一 scope 的
+	// 上一代工具在下次 Replace 时整体让位（服务器撤掉的工具要消失）；
+	// 不同 scope 互不踩——手动 Register 的工具没有 scope（永不被换代波及）。
+	scope map[string]string
+	// visible 是可见性过滤器层（可选）：所有层都放行的工具才出现在 List() 里，
+	// 但仍可被 Call。层按 AND 叠加——policy 名单一层（S5c）、MCP hidden 档
+	// 一层（S8.2）。每层带槽名：具名槽可**单独替换**（policy 热替换不会踩掉
+	// MCP 那层），空槽名 = 匿名层（SetVisibility / AddVisibility 加的）。
+	visible []visibilityLayer
+}
+
+// visibilityLayer 是一层可见性过滤器。slot 为空表示匿名层。
+type visibilityLayer struct {
+	slot string
+	fn   func(name string) bool
 }
 
 // NewRegistry 创建空注册表。
 func NewRegistry() *Registry {
 	return &Registry{
-		tools:       make(map[string]Tool),
-		schemas:     make(map[string]map[string]any),
-		deferred:    make(map[string]bool),
-		replaceable: make(map[string]bool),
+		tools:    make(map[string]Tool),
+		schemas:  make(map[string]map[string]any),
+		deferred: make(map[string]bool),
+		scope:    make(map[string]string),
 	}
 }
 
@@ -177,14 +183,20 @@ func normalizeProvidedSchema(s any) map[string]any {
 // + 半套新工具。Replace 在锁内一次完成；校验不过时注册表保持原样
 // （fail-closed：先校验后落盘，不留半套）。
 //
-// 已有的同名工具被覆盖（这正是换代的含义，与 Register 的重名报错相反）；
-// **上一批经 Replace 进来的工具，这次不在名单里的消失**（服务器不再提供
-// 它们）；手动 Register 的工具（内置工具）永不被动——两套生命周期，互不踩。
+// scope 是**代际归属**：同一 scope 的上一批工具，这次不在名单里的**消失**
+// （服务器不再提供它们）；不同 scope 互不踩（服务器 A 换代不会动服务器 B
+// 的工具），手动 Register 的工具没有 scope（永不被换代波及）。
+//
+// 已有的同名工具被覆盖（这正是换代的含义，与 Register 的重名报错相反）。
 // deferred[name]=true 的工具以 deferred 态注册；false = 普通注册。
-func (r *Registry) Replace(tools []Tool, deferred map[string]bool) error {
-	if len(tools) == 0 {
-		return fmt.Errorf("tool: Replace 需要至少一个工具")
-	}
+// deferred 标记按新名单**整体重写**（上一代 deferred、这一代 direct 的
+// 工具必须真的转成可见——标记残留会让它永远隐身）。
+//
+// 空名单 = **该代清空**（服务器把工具全撤了）——不是错误。
+//
+// scope 为空串 = 不参与代际清理（只做注册/覆盖，不动上一代）——给「一次性
+// 替换」用的入口；MCP 走的是带 scope 的路径（mcp:<server>）。
+func (r *Registry) Replace(scope string, tools []Tool, deferred map[string]bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	// 先校验整批（名单内重名 + deferred 名单含名单外工具），再落盘。
@@ -212,14 +224,14 @@ func (r *Registry) Replace(tools []Tool, deferred map[string]bool) error {
 			return fmt.Errorf("tool: Replace 的 deferred 名单含未在名单中的工具 %q", name)
 		}
 	}
-	// 校验全过。第一步：上一代 replaceable 里不在新名单的消失
-	// （从 tools / schemas / deferred / replaceable / order 一起清）。
+	// 校验全过。第一步：同一 scope 的上一代里不在新名单的消失
+	// （从 tools / schemas / deferred / scope / order 一起清）。
 	for _, name := range r.order {
-		if r.replaceable[name] && !seen[name] {
+		if r.scope[name] == scope && scope != "" && !seen[name] {
 			delete(r.tools, name)
 			delete(r.schemas, name)
 			delete(r.deferred, name)
-			delete(r.replaceable, name)
+			delete(r.scope, name)
 		}
 	}
 	kept := r.order[:0]
@@ -231,9 +243,6 @@ func (r *Registry) Replace(tools []Tool, deferred map[string]bool) error {
 	r.order = kept
 	// 第二步：落新名单。已有的只换工具与 schema（order 位置不动）；
 	// 新名追加到尾部（顺序稳定，利于 prompt cache）。
-	for name, def := range deferred {
-		r.deferred[name] = def
-	}
 	for _, t := range tools {
 		name := t.Name()
 		if _, exists := r.tools[name]; !exists {
@@ -241,7 +250,12 @@ func (r *Registry) Replace(tools []Tool, deferred map[string]bool) error {
 		}
 		r.tools[name] = t
 		r.schemas[name] = schemas[name]
-		r.replaceable[name] = true
+		// deferred 标记按新名单重写（含 false）——上一代 deferred、这一代
+		// direct 的工具必须真的转成可见。
+		r.deferred[name] = deferred[name]
+		if scope != "" {
+			r.scope[name] = scope
+		}
 	}
 	return nil
 }
@@ -255,7 +269,8 @@ func (r *Registry) Replace(tools []Tool, deferred map[string]bool) error {
 // 本包只认函数值，不认识 policy / hook 之类的具体实现：可见性策略由宿主
 // 在装配时接上（例：reg.SetVisibility(policy.New(cfg).Visible)）。
 // 注意：本方法是**替换**语义——把可见性栈重置为这一个过滤器。要叠加用
-// AddVisibility（policy 与 MCP hidden 各占一层，谁也不覆盖谁）。
+// AddVisibility（policy 与 MCP hidden 各占一层，谁也不覆盖谁）；要只换
+// 某一层（如 policy 热替换不动 MCP 层），用 SetVisibilitySlot。
 func (r *Registry) SetVisibility(visible func(name string) bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -263,7 +278,7 @@ func (r *Registry) SetVisibility(visible func(name string) bool) {
 		r.visible = nil
 		return
 	}
-	r.visible = []func(name string) bool{visible}
+	r.visible = []visibilityLayer{{fn: visible}}
 }
 
 // AddVisibility 追加一层可见性过滤器（AND 语义：所有层都放行才可见）。
@@ -278,13 +293,42 @@ func (r *Registry) AddVisibility(visible func(name string) bool) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.visible = append(r.visible, visible)
+	r.visible = append(r.visible, visibilityLayer{fn: visible})
 }
 
-// visibleTo 判断工具在过滤器栈下是否可见（调用方须已持锁）。
+// SetVisibilitySlot 设置/替换**具名槽**的可见性层：同名槽整层替换，
+// 不影响其他槽；fn 为 nil = 移除该槽。
+//
+// 为什么需要具名槽：policy 的可见性会在运行期热替换（SetPolicy），MCP 的
+// hidden 档会在服务器换代时变——两者都是「自己那层变了」，不该动对方的
+// 层。匿名层（SetVisibility / AddVisibility）做不到这点：SetVisibility 是
+// 整栈替换语义，热替换 policy 会顺手把 MCP 层清掉。
+func (r *Registry) SetVisibilitySlot(slot string, visible func(name string) bool) {
+	if slot == "" {
+		r.SetVisibility(visible)
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	kept := r.visible[:0]
+	for _, layer := range r.visible {
+		if layer.slot != slot {
+			kept = append(kept, layer)
+		}
+	}
+	r.visible = kept
+	if visible != nil {
+		r.visible = append(r.visible, visibilityLayer{slot: slot, fn: visible})
+	}
+}
+
+// visibleTo 判断工具在过滤器层下是否可见（调用方须已持锁）。
 func (r *Registry) visibleTo(name string) bool {
-	for _, f := range r.visible {
-		if !f(name) {
+	for _, layer := range r.visible {
+		if layer.fn == nil {
+			continue
+		}
+		if !layer.fn(name) {
 			return false
 		}
 	}

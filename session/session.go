@@ -184,6 +184,7 @@ type Session struct {
 	mu      sync.Mutex
 	seq     int64
 	events  []Event
+	claims  map[string]bool
 	persist Persistence
 }
 
@@ -210,6 +211,26 @@ func (s *Session) Append(ev Event) (Event, error) {
 	s.seq = ev.Seq
 	s.events = append(s.events, ev)
 	return ev, nil
+}
+
+// Claim 认领一个**一次性标记**：首次返回 true，之后返回 false。
+//
+// 用途：把「一次性注入」类副作用绑到会话上（如 MCP 服务器说明只在会话首次
+// 使用时注入一次）。这是**会话状态**，不是事件——不进审计日志，不占事件
+// 目录预算（治理规则 2）。
+//
+// 语义是「进程内」的：会话从持久化恢复后标记不跟随（重新注入一次）。
+func (s *Session) Claim(key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.claims == nil {
+		s.claims = map[string]bool{}
+	}
+	if s.claims[key] {
+		return false
+	}
+	s.claims[key] = true
+	return true
 }
 
 // Events 返回事件日志的副本（调用方修改副本不影响日志）。

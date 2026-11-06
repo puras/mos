@@ -36,6 +36,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/puras/mos/agent"
 	"github.com/puras/mos/agent/approval"
@@ -53,6 +54,7 @@ import (
 	"github.com/puras/mos/session"
 	"github.com/puras/mos/tool"
 	"github.com/puras/mos/tool/builtin"
+	"github.com/puras/mos/tool/mcp"
 	"github.com/puras/mos/tool/searchtools"
 )
 
@@ -151,6 +153,16 @@ type Config struct {
 	// 给了目录但没装出技能（目录不存在 / 全被跳过）不算装配失败：降级说明
 	// 进 Describe() 快照，不静默丢。
 	Skills *SkillConfig
+	// MCP 是 MCP（Model Context Protocol）服务器配置（nil = 不提供这个能力）。
+	//
+	// **一开即装**：装配期连上服务器、发现工具、按 exposure 注册进工具注册表。
+	// 单台服务器连不上不影响其余（失败隔离），降级说明进 Describe() 快照。
+	//
+	// MCP 工具默认 deferred（模型经 tool_search 搜到才进清单）——服务器工具面
+	// 通常很大，全量声明会撑爆 prompt（FR-C3）。
+	//
+	// 连接是**长连接**（stdio 是子进程）：宿主用完请调 a.Close() 收掉。
+	MCP *MCPConfig
 	// WorkDir 是工作目录：文件工具的沙箱根、截断落盘目录的父目录。空 = 当前目录。
 	WorkDir string
 	// ContextWindow 是模型上下文窗口（token）。0 = 默认 128K；确切窗口更小的
@@ -212,6 +224,13 @@ type Agent struct {
 	// skills 是装配期发现的技能清单（nil = 没装技能这个能力）。
 	skills *skill.Catalog
 
+	// mcp 是 MCP 编排器（nil = 没装 MCP 这个能力）。
+	mcp *mcp.Manager
+	// mcpInstructions 是各服务器的说明（连接建立时注入一次）。
+	mcpInstructions []mcp.Instruction
+	// mcpInstructionMax 是说明注入的字节上限（0 = 默认）。
+	mcpInstructionMax int
+
 	// catalog 是模型目录（多模型模式；nil = 单模型模式）。
 	catalog *modelCatalog
 
@@ -261,6 +280,29 @@ type SkillConfig struct {
 	// MaxCatalogBytes 是清单渲染的字节上限（≤0 = 8KB）。超预算时先丢描述、
 	// 再丢条目，丢了多少如实写进末尾提示。
 	MaxCatalogBytes int
+}
+
+// MCPConfig 是 MCP（Model Context Protocol）装配参数。
+//
+// 零值可用：Servers 空 = 不连任何服务器；超时与说明上限取默认值。
+type MCPConfig struct {
+	// Servers 是要连接的服务器列表（stdio / streamable-http）。
+	Servers []mcp.ServerConfig
+	// DefaultExposure 是服务器未单独指定时的默认暴露档（空 = deferred）。
+	//
+	// 三档：deferred（默认，搜到才进清单）/ direct（直接进清单）/
+	// hidden（模型看不见也不搜得到，仍可被程序化调用）。
+	DefaultExposure mcp.Exposure
+	// ConnectTimeout 是单台服务器的连接超时（≤0 = 15s）。
+	ConnectTimeout time.Duration
+	// CallTimeout 是单次工具调用超时（≤0 = 60s）。
+	CallTimeout time.Duration
+	// MaxInstructionBytes 是服务器说明注入的字节上限（≤0 = 32KB）。
+	MaxInstructionBytes int
+	// Dial 是连接服务器的工厂（nil = 用 tool/mcp 的默认实现）。
+	//
+	// 宿主可以换掉连接方式（自己的网关代理、注入凭据）；测试用替身顶掉真连接。
+	Dial func(ctx context.Context, cfg mcp.ServerConfig, opts mcp.Options) (mcp.Client, error)
 }
 
 // New 装配智能体。缺 Model 或参数非法直接报错（fail-closed）。
@@ -395,6 +437,37 @@ func New(cfg Config) (*Agent, error) {
 		shellEnabled = true
 	}
 
+	// MCP：一开即装（连服务器 → 发现工具 → 按 exposure 注册）。
+	//
+	// 位置：在 tool_search 之前——MCP 工具默认 deferred，注册完才知道 deferred
+	// 集非空（tool_search 是「有 deferred 才有」的能力即证据）。
+	var mcpMgr *mcp.Manager
+	var mcpInstructions []mcp.Instruction
+	mcpInstructionMax := 0
+	if cfg.MCP != nil && len(cfg.MCP.Servers) > 0 {
+		servers := make([]mcp.ServerConfig, 0, len(cfg.MCP.Servers))
+		for _, s := range cfg.MCP.Servers {
+			if s.Exposure == "" && cfg.MCP.DefaultExposure != "" {
+				s.Exposure = cfg.MCP.DefaultExposure
+			}
+			servers = append(servers, s)
+		}
+		mcpMgr = mcp.NewManager(mcp.Options{
+			Servers:        servers,
+			ClientName:     "mos",
+			ClientVersion:  Version,
+			ConnectTimeout: cfg.MCP.ConnectTimeout,
+			CallTimeout:    cfg.MCP.CallTimeout,
+			Dial:           cfg.MCP.Dial,
+		}, reg)
+		// 装配期连接：失败隔离在 Manager 里（单台连不上不影响其余）。
+		mcpMgr.Start(context.Background())
+		mcpInstructions = mcpMgr.Instructions()
+		mcpInstructionMax = cfg.MCP.MaxInstructionBytes
+		// hidden 档：可见性层（与 policy 那层 AND 叠加——谁也不覆盖谁）。
+		reg.SetVisibilitySlot(mcp.HiddenSlot, mcpMgr.HiddenFilter())
+	}
+
 	// tool_search：deferred 集非空才注册（能力即证据——没有懒加载工具就不给
 	// 发现工具，小工具集行为与从前完全一致）。机制在框架、策略在宿主：
 	// 要不要 deferred 是宿主的装配决定（S7.3，docs/ARCHITECTURE.md §3.15）。
@@ -444,6 +517,10 @@ func New(cfg Config) (*Agent, error) {
 		contextWarning: contextWarning,
 
 		skills: skillCatalog,
+
+		mcp:               mcpMgr,
+		mcpInstructions:   mcpInstructions,
+		mcpInstructionMax: mcpInstructionMax,
 
 		catalog: catalog,
 	}
@@ -540,12 +617,53 @@ func (a *Agent) Run(ctx context.Context, sess *session.Session, input string) (s
 		}
 		ctx = skill.WithRecorder(ctx, skillRecorder{sess: sess})
 	}
+	// 服务器说明：一次性注入（每个会话一次）。
+	//
+	// 走 **user 侧**而不是系统提示词：系统提示词是装配期渲染一次的静态内容
+	//（保 prompt cache），而 MCP 连接可能掉线重连、说明可能变——写进静态
+	// 提示词会失真。注入一次后不再重复（避免刷屏）。
+	if len(a.mcpInstructions) > 0 && sess.Claim(mcpInstructionClaim) {
+		text := renderMCPInstructions(a.mcpInstructions, a.mcpInstructionMax)
+		if text != "" {
+			if _, err := sess.Append(session.Event{Kind: session.EventUser, Text: text}); err != nil {
+				return "", err
+			}
+		}
+	}
 	// 每轮用运行上下文的**浅拷贝**：旋钮值写进副本，驱动只读副本——
 	// 并行会话之间没有共享可变状态（钩子/守卫/注册表是共享的，那是有意）。
 	rt := *a.rt
 	rt.Concurrency = int(a.concurrency.Load())
 	rt.MaxDecisionRounds = int(a.maxRounds.Load())
 	return a.driver.Run(ctx, &rt, sess, input)
+}
+
+// mcpInstructionClaim 是「本会话已注入过服务器说明」的标记（会话级一次性）。
+const mcpInstructionClaim = "mcp/instructions"
+
+// renderMCPInstructions 渲染服务器说明（一次性注入给模型）。
+//
+// 格式带服务器归属（DSH 语义）：模型看得懂这段话是谁说的。
+// 超预算时按服务器顺序**整段**截断（半句话比没有更坏——宁可少说一台）。
+func renderMCPInstructions(list []mcp.Instruction, maxBytes int) string {
+	if len(list) == 0 {
+		return ""
+	}
+	if maxBytes <= 0 {
+		maxBytes = mcp.DefaultMaxInstructionBytes
+	}
+	var b strings.Builder
+	b.WriteString("[MCP 服务器说明]\n")
+	b.WriteString("以下说明来自已连接的 MCP 服务器（连接建立时注入一次）：\n")
+	for _, ins := range list {
+		part := fmt.Sprintf("- %s: %s\n", ins.Server, ins.Text)
+		if b.Len()+len(part) > maxBytes {
+			b.WriteString("- （其余服务器的说明超出预算，已省略）\n")
+			break
+		}
+		b.WriteString(part)
+	}
+	return b.String()
 }
 
 // ExpandSkill 展开用户文本里的技能手势（/name）。
@@ -600,6 +718,17 @@ func (r skillRecorder) RecordActivate(name, description, dir string) error {
 	return err
 }
 
+// Close 释放装配期建立的长连接（目前是 MCP 服务器连接：stdio 子进程等）。
+//
+// 宿主用完智能体应调它——不调的话 stdio 子进程会一直活着。
+// 没装 MCP 时是空操作。
+func (a *Agent) Close() error {
+	if a == nil || a.mcp == nil {
+		return nil
+	}
+	return a.mcp.Close()
+}
+
 // RunContext 返回底层运行上下文的**模板**（只读用）。
 //
 // 模板的字段改动只在没有运行中的轮次时才有意义：每轮跑的是模板的浅拷贝。
@@ -649,6 +778,12 @@ func (a *Agent) SetConcurrency(n int) {
 // **下一轮生效**；n <= 0 = 不限。
 func (a *Agent) SetMaxDecisionRounds(n int) { a.maxRounds.Store(int64(n)) }
 
+// policySlot 是名字级策略在可见性过滤器栈里的槽名。
+//
+// 用具名槽而不是整栈替换：policy 热替换只动自己那层，MCP 的 hidden 层
+// 不受影响（整栈替换会把对方的层一起清掉）。
+const policySlot = "policy"
+
 // SetPolicy 热替换名字级策略：旧守卫撤下、新守卫挂上、工具可见性同步更新。
 // **下一轮生效**（一轮里工具载荷已冻结、守卫已判过）。
 //
@@ -662,13 +797,13 @@ func (a *Agent) SetPolicy(p *policy.Config) {
 	}
 	if p == nil {
 		a.policy = nil
-		a.tools.SetVisibility(nil)
+		a.tools.SetVisibilitySlot(policySlot, nil)
 		return
 	}
 	pol := policy.New(*p)
 	a.policy = pol
 	a.removeGuard = a.rt.Guards.Add(pol.Check)
-	a.tools.SetVisibility(pol.Visible)
+	a.tools.SetVisibilitySlot(policySlot, pol.Visible)
 }
 
 // SetRules 热替换参数级规则（运行期旋钮）。**下一轮生效**。
@@ -832,6 +967,25 @@ func (a *Agent) Describe() string {
 	// 降级诊断照实写（技能没装上也是一条诊断）。
 	if a.skills != nil {
 		for _, w := range a.skills.Warnings() {
+			fmt.Fprintf(&b, "    ⚠ %s\n", w)
+		}
+	}
+	// MCP：装了什么 + 没装什么（连不上的服务器、换代失败都要写出来）。
+	switch {
+	case a.mcp == nil:
+		b.WriteString("  MCP 服务器: 未装配\n")
+	default:
+		deferred, direct, hidden := a.mcp.ToolCount()
+		fmt.Fprintf(&b, "  MCP 服务器: %d 个（工具 %d 个：deferred %d / direct %d / hidden %d）\n",
+			len(a.mcp.Servers()), deferred+direct+hidden, deferred, direct, hidden)
+		for _, s := range a.mcp.Servers() {
+			fmt.Fprintf(&b, "    - %s: 协议 %s，工具 %d 个\n",
+				s.Name(), s.ProtocolVersion(), len(s.Tools()))
+		}
+		for _, name := range a.mcp.Skipped() {
+			fmt.Fprintf(&b, "    - %s: 未连接（配置为禁用）\n", name)
+		}
+		for _, w := range a.mcp.Warnings() {
 			fmt.Fprintf(&b, "    ⚠ %s\n", w)
 		}
 	}

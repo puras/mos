@@ -136,7 +136,6 @@ func TestAddVisibilityStacks(t *testing.T) {
 	}
 }
 
-// Replace：原子换代——新名追加、同名覆盖、schema 与 deferred 同步、
 // Replace：原子换代——新名追加、同名覆盖、上一代消失、schema 与 deferred
 // 同步；手动注册的内置工具不受影响；校验失败注册表保持原样。
 func TestReplace(t *testing.T) {
@@ -149,7 +148,7 @@ func TestReplace(t *testing.T) {
 		{name: "mcp__s__a", desc: "v1 a", params: &struct{}{}},
 		{name: "mcp__s__b", desc: "v1 b", params: &struct{}{}},
 	}
-	if err := r.Replace([]Tool{v1[0], v1[1]}, map[string]bool{"mcp__s__a": true, "mcp__s__b": true}); err != nil {
+	if err := r.Replace("mcp:s", []Tool{v1[0], v1[1]}, map[string]bool{"mcp__s__a": true, "mcp__s__b": true}); err != nil {
 		t.Fatalf("Replace v1: %v", err)
 	}
 	// deferred 态：不进 List；schema 已缓存。
@@ -167,7 +166,7 @@ func TestReplace(t *testing.T) {
 		{name: "mcp__s__a", desc: "v2 a", params: &struct{}{}},
 		{name: "mcp__s__c", desc: "v2 c", params: &struct{}{}},
 	}
-	if err := r.Replace([]Tool{v2[0], v2[1]}, map[string]bool{"mcp__s__c": true}); err != nil {
+	if err := r.Replace("mcp:s", []Tool{v2[0], v2[1]}, map[string]bool{"mcp__s__c": true}); err != nil {
 		t.Fatalf("Replace v2: %v", err)
 	}
 	got := namesOf(r)
@@ -196,11 +195,11 @@ func TestReplace(t *testing.T) {
 func TestReplaceRejectedAtomically(t *testing.T) {
 	r := NewRegistry()
 	v1 := &sTool{name: "mcp__s__a", desc: "v1", params: &struct{}{}}
-	if err := r.Replace([]Tool{v1}, nil); err != nil {
+	if err := r.Replace("mcp:s", []Tool{v1}, nil); err != nil {
 		t.Fatalf("Replace v1: %v", err)
 	}
 	// 名单内重名 → 拒绝。
-	err := r.Replace([]Tool{
+	err := r.Replace("mcp:s", []Tool{
 		&sTool{name: "mcp__s__a", desc: "x", params: &struct{}{}},
 		&sTool{name: "mcp__s__a", desc: "y", params: &struct{}{}},
 	}, nil)
@@ -208,7 +207,7 @@ func TestReplaceRejectedAtomically(t *testing.T) {
 		t.Fatal("名单内重名应报错")
 	}
 	// deferred 名单含名单外工具 → 拒绝。
-	err = r.Replace([]Tool{&sTool{name: "mcp__s__b", desc: "x", params: &struct{}{}}},
+	err = r.Replace("mcp:s", []Tool{&sTool{name: "mcp__s__b", desc: "x", params: &struct{}{}}},
 		map[string]bool{"mcp__s__b": true, "mcp__s__ghost": true})
 	if err == nil {
 		t.Fatal("deferred 名单含名单外工具应报错")
@@ -221,6 +220,121 @@ func TestReplaceRejectedAtomically(t *testing.T) {
 	list := r.List()
 	if list[0].Description != "v1" {
 		t.Fatalf("描述应还是 v1：%q", list[0].Description)
+	}
+}
+
+// 代际隔离：不同 scope 的换代互不踩（服务器 A 换代不动服务器 B 的工具）。
+func TestReplaceScopeIsolation(t *testing.T) {
+	r := NewRegistry()
+	a1 := &sTool{name: "mcp__a__x", desc: "a1", params: &struct{}{}}
+	b1 := &sTool{name: "mcp__b__y", desc: "b1", params: &struct{}{}}
+	if err := r.Replace("mcp:a", []Tool{a1}, nil); err != nil {
+		t.Fatalf("Replace a: %v", err)
+	}
+	if err := r.Replace("mcp:b", []Tool{b1}, nil); err != nil {
+		t.Fatalf("Replace b: %v", err)
+	}
+	// a 换代：a 的旧工具消失，b 的不受影响。
+	a2 := &sTool{name: "mcp__a__z", desc: "a2", params: &struct{}{}}
+	if err := r.Replace("mcp:a", []Tool{a2}, nil); err != nil {
+		t.Fatalf("Replace a v2: %v", err)
+	}
+	if _, ok := r.Get("mcp__a__x"); ok {
+		t.Fatal("a 的上一代工具应消失")
+	}
+	if _, ok := r.Get("mcp__b__y"); !ok {
+		t.Fatal("b 的工具不该被 a 的换代波及")
+	}
+	if _, ok := r.Get("mcp__a__z"); !ok {
+		t.Fatal("a 的新工具应在")
+	}
+}
+
+// 空名单：该 scope 的工具全撤（服务器撤掉全部工具 ≠ 装配错误），
+// 其他 scope 不受影响。
+func TestReplaceEmptyScopeClearsOnlyThatScope(t *testing.T) {
+	r := NewRegistry()
+	a1 := &sTool{name: "mcp__a__x", desc: "a1", params: &struct{}{}}
+	b1 := &sTool{name: "mcp__b__y", desc: "b1", params: &struct{}{}}
+	if err := r.Replace("mcp:a", []Tool{a1}, nil); err != nil {
+		t.Fatalf("Replace a: %v", err)
+	}
+	if err := r.Replace("mcp:b", []Tool{b1}, nil); err != nil {
+		t.Fatalf("Replace b: %v", err)
+	}
+	// a 换成空名单：a 的工具全没，b 的还在。
+	if err := r.Replace("mcp:a", nil, nil); err != nil {
+		t.Fatalf("Replace a（空名单）: %v", err)
+	}
+	if _, ok := r.Get("mcp__a__x"); ok {
+		t.Fatal("空名单应清掉该 scope 的工具")
+	}
+	if _, ok := r.Get("mcp__b__y"); !ok {
+		t.Fatal("空名单不该影响其他 scope")
+	}
+	if got := namesOf(r); len(got) != 1 || got[0] != "mcp__b__y" {
+		t.Fatalf("清单 = %v", got)
+	}
+}
+
+// deferred 标记重写：上一代 deferred、这一代 direct → 工具要真的可见
+// （不能遗留旧标记导致“永远隐身”）。
+func TestReplaceRewritesDeferredFlags(t *testing.T) {
+	r := NewRegistry()
+	v1 := &sTool{name: "mcp__s__a", desc: "v1", params: &struct{}{}}
+	if err := r.Replace("mcp:s", []Tool{v1}, map[string]bool{"mcp__s__a": true}); err != nil {
+		t.Fatalf("Replace v1: %v", err)
+	}
+	if got := namesOf(r); len(got) != 0 {
+		t.Fatalf("deferred 时不该进清单：%v", got)
+	}
+	// 同一工具这一代改成 direct。
+	v2 := &sTool{name: "mcp__s__a", desc: "v2", params: &struct{}{}}
+	if err := r.Replace("mcp:s", []Tool{v2}, map[string]bool{"mcp__s__a": false}); err != nil {
+		t.Fatalf("Replace v2: %v", err)
+	}
+	got := namesOf(r)
+	if len(got) != 1 || got[0] != "mcp__s__a" {
+		t.Fatalf("deferred → direct 后应进清单：%v", got)
+	}
+	if len(r.DeferredTools()) != 0 {
+		t.Fatalf("不该再有 deferred 工具：%v", r.DeferredTools())
+	}
+	// 反向：direct → deferred → 不进清单。
+	v3 := &sTool{name: "mcp__s__a", desc: "v3", params: &struct{}{}}
+	if err := r.Replace("mcp:s", []Tool{v3}, map[string]bool{"mcp__s__a": true}); err != nil {
+		t.Fatalf("Replace v3: %v", err)
+	}
+	if got := namesOf(r); len(got) != 0 {
+		t.Fatalf("direct → deferred 后不该进清单：%v", got)
+	}
+	if len(r.DeferredTools()) != 1 || r.DeferredTools()[0].Name != "mcp__s__a" {
+		t.Fatalf("deferred 集应只剩它：%v", r.DeferredTools())
+	}
+}
+
+// 具名槽：替换某一槽不影响其他槽（policy 热替换不踩 MCP 层）。
+func TestVisibilitySlotIsolation(t *testing.T) {
+	r := NewRegistry()
+	for _, n := range []string{"a", "b"} {
+		if err := r.Register(&sTool{name: n, desc: n, params: &struct{}{}}); err != nil {
+			t.Fatalf("Register %s: %v", n, err)
+		}
+	}
+	r.SetVisibilitySlot("policy", func(name string) bool { return name != "a" })
+	r.SetVisibilitySlot("mcp", func(name string) bool { return name != "b" })
+	if got := namesOf(r); len(got) != 0 {
+		t.Fatalf("两层各挡一个，应都看不见：%v", got)
+	}
+	// 换掉 policy 槽：mcp 槽仍在（b 仍被挡，a 恢复可见）。
+	r.SetVisibilitySlot("policy", func(name string) bool { return true })
+	if got := namesOf(r); len(got) != 1 || got[0] != "a" {
+		t.Fatalf("换 policy 槽后应只剩 a 可见：%v", got)
+	}
+	// 移除 mcp 槽：两个都可见。
+	r.SetVisibilitySlot("mcp", nil)
+	if got := namesOf(r); len(got) != 2 {
+		t.Fatalf("移除 mcp 槽后应都可见：%v", got)
 	}
 }
 
