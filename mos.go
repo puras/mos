@@ -461,7 +461,7 @@ func New(cfg Config) (*Agent, error) {
 			Dial:           cfg.MCP.Dial,
 		}, reg)
 		// 装配期连接：失败隔离在 Manager 里（单台连不上不影响其余）。
-		mcpMgr.Start(context.Background())
+		mcpMgr.Start(context.Background()) // 并发连接，返回即全部就绪
 		mcpInstructions = mcpMgr.Instructions()
 		mcpInstructionMax = cfg.MCP.MaxInstructionBytes
 		// hidden 档：可见性层（与 policy 那层 AND 叠加——谁也不覆盖谁）。

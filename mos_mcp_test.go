@@ -434,6 +434,57 @@ func TestMCPAuthFailureSnapshotNeedsAuth(t *testing.T) {
 	}
 }
 
+// TestMCPInstructionsTruncatedAtBudget：服务器说明按字节预算**整段省略**
+// （s8.2-mcp.md 的口径：超预算不截半句话——宁可少说一台）。用单台超长
+// 服务器锁定不变量：整节有界、超预算内容不出现、有省略提示。
+// （「预算内的说明保留」由 TestMCPInstructionsInjectedOnce 覆盖；多台场景
+// 下省哪几台取决于顺序——并发连接后 Instructions() 顺序不定，不写死。）
+func TestMCPInstructionsTruncatedAtBudget(t *testing.T) {
+	reg := newTestRegistry(t)
+	big := strings.Repeat("很长的说明", 20000) // 150KB，远超预算
+	a, err := mos.New(mos.Config{
+		Model: &stubModel{reply: "ok"},
+		Tools: reg,
+		MCP: &mos.MCPConfig{
+			MaxInstructionBytes: 512,
+			Servers: []mcp.ServerConfig{
+				{Name: "big", Description: "说明超长的服务器"},
+			},
+			Dial: mcpDialer(map[string]*mcpStubClient{
+				"big": {tools: []mcp.ToolInfo{{Name: "x", Description: "X"}}, instructions: big},
+			}),
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer a.Close()
+
+	sess := session.New("s-budget", nil)
+	if _, err := a.Run(context.Background(), sess, "你好"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var text string
+	for _, ev := range sess.Events() {
+		if ev.Kind == session.EventUser && strings.Contains(ev.Text, "[MCP 服务器说明]") {
+			text = ev.Text
+		}
+	}
+	if text == "" {
+		t.Fatal("说明节应注入")
+	}
+	// 整节受预算约束（头部两行 + 省略提示 ≈ 200 字节，加上预算 512 也远小于 768）。
+	if len(text) > 768 {
+		t.Fatalf("说明节应受预算约束：%d 字节", len(text))
+	}
+	if strings.Contains(text, "很长的说明") {
+		t.Fatal("超预算服务器的说明不应出现")
+	}
+	if !strings.Contains(text, "其余服务器的说明超出预算") {
+		t.Fatal("应有整段省略的提示")
+	}
+}
+
 // newTestRegistry 造一个空注册表。
 func newTestRegistry(t *testing.T) *tool.Registry {
 	t.Helper()

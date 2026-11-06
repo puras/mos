@@ -252,3 +252,42 @@ func TestManagerSkipsDisabledServers(t *testing.T) {
 		t.Fatalf("禁用不该记成降级诊断：%v", mgr.Warnings())
 	}
 }
+
+// TestManagerConcurrentDial 验证 Start 并发连接（PI 同款：逐台 startConnection
+// 后 Promise.all 等全量）：全部就绪才返回；一台慢一台正常，两台都连上；
+// 慢那台的耗时不超过自身延迟（若串行，正常那台会先吃满慢延迟的等待）。
+func TestManagerConcurrentDial(t *testing.T) {
+	const slowDelay = 200 * time.Millisecond
+
+	reg := tool.NewRegistry()
+	slow := &fakeClient{tools: []ToolInfo{{Name: "s", Description: "慢那台"}}}
+	fast := &fakeClient{tools: []ToolInfo{{Name: "f", Description: "快那台"}}}
+	mgr := NewManager(Options{
+		Servers: []ServerConfig{{Name: "slow"}, {Name: "fast"}},
+		Dial: func(_ context.Context, cfg ServerConfig, _ Options) (Client, error) {
+			if cfg.Name == "slow" {
+				time.Sleep(slowDelay)
+				return slow, nil
+			}
+			return fast, nil
+		},
+	}, reg)
+	start := time.Now()
+	mgr.Start(context.Background())
+	defer mgr.Close()
+	elapsed := time.Since(start)
+
+	if len(mgr.Servers()) != 2 {
+		t.Fatalf("两台都应连上：%v", mgr.Servers())
+	}
+	// 全部就绪才返回：Start 返回后两台的工具都已在册。
+	for _, name := range []string{"mcp__slow__s", "mcp__fast__f"} {
+		if _, ok := reg.Get(name); !ok {
+			t.Fatalf("%s 应已注册：%v", name, reg.Names())
+		}
+	}
+	// 并发：慢那台（200ms）不阻塞快那台，总耗时远小于串行下限（400ms+）。
+	if elapsed >= 2*slowDelay {
+		t.Fatalf("Start 应并发连接（耗时 %v ≥ 2×慢延迟，疑似串行）", elapsed)
+	}
+}

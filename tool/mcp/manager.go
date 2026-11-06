@@ -86,9 +86,16 @@ func NewManager(opts Options, reg *tool.Registry) *Manager {
 
 // Start 连接全部服务器并注册它们的工具。
 //
-// 逐台独立：某台失败只记警告，不影响其余（失败隔离）。返回的警告列表是
-// 「没装成」的部分——快照要照实写出来。
-func (m *Manager) Start(ctx context.Context) {
+// **并发连接**（PI 同款，`extensions/mcp/index.ts:1141` 对 enabled 逐台
+// `startConnection` 后 `Promise.all` 等全量；DSH 的 mcp-client 走插件框架、
+// 每插件独立连接——两家的单台连接都是独立失败单元）：N 台慢服务器不再让
+// 装配时间线性叠加，单台最坏只吃满自己的 ConnectTimeout。返回前所有连接
+// 已就绪（每台一个 goroutine + WaitGroup 等全量），因此 Start 返回后即可
+// RegisterResourceTools / 查快照。某台失败只记警告，不影响其余（失败隔离）。
+// 返回的 ready 在 WaitGroup.Wait 完成后关闭——宿主想在装配后台干别的活
+// 时用它等就绪，同步装配的宿主可忽略（Start 返回时已关闭）。
+func (m *Manager) Start(ctx context.Context) (ready <-chan struct{}) {
+	var wg sync.WaitGroup
 	for _, cfg := range m.opts.Servers {
 		if cfg.Disabled {
 			// 故意不连（配置留着不启用）——快照里要写明「没装」，别让宿主
@@ -96,17 +103,28 @@ func (m *Manager) Start(ctx context.Context) {
 			m.skip(cfg.Name)
 			continue
 		}
-		if err := m.startServer(ctx, cfg); err != nil {
-			// 认证失败单独说：处置不同——重试没用，得先把凭据给对。
-			if IsAuthError(err) {
-				m.warn("MCP 服务器 %q 需要认证（不可用，请检查 token 或 TokenProvider）: %v", cfg.Name, err)
-			} else {
-				m.warn("MCP 服务器 %q 不可用: %v", cfg.Name, err)
+		wg.Add(1)
+		go func(cfg ServerConfig) {
+			defer wg.Done()
+			if err := m.startServer(ctx, cfg); err != nil {
+				// 认证失败单独说：处置不同——重试没用，得先把凭据给对。
+				if IsAuthError(err) {
+					m.warn("MCP 服务器 %q 需要认证（不可用，请检查 token 或 TokenProvider）: %v", cfg.Name, err)
+				} else {
+					m.warn("MCP 服务器 %q 不可用: %v", cfg.Name, err)
+				}
 			}
-			continue
-		}
+		}(cfg)
 	}
-	go m.refreshLoop()
+	done := make(chan struct{})
+	ready = done
+	go func() {
+		wg.Wait()
+		close(done)
+		go m.refreshLoop()
+	}()
+	wg.Wait()
+	return ready
 }
 
 // RegisterResourceTools 注册三个共享资源工具（mcp_resource_list / templates
