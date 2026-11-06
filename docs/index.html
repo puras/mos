@@ -129,6 +129,7 @@
     <div class="links">
       <a href="#caps">能力</a>
       <a href="#security">安全</a>
+      <a href="#skills">Skills</a>
       <a href="#proto">协议</a>
       <a href="#quick">开始</a>
       <a href="tutorial.html">文档</a>
@@ -163,11 +164,12 @@ reply, _ := a.<span class="c-fn">Run</span>(context.<span class="c-fn">Backgroun
 
 <section id="caps">
   <div class="wrap">
-    <h2>六大核心能力</h2>
+    <h2>七大核心能力</h2>
     <p class="lead">全部是已落地的代码，不是名词。</p>
     <div class="caps">
       <div class="cap"><div class="ico">🔌</div><h3>统一 LLM 接入</h3><p>OpenAI / Anthropic / Gemini 三协议一套接口，换模型不改业务；用量口径跨协议可比。</p></div>
       <div class="cap"><div class="ico">🧰</div><h3>声明式工具系统</h3><p>写个 struct 就是工具，schema 自动生成；<b>tool_search</b> 让千级工具面 token 亚线性。</p></div>
+      <div class="cap"><div class="ico">🎓</div><h3>Skills 技能</h3><p>目录里的 SKILL.md 就是技能：清单进提示词、正文按需加载，<b>渐进式披露</b>不占常驻上下文。</p></div>
       <div class="cap"><div class="ico">📓</div><h3>事件日志会话</h3><p>append-only 日志是唯一事实来源，崩溃恢复只补事件不改写，重启即续跑。</p></div>
       <div class="cap"><div class="ico">🔁</div><h3>可插拔循环驱动</h3><p>LoopDriver 接口化：新增一种循环 = 一个 Run 实现，不污染共享设施。</p></div>
       <div class="cap"><div class="ico">✂️</div><h3>上下文工程</h3><p>截断落盘可回读、压缩不切断调用对、提示词静态分节——<b>prompt cache 友好</b>。</p></div>
@@ -187,6 +189,19 @@ reply, _ := a.<span class="c-fn">Run</span>(context.<span class="c-fn">Backgroun
       <div class="pill"><h4>④ 人工审批</h4><p>参数级 deny/ask 转人工，动作全留痕</p></div>
     </div>
     <p class="trust"><b>fail-closed 是全库纪律</b>：未知工具拒绝、缺能力即报错、审批未配置即拒绝——绝不静默降级。</p>
+  </div>
+</section>
+
+<section id="skills" class="alt">
+  <div class="wrap">
+    <h2>Skills：给智能体装上可复用的本事</h2>
+    <p class="lead">一个技能 = 一个目录 + 一个 SKILL.md。写文档就能扩展智能体，不用写代码。</p>
+    <div class="strip">
+      <div class="pill"><h4>渐进式披露</h4><p>清单进提示词（常驻），正文由 skill 工具按需加载——技能再多不吃上下文</p></div>
+      <div class="pill"><h4>清单有预算</h4><p>清单超预算先丢描述再丢条目，丢了多少如实告知，不静默截</p></div>
+      <div class="pill"><h4>用户手势 /name</h4><p>宿主拿到输入时调 ExpandInvocation 展开；disable-model-invocation 的技能只能用户调</p></div>
+      <div class="pill"><h4>边界清晰</h4><p>读技能不走 read 工具——与工作区读权限分开；不合法技能不装并出诊断</p></div>
+    </div>
   </div>
 </section>
 

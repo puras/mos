@@ -157,8 +157,9 @@
     <a href="#tool"><b>3</b>写自己的工具</a>
     <a href="#session"><b>4</b>会话与持久化</a>
     <a href="#sec"><b>5</b>权限与安全</a>
-    <a href="#faq"><b>6</b>常见问题</a>
-    <a href="#api"><b>7</b>API 速查</a>
+    <a href="#skills"><b>6</b>装上技能</a>
+    <a href="#faq"><b>7</b>常见问题</a>
+    <a href="#api"><b>8</b>API 速查</a>
     <div class="grp">其他</div>
     <a href="index.html">产品介绍</a>
     <a href="https://github.com/puras/moproto">MoProto 协议层</a>
@@ -466,8 +467,46 @@ a, _ := mos.New(mos.Config{
     <p>例如「写文件到某个路径 → 转人工确认」。写法见 <code>agent/policy</code> 包与 <code>examples/chat/guard.go</code>。</p>
   </section>
 
+  <section id="skills">
+    <h2><span class="n">06</span>装上技能（Skills）</h2>
+    <p>技能 = 一个目录 + 一个 <code>SKILL.md</code>（frontmatter 写 name / description，正文写给模型看的操作说明）。
+    装配时声明技能目录，清单进系统提示词，模型按需用 <code>skill</code> 工具加载正文——渐进式披露，技能再多不吃常驻上下文。</p>
+
+    <h3>写一个技能</h3>
+    <pre>skills/<span class="f">deploy/</span>SKILL.md
+<span class="c">---</span>
+<span class="f">name: deploy</span>
+<span class="f">description: 部署本服务到生产环境（构建、推送、滚动更新）</span>
+<span class="f">when-to-use: 用户要求部署或发版时</span>
+<span class="c">---</span>
+<span class="c"># 部署步骤</span>
+
+1. 先跑 <span class="s">`go test ./...`</span>，红了就停
+2. <span class="s">`make build &amp;&amp; make push`</span>
+3. <span class="s">`kubectl rollout restart deploy/app`</span>，观察 <span class="s">`rollout status`</span> 直到完成</pre>
+
+    <h3>装配进 Agent</h3>
+    <pre>a, err := mos.New(mos.Config{
+    Model:  model,
+    Tools:  reg,
+    Skills: &amp;mos.SkillConfig{Dirs: []<span class="k">string</span>{<span class="s">"skills"</span>}},
+})
+<span class="k">if</span> err != nil {
+    fail(err)
+}
+fmt.<span class="f">Print</span>(a.<span class="f">Describe</span>()) <span class="c">// 快照里能看到装了哪些技能、哪些被跳过及原因</span></pre>
+
+    <ul>
+      <li>frontmatter 必需 <code>name</code>（kebab-case，≤64 字符）与 <code>description</code>（≤1024 字符）；不合法的技能<b>不装</b>并出诊断，不会让模型撞墙</li>
+      <li><code>when-to-use</code> 可选，进清单帮模型判断何时加载；清单有字节预算（默认 8KB），超了先丢描述再丢条目、如实告知</li>
+      <li><code>disable-model-invocation: true</code> = 模型看不到也加载不了，只能用户显式调用</li>
+      <li>用户手势 <code>/name</code> 由宿主展开：<code>text, ok := catalog.ExpandInvocation(userInput)</code>；框架不自动扫文本（防误触发）</li>
+      <li>读技能不走 <code>read</code> 工具——技能目录的授权与工作区读权限分开；想限制可注入自定义 <code>Reader</code></li>
+    </ul>
+  </section>
+
   <section id="faq">
-    <h2><span class="n">06</span>常见问题</h2>
+    <h2><span class="n">07</span>常见问题</h2>
 
     <div class="faq">
       <h4><code>go mod tidy</code> 拉不动模块 / 找不到 moproto</h4>
@@ -511,13 +550,19 @@ a, _ := mos.New(mos.Config{
     </div>
 
     <div class="faq">
+      <h4>技能没被装上 / 模型说找不到技能</h4>
+      <p>看 <code>a.Describe()</code> 快照：目录不存在、frontmatter 不合法（name 不是 kebab-case、
+      description 缺失或超长）、正文超 64KB 都会跳过并写明原因。同名技能先到先得。</p>
+    </div>
+
+    <div class="faq">
       <h4>跑 <code>go test ./...</code> 有失败</h4>
       <p>沙箱 / shell 类测试需要本机允许 Seatbelt 与本地端口监听的环境，在受限环境下会失败。</p>
     </div>
   </section>
 
   <section id="api">
-    <h2><span class="n">07</span>API 速查</h2>
+    <h2><span class="n">08</span>API 速查</h2>
     <table>
       <thead><tr><th>函数</th><th>用途</th></tr></thead>
       <tbody>
@@ -537,6 +582,9 @@ a, _ := mos.New(mos.Config{
         <tr><td><code>session.Open(dir, id)</code></td><td>建/恢复 JSONL 会话</td></tr>
         <tr><td><code>(s *Session) Events()</code></td><td>全链路事件</td></tr>
         <tr><td><code>(s *Session) TotalUsage()</code></td><td>跨轮累计用量</td></tr>
+        <tr><td><code>mos.SkillConfig{Dirs}</code></td><td>装配技能：目录列表（先到先得）、可选 Reader 与字节预算</td></tr>
+        <tr><td><code>(a *Agent) Skills()</code></td><td>已装配的技能清单（含仅用户可调用的）</td></tr>
+        <tr><td><code>catalog.ExpandInvocation(text)</code></td><td>展开用户输入里的 <code>/name</code> 手势（宿主决定何时调用）</td></tr>
         <tr><td><code>policy.Config{Allow, Deny}</code></td><td>名字级策略（支持 <code>*</code> 通配）</td></tr>
         <tr><td><code>approval.NewService(ans, audit)</code></td><td>装配审批通道</td></tr>
         <tr><td><code>filesystem.NewRootSet(read, write)</code></td><td>可变文件根集合</td></tr>
@@ -563,7 +611,7 @@ a, _ := mos.New(mos.Config{
       <a class="card" href="PRD.md">
         <div class="f">docs/PRD.md</div>
         <h4>需求与路线图</h4>
-        <p>要什么、验收标准、规划中的能力（MCP / Skills / 多智能体）。</p>
+        <p>要什么、验收标准、规划中的能力（MCP / 多智能体）。</p>
       </a>
     </div>
   </section>
