@@ -86,3 +86,24 @@ func TestDeferredAndVisibilityIndependent(t *testing.T) {
 		t.Fatalf("可见性过滤仍应生效: %+v", defs)
 	}
 }
+
+// DeferredTools 与 List 同口径：被可见性层挡住的 deferred 工具**搜不到**。
+//
+// 为什么：模型看不见的工具，搜出来也调不动（执行侧守卫会拦）——把它塞进
+// 搜索结果只是给模型一条走不通的路。「看不见」与「搜不到」必须一致。
+func TestDeferredToolsFilteredByVisibility(t *testing.T) {
+	reg := NewRegistry()
+	_ = reg.RegisterDeferred(fakeTool{name: "searchable"})
+	_ = reg.RegisterDeferred(fakeTool{name: "denied"})
+	reg.SetVisibilitySlot("policy", func(name string) bool { return name != "denied" })
+
+	d := reg.DeferredTools()
+	if len(d) != 1 || d[0].Name != "searchable" {
+		t.Fatalf("DeferredTools = %+v, want [searchable]（被挡的不该被搜到）", d)
+	}
+	// 可见性层去掉后它又回来（层是叠加的，不是永久删除）。
+	reg.SetVisibilitySlot("policy", nil)
+	if d := reg.DeferredTools(); len(d) != 2 {
+		t.Fatalf("撤掉可见性层后应两个都在: %+v", d)
+	}
+}

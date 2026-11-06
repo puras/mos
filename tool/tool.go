@@ -437,12 +437,20 @@ type DeferredInfo struct {
 
 // DeferredTools 返回当前仍未激活的 deferred 工具（按注册序）。已激活的不在——
 // 它已进 List()，再列出来是重复信息。
+//
+// **可见性过滤与 List() 同口径**：被可见性层挡住的工具（policy 拒绝名单里的
+// deferred 工具）不进这个列表——模型看不见的工具，搜到了也调不动（执行侧的
+// 守卫会拦），搜出来只是给模型一条走不通的路。这条口径让「看不见」与
+// 「搜不到」一致：能搜到的工具，一定是模型能调用的。
 func (r *Registry) DeferredTools() []DeferredInfo {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	var out []DeferredInfo
 	for _, name := range r.order {
 		if !r.deferred[name] {
+			continue
+		}
+		if !r.visibleTo(name) {
 			continue
 		}
 		t := r.tools[name]

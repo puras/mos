@@ -2,6 +2,7 @@ package mos_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -204,6 +205,67 @@ func TestMCPToolAskWithoutApprovalFailsClosed(t *testing.T) {
 	if calls := client.recorded(); len(calls) != 0 {
 		t.Fatalf("未确认的调用不该打到上游：%+v", calls)
 	}
+}
+
+// TestMCPDeniedDeferredToolNotSearchable：被策略拒绝的 **deferred** 工具连
+// 搜索结果都不该出现——「看不见」与「搜不到」一致。否则模型会拿到一条走不
+// 通的路（搜到了、激活了，调用时才被守卫拦）。
+func TestMCPDeniedDeferredToolNotSearchable(t *testing.T) {
+	client := &recordingMCPClient{mcpStubClient: mcpStubClient{tools: []mcp.ToolInfo{
+		{Name: "search_issues", Description: "按关键字搜索仓库的 issue 工单"},
+		{Name: "delete_repo", Description: "删除一个仓库"},
+	}}}
+	model := &scriptedModel{steps: []scriptStep{
+		func(*llm.Request) *llm.Response { return textResponse("ok") },
+	}}
+	a, err := mos.New(mos.Config{
+		Model:  model,
+		Tools:  newTestRegistry(t),
+		Policy: &policy.Config{Deny: []string{"mcp__gh__delete_repo"}},
+		MCP: &mos.MCPConfig{
+			Servers: []mcp.ServerConfig{{Name: "gh", Exposure: mcp.ExposureDeferred}},
+			Dial:    recordingDialer(map[string]*recordingMCPClient{"gh": client}),
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+
+	reg := a.RunContext().Tools
+	// deferred 集里不该有被拒的工具。
+	for _, d := range reg.DeferredTools() {
+		if d.Name == "mcp__gh__delete_repo" {
+			t.Fatalf("被拒的 deferred 工具不该留在 deferred 集：%+v", reg.DeferredTools())
+		}
+	}
+	// tool_search 搜“删除仓库”也搜不到它（只搜得到没被拒的那个）。
+	ts, ok := reg.Get("tool_search")
+	if !ok {
+		t.Fatal("有 deferred 工具时该装 tool_search")
+	}
+	out, err := ts.Execute(context.Background(), json.RawMessage(`{"query":"删除仓库"}`))
+	if err != nil {
+		t.Fatalf("tool_search: %v", err)
+	}
+	text := searchResultText(t, out)
+	if strings.Contains(text, "mcp__gh__delete_repo") {
+		t.Fatalf("被拒的工具不该被搜到：%s", text)
+	}
+	if !strings.Contains(text, "mcp__gh__search_issues") {
+		t.Fatalf("未被拒的工具应当能被搜到：%s", text)
+	}
+}
+
+// searchResultText 从 tool_search 的返回值里取文本（它返回 map）。
+func searchResultText(t *testing.T, v any) string {
+	t.Helper()
+	m, ok := v.(map[string]any)
+	if !ok {
+		t.Fatalf("tool_search 返回值形态不对：%T", v)
+	}
+	s, _ := m["text"].(string)
+	return s
 }
 
 // TestMCPToolNotInPolicyWhitelist：放行名单（Allow 非空 = 白名单）同样收窄

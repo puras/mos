@@ -509,6 +509,14 @@ func New(cfg Config) (*Agent, error) {
 		}
 	}
 
+	// 名字级策略的**可见性层**先装上：下面「deferred 集非空才装配 tool_search」
+	// 这类判断要按**模型能搜到的**集合算——被策略拒绝的 deferred 工具既搜不到
+	// （可见性过滤），也不该让 tool_search 白装一层。执行侧的守卫等到 a.rt
+	// 装好后再挂（见下方 SetPolicy 调用）。
+	if cfg.Policy != nil {
+		reg.SetVisibilitySlot(policySlot, policy.New(*cfg.Policy).Visible)
+	}
+
 	// tool_search：deferred 集非空才注册（能力即证据——没有懒加载工具就不给
 	// 发现工具，小工具集行为与从前完全一致）。机制在框架、策略在宿主：
 	// 要不要 deferred 是宿主的装配决定（S7.3，docs/ARCHITECTURE.md §3.15）。
