@@ -1,9 +1,10 @@
 // Package sandbox 提供 shell 命令的隔离执行能力（capability seam）。
 //
-// Runner 是公共接口；本地实现 Local 提供**进程级**隔离。平台可注入更强的后端
-// （Docker / containerd / bwrap / Landlock），接口不变（PRD 的 FR-E2）。
+// Runner 是公共接口；本地实现 Local 提供**进程级**隔离，并按平台接上
+// **内核级路径强制**后端（macOS 用 Seatbelt、Linux 用 Landlock）。外部后端
+// （Docker / containerd / bwrap）也可注入，接口不变（PRD 的 FR-E2）。
 //
-// ## 隔离了什么（六层，照归档实现）
+// ## 隔离了什么
 //
 //	① 工作目录：命令在宿主指定的目录里跑（相对路径的默认落点）
 //	② 超时 + 进程组击杀：Setpgid 后整组 SIGKILL——fork 出的孤儿进程一起死
@@ -11,13 +12,34 @@
 //	④ 资源限制：ulimit 预置 CPU 时间 / 虚拟内存 / 单文件大小
 //	⑤ 环境裁剪：只保留白名单变量，别把主机的密钥泄给模型执行的命令
 //	⑥ 网络：剥离代理环境变量（尽力而为）
+//	⑦ 路径强制（**内核级**，darwin/linux）：写只发生在声明的写根里
+//
+// ## 路径强制：各平台的现状（诚实边界）
+//
+//	平台	后端			写范围		备注
+//	macOS	Seatbelt		内核强制	写根按**路径前缀**匹配
+//	Linux	Landlock		内核强制	写根按**目录 inode** 匹配
+//	Windows	低完整性 token	内核强制	写根靠**临时 ACL 授予**（命令结束即回收）
+//	其它	无			无		fail-closed 报错
+//
+// 语义统一为「**只收窄写**」：读不强制（deny 读会碎掉动态链接器、locale、
+// 系统证书与包缓存，成本远超收益；这个执行器的事故威胁模型全在写侧）。
+// 写范围由**内核**强制，不是宿主在 Go 里判断路径。
+//
+// 后端不可用时 **fail-closed**：范围非全开就直接报错，绝不退化成
+// "没隔离的假装隔离"。宿主显式声明写根含 "/" 时放弃路径强制（容器场景的
+// 正当用法，危险写在脸上）。
 //
 // ## 诚实的边界（不夸大防护强度）
 //
-//   - **限资源，不限文件**：本实现限制的是"这次运行能消耗多少"（时间 / CPU /
-//     内存 / 输出 / 子进程），**不限制命令能碰哪些文件**——命令仍能访问运行用户
-//     权限内的任意路径。路径范围的强制隔离需要外部后端（bwrap / Landlock /
-//     Seatbelt / 容器），Go 标准库给不了。命令级的语义约束属策略层（S5f-2）。
+//   - **Windows 用低完整性 token**：没有 Landlock 那样"只收窄写"的内核原语，
+//     但低完整性（Low integrity）进程写不了中完整性以上的对象（MIC 的
+//     "不可向上写"）——把工作区标成低完整性并临时授予写权限，就得到
+//     "只有工作区能写、别处能读"的语义。临时 ACL **命令结束即回收**。
+//   - **Linux Landlock 有两处缺口**：refer（跨目录重命名/链接）要内核 ≥5.19，
+//     truncate（`> file` 截断写）要内核 ≥6.2；更老的内核上这两类写不在强制
+//     范围内（写明在 landlock_linux.go 里，不假装没有）。
+//   - **读仍然不受限**：命令能读运行用户权限内的任意文件。
 //   - **网络隔离是尽力而为**：剥离代理变量挡不住直连。真隔离要靠网络命名空间。
 //   - 因此本包是**纵深防御的一层**，不是强隔离的替代品。
 //
@@ -35,7 +57,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
+	"sync"
 	"time"
 )
 
@@ -48,10 +70,6 @@ const (
 	// DefaultMaxOutput 是单次命令的输出上限（字节）。
 	DefaultMaxOutput = 64 << 10 // 64KB
 )
-
-// defaultEnvAllow 是环境变量白名单（PATH/HOME/LANG/…）——别把主机的密钥泄给
-// 模型执行的命令。
-var defaultEnvAllow = []string{"PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "PWD", "USER", "SHELL", "TERM"}
 
 // Request 是一次命令执行请求。
 type Request struct {
@@ -263,99 +281,49 @@ func (s *Local) Run(ctx context.Context, req Request) (Result, error) {
 	// 路径强制（S5f-2b）：默认范围 = Local.DefaultScope（nil 则从 WorkDir
 	// 派生）；Request.PathScope 只能收窄。写全开（宿主显式声明写根 "/"）时
 	// 不做样子直接跑；否则套平台后端，后端不可用就报错（fail-closed）。
-	base := []string{"/bin/sh", "-c", s.buildCommand(req.Command)}
 	eff, err := s.effectiveScope(req.PathScope)
 	if err != nil {
 		return Result{}, err
 	}
-	argv, err := wrapPathScope(eff, base)
-	if err != nil {
-		return Result{}, err
-	}
-
 	timeout := s.resolveTimeout(req.Timeout)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	// 各平台怎么把命令跑起来（怎么套路径强制）不一样，拆到平台文件里。
+	return s.run(ctx, req, eff, timeout)
+}
 
+// checkWorkDir 校验工作目录可用（空 = 用进程当前目录）。
+func (s *Local) checkWorkDir() (string, error) {
 	dir := s.WorkDir
-	if dir != "" {
-		fi, err := os.Stat(dir)
-		if err != nil || !fi.IsDir() {
-			return Result{}, fmt.Errorf("sandbox: 工作目录 %q 不可用: %w", dir, err)
-		}
+	if dir == "" {
+		return "", nil
 	}
+	fi, err := os.Stat(dir)
+	if err != nil || !fi.IsDir() {
+		return "", fmt.Errorf("sandbox: 工作目录 %q 不可用: %w", dir, err)
+	}
+	return dir, nil
+}
 
-	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Dir = dir
-	cmd.Env = s.environment()
-	// 进程组：子进程单独成组，超时终止时整组击杀，避免孤儿继续跑
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
+// newOutputBuffer 造一个带上限与落盘目录的输出缓冲。
+func (s *Local) newOutputBuffer() *limitedBuffer {
 	maxOut := s.MaxOutput
 	if maxOut <= 0 {
 		maxOut = DefaultMaxOutput
 	}
-	var out limitedBuffer
-	out.max = maxOut
-	out.spillDir = s.SpillDir
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-
-	start := time.Now()
-	if err := cmd.Start(); err != nil {
-		return Result{}, fmt.Errorf("sandbox: 启动命令失败: %w", err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-
-	select {
-	case err := <-done:
-		res := Result{
-			Output:     out.finish(),
-			ExitCode:   exitCodeOf(err),
-			Truncated:  out.truncated,
-			OutputPath: out.finishSpill(),
-			Duration:   time.Since(start),
-		}
-		return res, nil
-	case <-ctx.Done():
-		// 整组击杀：命令自己 fork 出的子进程也要死
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		<-done
-		return Result{
-			Output:     out.finish() + "\n[命令执行超时，已终止]",
-			ExitCode:   -1,
-			Truncated:  out.truncated,
-			OutputPath: out.finishSpill(),
-			Duration:   time.Since(start),
-		}, fmt.Errorf("sandbox: 命令执行超时（%v）", timeout)
-	}
+	return &limitedBuffer{max: maxOut, spillDir: s.SpillDir}
 }
 
-// buildCommand 用 ulimit 预置进程资源限制（软限制，作用于本命令及其子进程）。
+// buildCommand 预置进程资源限制后接上命令。
 //
-// 每条限制都带 `|| true`：**平台支持性不同**——macOS 的 `ulimit -v`（虚拟内存）
-// 直接报 "cannot modify limit"，若不吞掉这个错误，整条命令都跑不起来。
-// 换句话说：平台不支持的限制被**跳过**，而不是让命令失败。
-//
-// 支持情况：CPU 时间（-t）与单文件大小（-f）POSIX 平台都支持；虚拟内存（-v）
-// 只有 Linux 等平台支持，macOS 上不生效（诚实边界，见包注释）。
+// 限制怎么设是平台相关的（unix 用 ulimit，Windows 没有等价物），
+// 所以具体内容在平台文件里（resourcePrefix），这里只负责拼接。
 func (s *Local) buildCommand(command string) string {
-	var limits []string
-	if s.CpuSeconds > 0 {
-		limits = append(limits, fmt.Sprintf("ulimit -t %d 2>/dev/null || true", s.CpuSeconds))
-	}
-	if s.MemKB > 0 {
-		limits = append(limits, fmt.Sprintf("ulimit -v %d 2>/dev/null || true", s.MemKB))
-	}
-	if s.MaxFileKB > 0 {
-		// ulimit -f 的单位是 512 字节块，不是 KB——换算一下（归档写错了单位）。
-		limits = append(limits, fmt.Sprintf("ulimit -f %d 2>/dev/null || true", s.MaxFileKB*2))
-	}
-	if len(limits) == 0 {
+	prefix := s.resourcePrefix()
+	if prefix == "" {
 		return command
 	}
-	return strings.Join(limits, "; ") + "; " + command
+	return prefix + "; " + command
 }
 
 // environment 裁剪环境变量：只保留白名单项，避免把主机敏感配置泄给模型执行的命令。
@@ -402,6 +370,7 @@ func exitCodeOf(err error) int {
 // 丢弃而非阻塞，避免子进程因管道写满而挂死。若配置了 spillDir，完整输出会
 // 另存一份到文件——截断丢掉的内容因此**还能找回**（模型可 read 读它）。
 type limitedBuffer struct {
+	mu        sync.Mutex
 	buf       bytes.Buffer
 	max       int64
 	truncated bool
@@ -411,6 +380,10 @@ type limitedBuffer struct {
 }
 
 func (b *limitedBuffer) Write(p []byte) (int, error) {
+	// 并发写保护：unix 路径上 stdout/stderr 共用一个缓冲（os/exec 会合并成
+	// 一个 goroutine），Windows 路径上是两个读管道各自的 goroutine。
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.truncated {
 		b.writeSpill(p)
 		return len(p), nil

@@ -168,7 +168,7 @@ Harness Engineering 四铁律 + Loop Engineering 九杠杆 + Audit Gate 审计�
 | 编号 | 需求 | 验收标准 |
 | --- | --- | --- |
 | FR-E1 | 异常处理与恢复三阶段：检测（工具输出验证 / API 错误码 / 超时）→ 处理（日志/重试/回退/优雅降级/通知）→ 恢复（状态回滚 / 诊断 / 自我纠正 / 升级） | 注入故障演练集通过；升级路径接 Approval |
-| FR-E2 | 沙箱强隔离后端（L3）：Docker / containerd 替换进程级实现 | `sandbox.Runner` 接口不变，后端可切换；越狱测试通过 |
+| FR-E2 | 沙箱强隔离后端（L3）：Docker / containerd 替换进程级实现；**已达成部分**：macOS Seatbelt / Linux Landlock 的内核级**写范围**强制（§3.10） | `sandbox.Runner` 接口不变，后端可切换；越狱测试通过 |
 | FR-E3 | 模型分级路由：按任务复杂度选档（简单→经济模型、复杂→强模型），附顺序回退链 | 分级决策可配置可审计；回退链演练通过 |
 | FR-E4 | 评估与监控（知识进化第 2 层 = 配置进化）：轨迹评估 Golden 测试集 + LLM-as-a-Judge 结构化评分 + 漂移检测 + 配置 A/B 择优（工具描述 / 提示词 / 路由与 Policy 规则版本化晋级） | 评估跑批可重复；版本化档案支持回滚 |
 | FR-E5 | 优先级调度与配额：紧急性/重要性/依赖关系，限流配额按优先级区分 | 调度策略接口化（策略由平台注入） |
@@ -205,7 +205,7 @@ Harness Engineering 四铁律 + Loop Engineering 九杠杆 + Audit Gate 审计�
 | NFR-3 | **零开销降级**：钩子 / 守卫 / 压缩器 / 截断器 / 审批通道未注入时零额外开销（未注入 = 行为与没用该能力完全一致） | no-op 路径基准测试 |
 | NFR-4 | **日志即事实**：会话日志 append-only、`Append` 同步落盘 fail-fast、事件 Seq 连续可重放；日志不允许截断（崩溃恢复只补事件不改写） | 已执行；重放测试覆盖 |
 | NFR-5 | **审计不变式**：任何智能体（含 SubAgent / 队友）的自述不入 `TaskState`，环境验证说了算；机器可回放信号优先于 LLM 判断 | 已执行；M3 多智能体延续 |
-| NFR-6 | **依赖纪律**：近零依赖（协议层 + uuid + yaml.v3）；协议仓库只读（AGENTS.md 硬规则）；MoS 只消费协议层 `pkg/` 纯定义包，不依赖网关实现层 | `go.mod` 审计 + import 边界检查 |
+| NFR-6 | **依赖纪律**：近零依赖（协议层 + uuid + yaml.v3）；**例外**：Linux 路径强制后端引入 `landlock-lsm/go-landlock`（内核 API 无标准库绑定，自研 syscall = 自己实现内核 ABI）；协议仓库只读（AGENTS.md 硬规则）；MoS 只消费协议层 `pkg/` 纯定义包，不依赖网关实现层 | `go.mod` 审计 + import 边界检查 |
 | NFR-7 | **可测试性**：适配器用 httptest 协议模拟不依赖真实网络；关键行为用守护测试钉住（如 schema 逐字节不变、提示词两次 Render 一致） | `go test ./...` 全绿（注：需嵌套 Seatbelt 的沙箱 / shell 类测试要在允许 sandbox 的常规环境跑） |
 | NFR-8 | **API 演进纪律**：未发布、无兼容负担，可按目标架构直接落地；但破坏性变更（如文件工具改名 `read_file`→`read`、提示词分节改名）必须在文档更新记录显式声明 | 更新记录惯例执行 |
 
