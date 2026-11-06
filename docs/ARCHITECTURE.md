@@ -400,7 +400,7 @@ svc := approval.NewService(rt.Answerer, sessionAudit{sess: sess})
 - **词法规则的教训**（2026-10 事故）：宿主规则曾键在"含字母 r 的 flag"上——`git status --short` 误触发，而逐个 `git rm` 漏过，被拒后模型拆解命令绕过拦截。规则必须键在**语义**（"这是删除命令"）而不是**字母形状**上；且词法规则终究只是业务规则，`find -delete`、脚本语言仍绕得过——**边界只能是隔离（S5f-2b）**。
 - **边界：S5g 是阻塞式**——驱动线程等一个人工决定（DSH 也是这样：工具调用 await 一个 promise）。**跨进程的挂起-恢复**（进程死了还能接着跑）属 `agent/checkpoint` 那一片；审批接口不关心决定怎么来，所以那一片落地时这里不用改。
 
-### 3.10 路径强制隔离（S5f-2b：macOS Seatbelt ✅ / Linux Landlock ⬜）
+### 3.10 路径强制隔离（S5f-2b：macOS Seatbelt ✅ / Linux Landlock ✅ / Windows 低完整性 token ✅）
 
 **边界只能是对进程的内核约束**。词法规则与审批是"减事故面"——2026-10 的事故证明它们会被拆解命令绕过；而内核约束与命令怎么拼写无关（`git rm -r` 和逐个 `git rm` 删的是同一个禁区）、子进程继承、符号链接在 vnode 层解析（软链逃逸无效）。
 
@@ -422,9 +422,18 @@ sb := &sandbox.Local{WorkDir: a, Scope: sandbox.ScopeFunc(
 roots.Add(b)   // 运行期加根：文件工具与 shell 同时生效
 ```
 
-**macOS 后端（Seatbelt）**：SBPL profile 只收窄**写**——`(allow default)` → `(deny file-write*)` → 放行 `/dev/null` 与写根（DSH `profiles.ts` 同款，实战验证过的最小集）。读强制不做：`deny file-read*` 会碎掉动态链接器与系统缓存，成本远超收益，且事故威胁模型全在写侧；`ReadRoots` 参与收窄校验但此后端暂不强制（强制待 Landlock）。SBPL 按**内核解析后**的路径匹配，写根先过 `EvalSymlinks` 规范化（`/var` → `/private/var` 不规范化会让工作区写被自己拦住）。
+**两个内核后端（语义统一：只收窄写）**：
 
-**fail-closed 纪律**：sandbox-exec 不可用 → `ErrPathScopeUnsupported`；非 darwin 平台尚无后端 → 非全开的调用明确报错。**绝不退化成"没隔离的假装隔离"**——"假装有边界"比"没有边界"更危险。
+- **macOS（Seatbelt）**：SBPL profile 只收窄**写**——`(allow default)` → `(deny file-write*)` → 放行 `/dev/null` 与写根（DSH `profiles.ts` 同款，实战验证过的最小集）。读强制不做：`deny file-read*` 会碎掉动态链接器与系统缓存，成本远超收益，且事故威胁模型全在写侧；`ReadRoots` 参与收窄校验但此后端暂不强制。SBPL 按**内核解析后**的路径匹配，写根先过 `EvalSymlinks` 规范化（`/var` → `/private/var` 不规范化会让工作区写被自己拦住）。
+- **Linux（Landlock）**：`landlock_add_rule` 把**写类权限**授予写根，其余路径的写由内核拒（`landlock_restrict_self` 在 exec 时被子进程继承，后代全在约束里）。与 Seatbelt 的三点差异是**已知边界**，不是 bug：① 写根绑**目录 inode**（Seatbelt 绑路径前缀）——声明时尚不存在的根放不了（fail-closed：写它被拒）；② 跨目录重命名/链接（refer）要内核 ≥5.19；③ 截断写（`> file`，truncate）要内核 ≥6.2——更老的内核上这两类写不在强制范围内（写明在 `sandbox/landlock_linux.go` 里，不假装没有）。
+  **子进程怎么单独套约束**：Landlock 的 `landlock_restrict_self(2)` 只对调用它的**线程**生效，而 Go 没有 fork→exec 之间的钩子（golang/go#68595 在讨论给 `syscall.SysProcAttr` 加字段）。所以父进程把命令与写根通过管道交给「**重新执行出来的自己**」，子进程在包初始化阶段套上约束，再 exec 真正的命令（`/bin/sh -c ...`）——约束由内核在 exec 时继承。已知窗口：子进程里在 sandbox 包初始化**之前**跑的宿主初始化代码不受约束（那是宿主自己的可信代码，模型的命令还没开始跑）。
+
+**fail-closed 纪律**：macOS 的 sandbox-exec 不可用 → `ErrPathScopeUnsupported`；Linux 内核没有 Landlock（<5.13 或未启用 `CONFIG_SECURITY_LANDLOCK`）→ 同样报错；Windows 与其它平台尚无路径后端 → 非全开的调用明确报错。**绝不退化成"没隔离的假装隔离"**——"假装有边界"比"没有边界"更危险。
+
+**Windows 后端（低完整性 token ✅）**：Windows 没有 Landlock 那样“只收窄写”的内核原语，但有等价机制——**低完整性（Low integrity）token**：低完整性进程可以读普通文件，但**写不了**中完整性以上的对象（MIC 的“不可向上写”规则）。把写根标成低完整性并**临时授予**写权限，就得到“只有写根能写、别处能读”的语义——与另两个后端一致。实施细节交给 `github.com/SivanCola/windows-sandbox`（MIT、只依赖 `x/sys`）：复制 token 并降完整性级别 → 给写根打 Low 标签 + 临时写 ACE → 子进程挂进 Job Object（关句柄即杀整树）→ `TEMP/TMP` 重定向到本次命令的临时目录。**临时 ACL 命令结束即回收**（长跑服务不会攒 ACL）。
+  **为什么中间加一层启动器**：库自己 spawn 子进程，父进程拿不到子进程 PID（超时时没法精确杀树）→ 让它 spawn **我们自己**（重新执行），启动器再跑 `cmd.exe /C <命令>`：token 由子进程继承，完整性级别一路传下去；启动器在启动时把自己的 PID 写进 pid 文件，父进程超时读到 PID 后 `taskkill /T /F` 杀整棵树。与 Linux 的 Landlock 启动器同一套形状（重新执行 + 管道载荷 + PID 回收）。
+
+**AppContainer 为何不用**：AppContainer（能力模型，每个进程一套虚拟文件系统视图）也能做路径边界，但它比低完整性 token 重得多（要建 profile、给允许的路径授权 ACE、启动子进程得走 `STARTUPINFOEX` + `CreateProcess`——`os/exec` 不支持），而且语义是**读写都按能力授权**（连 Go module 缓存、`.gitconfig` 都读不到），与另两个后端的「只收窄写」不同，要单独设计读写白名单。
 
 **与文件 jail 的分工**：jail 管**工具**（read/write/edit）的路径；`PathScope` 管**子进程**能碰到的路径——命令可以绕过工具直接 `cat /etc/passwd`，jail 管不着。两层都要。**两层共用一份根集合**（§3.5.1 的 `RootSet`）时，加根一次两层同时生效；不共用就要接受两层边界不一致（那就得由宿主自己保证一致）。
 

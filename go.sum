@@ -1,8 +1,14 @@
-github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
-github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
+github.com/SivanCola/windows-sandbox v0.0.0-20260705154605-6b29dd09f9cb h1:au4YwGV3d5zAB6CcboeNocRLwFoE7XGxnx2RYI78iv4=
+github.com/SivanCola/windows-sandbox v0.0.0-20260705154605-6b29dd09f9cb/go.mod h1:qL+ewlVGGeJLO97u+7E4K20gLu9oST/lc8FaGo2JJSw=
+github.com/landlock-lsm/go-landlock v0.11.0 h1:zbZFIUpSLXkRLRFwXn9v9itB1ghkPDSbR3+b0hp88RQ=
+github.com/landlock-lsm/go-landlock v0.11.0/go.mod h1:ZnBdV8UcnaaRfuyG1amR2qdsoRazWS1yr8+3LVme6t0=
 github.com/puras/moproto v0.1.0 h1:DN8O7PcvHo+lQMk3oPT6f0RqJuZqmCbYIBXARuivBBo=
 github.com/puras/moproto v0.1.0/go.mod h1:UYw8cn/QdxzzSms8K5XthxyL9glRAiakcaNXBcTxfyA=
+golang.org/x/sys v0.48.0 h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=
+golang.org/x/sys v0.48.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405 h1:yhCVgyC4o1eVCa2tZl7eS0r+SDo693bJlVdllGtEeKM=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
 gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
 gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+kernel.org/pub/linux/libs/security/libcap/psx v1.2.77 h1:Z06sMOzc0GNCwp6efaVrIrz4ywGJ1v+DP0pjVkOfDuA=
+kernel.org/pub/linux/libs/security/libcap/psx v1.2.77/go.mod h1:+l6Ee2F59XiJ2I6WR5ObpC1utCQJZ/VLsEbQCD8RG24=

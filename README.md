@@ -127,7 +127,8 @@ type SearchArgs struct {
 - **fail-closed 是全库纪律**：未知工具拒绝、capability 缺失即报错、审批未配置即拒绝、截断消息中的工具调用拒绝放行；
 - 进程沙箱是**纵深防御的一层**，不是强隔离边界（黑名单可被解释器绕过）；面向不可信工作负载请叠加强隔离后端（规划中，PRD FR-E2）；
 - 框架**不碰文件系统与网络**：需要 I/O 的能力以接口注入（`session.Persistence`、`contextfile.Reader`），宿主选实现；
-- 近零依赖：协议层 + `google/uuid` + `gopkg.in/yaml.v3`，无其他第三方依赖。
+- 近零依赖：协议层 + `google/uuid` + `gopkg.in/yaml.v3` + 路径强制后端所需的 `landlock-lsm/go-landlock`（连带 `golang.org/x/sys` 与 kernel.org 的 `psx`）与 `SivanCola/windows-sandbox`（Windows 后端，只依赖 `x/sys`）。
+  **这是一次有意识的破例**（PRD NFR-6）：Landlock 是内核 API，标准库没有绑定；自己手写 syscall 等于自己实现一遍内核 ABI——出错的后果不是“报错”，而是“没隔离的假装隔离”。官方绑定是这个边界的唯一可信来源。`psx` 是它“把策略套到所有 OS 线程”的依赖，纯 Go 回落（不引入 cgo）。Windows 侧的 `windows-sandbox` 同样是“内核 API 没有标准库绑定”的情形（低完整性 token + ACL + Job Object），且它把**临时 ACL 的申请与回收**封在一次调用里——自己实现这套东西，ACL 残留与并发竞态的坑很深。
 
 ## 文档
 
