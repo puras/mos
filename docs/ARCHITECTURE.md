@@ -38,7 +38,7 @@
 | `agent/hook` | 双轨制：HookBus（waterfall 可改写）+ GuardBus（serial 单调裁决） | 移植裁剪 | S5b ✅ |
 | `agent/policy` | 工具名级策略：fail-closed 黑白名单 + YAML 装配 | 移植裁剪 | S5c ✅ |
 | `filesystem` | 文件 jail：宿主声明可读/可写根 + Lexical/Realpath 双层校验 | 移植裁剪 | S5d ✅ |
-| `sandbox` | 进程隔离：超时 + 进程组击杀 + 输出上限 + 资源限制 + 环境裁剪 | 移植裁剪 | S5f-1 ✅ |
+| `sandbox` | 进程隔离：超时 + 进程组击杀 + 输出上限 + 资源限制 + 环境裁剪；**路径强制后端**（macOS Seatbelt ✅ / Linux Landlock ⬜ / Windows 受限令牌 ⬜，归属决策见 §3.10.1） | 移植裁剪 | S5f-1 ✅ |
 | `agent/prompt` | 系统提示词分节装配：`Section`/`Builder`（Add 严格插入 / Set 覆写 / Complete 整段替换 / Clone 派生）+ 中心顺序常量；`tool.Guideline` 可选接口让工具自带跨调用指引（文案归工具包，位置归本包）——PI 紧凑模板 × DSH 顺序中心化的中间态 | 新增 | S7 前置 ✅ |
 | `agent/contextfile` | 上下文文件（AGENTS.md / CLAUDE.md 等）发现与合并：候选名优先级 + 向上递归 + 同目录 override + 真实路径去重 + 字节预算裁剪；**I/O 以 Reader 接口注入**（框架不碰文件系统） | 新增 | S6 ✅ |
 | `agent`（上下文件） | 截断、压缩、Auditor | 重写瘦身 | S6 ✅ |
@@ -400,7 +400,7 @@ svc := approval.NewService(rt.Answerer, sessionAudit{sess: sess})
 - **词法规则的教训**（2026-10 事故）：宿主规则曾键在"含字母 r 的 flag"上——`git status --short` 误触发，而逐个 `git rm` 漏过，被拒后模型拆解命令绕过拦截。规则必须键在**语义**（"这是删除命令"）而不是**字母形状**上；且词法规则终究只是业务规则，`find -delete`、脚本语言仍绕得过——**边界只能是隔离（S5f-2b）**。
 - **边界：S5g 是阻塞式**——驱动线程等一个人工决定（DSH 也是这样：工具调用 await 一个 promise）。**跨进程的挂起-恢复**（进程死了还能接着跑）属 `agent/checkpoint` 那一片；审批接口不关心决定怎么来，所以那一片落地时这里不用改。
 
-### 3.10 路径强制隔离（S5f-2b：macOS Seatbelt ✅ / Linux Landlock ⬜）
+### 3.10 路径强制隔离（S5f-2b：macOS Seatbelt ✅ / Linux Landlock ⬜ / Windows ⬜；归属决策见 §3.10.1）
 
 **边界只能是对进程的内核约束**。词法规则与审批是"减事故面"——2026-10 的事故证明它们会被拆解命令绕过；而内核约束与命令怎么拼写无关（`git rm -r` 和逐个 `git rm` 删的是同一个禁区）、子进程继承、符号链接在 vnode 层解析（软链逃逸无效）。
 
@@ -427,6 +427,40 @@ roots.Add(b)   // 运行期加根：文件工具与 shell 同时生效
 **fail-closed 纪律**：sandbox-exec 不可用 → `ErrPathScopeUnsupported`；非 darwin 平台尚无后端 → 非全开的调用明确报错。**绝不退化成"没隔离的假装隔离"**——"假装有边界"比"没有边界"更危险。
 
 **与文件 jail 的分工**：jail 管**工具**（read/write/edit）的路径；`PathScope` 管**子进程**能碰到的路径——命令可以绕过工具直接 `cat /etc/passwd`，jail 管不着。两层都要。**两层共用一份根集合**（§3.5.1 的 `RootSet`）时，加根一次两层同时生效；不共用就要接受两层边界不一致（那就得由宿主自己保证一致）。
+
+### 3.10.1 系统级沙箱的归属：机制在 MoS，策略在宿主（2026-11 决策记录）
+
+**问题**：路径强制目前只有 macOS Seatbelt 一个后端（§3.10），Linux / Windows 缺位。补这块时，“系统级沙箱”该由 MoS 出（SDK 自带每平台后端），还是由宿主出（每个产品各自实现，或干脆上容器）？
+
+**决策**：**机制在 MoS，策略在宿主；强隔离（容器 / microVM / 远程执行）整体在宿主侧，且不作为 MoS 的沙箱后端。**
+
+| 层 | 归属 | 内容 |
+| --- | --- | --- |
+| 同世界路径强制 | **MoS** | macOS Seatbelt ✅ / Linux Landlock（+ bubblewrap 备选）/ Windows 受限令牌 + ACL；统一 `PathScope` → 内核约束语义（只能收窄 / 写侧强制 / 默认派生）；后端不可用即 fail-closed；能力探针（当前强制强度） |
+| 策略 | **宿主** | 是否装配、默认档位与根集合、运行期加根、提权审批（`agent/approval`） |
+| 强隔离 | **宿主**（替换整条能力） | Docker / containerd / microVM / 远程执行——它替换的是“命令执行 + 文件访问”这条能力，不是路径强制后端 |
+
+**PI 的做法**——**没有**。PI 核心明确不沙箱：`packages/coding-agent/docs/index.md:39`（“Pi's tools and extensions run with the permissions of the Pi process … it does not sandbox tool calls”）；`docs/security.md` 把隔离整体归给部署（“How Pi runs” 三档表：直接跑 / 整体进容器或 VM / 只把内置工具放进隔离环境），并明说 “Watching the transcript, using project trust, and reviewing changes do not create a security boundary”。唯一的 OS 级实现在**示例扩展**里：`packages/coding-agent/examples/extensions/sandbox/index.ts` 用 `@anthropic-ai/sandbox-runtime` 包 bash（macOS `sandbox-exec` / Linux `bubblewrap`），且只认 `darwin` / `linux`——其他平台 `sandboxEnabled = false`，**静默降级为不隔离**（只有一条 UI 提示）；初始化失败同样降级。PI 另有“跑在别人沙箱里”的适配：`packages/coding-agent/src/bun/restore-sandbox-env.ts`（沙箱内 `process.env` 为空时从 `/proc/self/environ` 恢复）。Windows 侧 PI 只处理 **shell**（`docs/windows.md`：Git Bash / `pwsh` 探测与替换），无路径强制。
+
+**DSH 的做法**——机制与策略**分包**：机制在 `packages/sandbox/sandbox-local`（`src/index.ts` 的 `PLATFORM_CHAINS`：`linux: ['bwrap','landlock']`、`darwin: ['seatbelt']`、`win32: ['windows-acl']`；`src/profiles.ts` 的 `bwrapProfileArgs` / `landlockProfileArgs` / `seatbeltProfileArgs`）；接缝在 `packages/sandbox/sandbox`（`src/index.ts`：`SandboxProvider.confine()`、`SandboxMode`、`SandboxEnforcement = 'full' | 'partial'`、`SANDBOX_UNAVAILABLE`）；策略在 `packages/sandbox/sandbox-policy`（部署缺省 + 会话覆盖），装配在 `packages/bundle/base/cordis.patch.yml`（`mode: workspace-write`、`workspaceRoot: process.cwd()`）。决策笔记 `.agents/notes/archived/feature/2026-07-06-sandbox.md` 写死了归属：**“The harness is an SDK, so confinement must be a capability developers COMPOSE … a fallback runner has to ship with the SDK rather than be assumed on the host.”** Windows 后端单独成包 `packages/sandbox/sandbox-windows-acl`，决策笔记 `.agents/notes/implemented/feature/2026-08-08-windows-acl-restricted-token-sandbox.md`：受限令牌（`CreateRestrictedToken` + `WRITE_RESTRICTED`）+ Low integrity + mandatory label，**明确报告 `partial`**（NTFS 硬链接别名、读不隔离、AppContainer package SID 树不可读），并否掉 mxc / AppContainer / landstrip。
+
+**共识 / 分歧**——共识：路径边界必须是**内核级**、与命令拼写无关（`git rm -r` 与逐个 `git rm` 删的是同一个禁区）；没有可用后端时必须 fail-closed；“同一世界”与“隔离世界”是两件事。分歧：**PI 核心不背沙箱**（交给扩展与部署），**DSH 核心背**（SDK 自带每平台后端 + 功能探测 + 失败方言）。代价各自明确：PI 的代价是每个宿主各写一套、行为不一致、平台不支持时**降级为不隔离**（DSH / MoS 都拒绝这种降级）；DSH 的代价是 SDK 背上平台代码——它为此写了约 300 行 C 的 `landlock-run` 启动器与 native 发布链路，Windows 更是一整个独立包。
+
+**MoS 的取舍与理由**——取 DSH 的位置（机制在 SDK，策略在宿主），三条理由：(1) **fail-closed 是框架纪律**：后端不可用必须 `ErrPathScopeUnsupported`，放给宿主实现必然出现“假装有边界”（§3.10 的立论）；(2) **范围语义是框架政策**：`PathScope` 的“只能收窄 / 写侧强制 / 默认派生”一旦放宿主，多宿主必然漂移——MoS 现在“文件 jail 与 shell 沙箱共用一份根集合”已经是**靠宿主自觉**的对齐点（§3.10），再把语义也放宿主等于放弃这条线；(3) **SDK 不能假设宿主有 runner**：DSH 的原话——`bwrap` 在最需要沙箱的机器上（最小容器、禁 userns、禁 `mount` 的 LSM）恰恰不可用，**备选 runner 必须随 SDK 走**。
+
+- **不做**：容器 / microVM / 远程执行后端——DSH 明说它们“不是这个接缝的后端，而是替换整条能力”（`ctx.shell` / `ctx.fs` 整体换）；MoS 保持同一判断，宿主以 `sandbox.Runner` 注入即可（见下方“现状差距”第 3 条，那条路现在被装配层堵着）。
+- **不做**：Windows 读侧强制——DSH 已论证代价（为任意路径读做全盘 DACL 改写），Windows 后端按“写侧强制 + 如实报告 partial”落地。
+- **不做**：任何“平台不支持就降级为不隔离”的路径（PI 扩展的做法）。
+
+**两家都没有的空白 / MoS 自创**——MoS 现有的 `PathScope{ReadRoots, WriteRoots}` 双根 + “请求只能收窄”语义，两家都没有等价物（DSH 是三档 mode + 单 `workspaceRoot`；PI 扩展是 allow/deny 列表）。这是自创：好处是“读/写两根分别表达 + 运行期收窄”比三档 mode 细；代价是宿主要多理解一层语义，且**必须接受某些后端只强制写侧**（`ReadRoots` 在 Seatbelt 后端上就只是校验用的声明、不是强制项，§3.10 已如实标注）。风险：新后端若把“只强制写”悄悄说成“读写都强制”，就是 DSH 反复警告的“假装有边界”。→ 对策：**能力探针 + 强制完整度上报**（DSH 有 `full` / `partial` 的对位物，MoS 现在只有“支持 / 不支持”二值）：`sandbox.Capabilities()` 返回 `{Backend, Enforcement: none | write-only | read-write, Reason}`——宿主据此决策，框架据此 fail-closed。
+
+**现状差距（2026-11 实测）**——补后端之前有三处硬伤：
+
+1. **仓库今天在 Linux 上编译不过**：`tool/builtin/observe_version_unix.go`（`//go:build unix`）与 `tool/builtin/observe_version_linux.go`（`//go:build linux`）重复声明 `fileIdentity`，且前者用了 Linux 没有的 `st.Mtimespec`（Linux 是 `Mtim`）——`GOOS=linux go build ./...` 直接失败。**Linux 沙箱的前置是先修可移植性**，不是先写 Landlock。
+2. **Windows 同样编译不过**：`sandbox/sandbox.go` 用了 `syscall.SysProcAttr{Setpgid: true}` 与 `syscall.Kill`（Unix 专有）。Windows 侧要对位的是 **Job Object**（`AssignProcessToJobObject` + `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`）替“进程组击杀”，命令解释器也要从 `/bin/sh -c` 改成 `cmd /c` 或 `pwsh -NoProfile -Command`。
+3. **强隔离注不进来**：`mos.Config.Sandbox` 的类型是具体结构 `*sandbox.Local`（`mos.go:91`），不是 `sandbox.Runner` 接口——宿主想注 Docker / containerd 后端必须改框架源码。**这是“强隔离归宿主”路线的硬阻塞**：把该字段改成接口（`builtin.NewShell` 本来就收 `sandbox.Runner`，改动面很小），宿主才有地方放自己的后端。
+
+**待拍板项**：(a) 能力探针的 API 形状（`sandbox.Capabilities()` 返回什么、宿主在哪读——装配期快照还是每次调用）；(b) Linux 后端优先级（Landlock 优先还是 bwrap 优先——DSH 是 bwrap 优先，MoS 的 `PathScope` 双根语义更贴 Landlock 的 grant 模型）；(c) Windows 后端默认开还是默认关（它要改宿主 DACL，与 §4 治理规则 5 “框架层不碰文件系统”的取向有张力）。
 
 ### 3.11 模型调用的重试（S2b）
 
@@ -733,7 +767,8 @@ llm.WithRetry(model, llm.RetryPolicy{
 
 ##### 六项「不做」的可用性优化（2026-11-04 追加分析）
 
-> **状态：建议，未拍板。** 本节只做参考分析与取舍建议，**不改 PRD**；拍板后才开建。
+> **状态：已拍板（2026-11-04，用户拍板「都要实现」）。** 本节保留 PI/DSH 参考分析与取舍；
+> 实施进度见下方「S8.4 可用性优化（实施进度）」。③ codemode **维持不做**（登记为候选）。
 > 起因：S8.1/S8.2/S8.3 交付后复查——六项「明确不做」里有几项挡在**真实可用**的路上（接真实远程服务器、
 > 模型知道有哪些 MCP 服务器），另几项其实不挡路。下面逐项给 PI/DSH 出处与 MoS 的取舍。
 
@@ -807,11 +842,35 @@ llm.WithRetry(model, llm.RetryPolicy{
 | P2 | ② MCP 资源工具（三个共享工具） | `tool/mcp` + `mos` | 中 | 中（排 M3b） |
 | — | ③ codemode | **不做**（登记候选） | 大 | 低（需脚本沙箱 + 牺牲审计粒度） |
 
-**待拍板项**
+**拍板结果（2026-11-04）**
 
-1. **⑤ 的形态**：**建议 = PI 式**（正文现读 + 宿主显式 `ReloadSkills` + 有差异才追加一条 user 侧消息），**不接 watcher 接口**——理由与三件套细则见上。若拍板做，需同时澄清治理规则「不做运行期插件热加载」的适用范围（**组件装配** vs **数据面目录刷新**），措辞澄清而非改规则。
-2. **② 的排期**：进 M3b 还是插一个 S8.5？
-3. **③ 的触发条件**：建议维持不做，只在「MCP 工具调用次数 / token 爆炸」有实证时重开；届时先评估「批量调用」而非脚本沙箱。
+1. **⑤ 的形态**：**拍板 = PI 式**（正文现读 + 宿主显式 `ReloadSkills` + 有差异才追加一条 user 侧短消息），**不接 watcher 接口**。治理规则「不做运行期插件热加载」的适用范围澄清为：**组件装配**（不热换）vs **技能数据面目录刷新**（允许显式重扫）——措辞澄清，不改规则。
+2. **② 的排期**：**拍板 = 进 S8.4**（原建议 M3b），即 **S8.4-E**，不另开 S8.5。
+3. **③ 的触发条件**：**维持不做**（候选）；仅在「MCP 工具调用次数 / token 爆炸」有实证时重开，届时先评估「批量调用」而非脚本沙箱。
+4. **⑥ 的形态**：**拍板 = 抄 PI**（`- <namespace> (tool_search): <summary>`，整节 ≤4KB、单条 ≤250、只列连上且有 deferred 工具的服务器），即 **S8.4-A**。
+5. **① 的范围**：**拍板 = 认证可诊断 + `TokenProvider` 边界**（**不做** OAuth 浏览器/动态注册/回调流程），即 **S8.4-B**。
+6. **④ 的范围**：**拍板 = 只诊断、不收窄**（`allowed-tools` × 可见工具集求交，写进 `skill/activate` 事件与快照），即 **S8.4-D**。
+
+##### S8.4 可用性优化（实施进度）
+
+| 子片 | 内容 | 落点 | 状态 |
+| --- | --- | --- | --- |
+| S8.4-A | ⑥ 服务器摘要进**静态**系统提示词 | `tool/mcp/summary.go` + `agent/prompt` + `mos` | ✅ |
+| S8.4-B | ① 认证可诊断（401/403）+ `ServerConfig.TokenProvider` | `tool/mcp` | ⬜ |
+| S8.4-C | ⑤ 正文调用时现读 + `Agent.ReloadSkills()`（显式、幂等、全量重扫） | `agent/skill` + `mos` | ⬜ |
+| S8.4-D | ④ `allowed-tools` × 当前可见工具集 求交诊断（不收窄） | `agent/skill` + `mos` | ⬜ |
+| S8.4-E | ② MCP 资源工具（三个共享工具 + 显式 server 参数） | `tool/mcp` + `mos` | ⬜ |
+
+**S8.4-A 的实现取舍（与上文⑥对齐，差异处标出）**
+
+- **分节位置**：`agent/prompt` 新增 `OrderMCPServers = 850`、`SectionMCPServers = "mcp_servers"`、`Builder.AddMCPServers`——排在技能清单（800）之后、工具指引（1000）之前：两者都是「还有哪些能力」的索引，技能更常用排前面。
+- **只列够得着的服务器**：`Manager.Summaries()` 只收「连接成功 **且** 有 deferred 工具」的服务器——direct 的模型已经看得见（列了是浪费），只有 hidden 的模型搜不到（列了模型也够不着，会去搜一台搜不到的工具）。
+- **摘要取静态 `ServerConfig.Description` 首行**：不取连接的 `instructions`（那个已走 user 侧一次性注入，会变；进静态提示词会失真 + 重复）。PI 的 `serverSummary` 是「description 缺省才用 instructions 首行」——MoS 不做这个回退，因为 MoS 的 instructions **总是**被注入。
+- **预算按字节**（PI 按字符）：整节 ≤4096 字节、单条摘要 ≤250 字节。MoS 的其他预算（技能清单、`MaxInstructionBytes`）一律按字节，口径一致。
+- **渲染层自己排序**（不指望调用方排）：同一份配置两次装配必须逐字节一致，否则 prompt cache 失效。
+- **预算算法不贪心**：`size(kept)` **非单调**（砍掉服务器会多出一行「另有 N 个」，那行可能比省下的还贵）→ 枚举取能放下的最大 `kept`，而不是从大往小递减。PI 的贪心版会错过最优解。
+- **提示词渲染时机后移**：`mos.New` 原来在注册表创建**之前**就 `pb.Render()`；MCP 摘要必须等 MCP 装配完才知道「哪些服务器连上了」→ 渲染点挪到**所有工具注册完之后**。工具注册序因此**不变**（注册序变了工具清单顺序就变，会同时抖 prompt cache 与模型行为）。
+- **连不上的服务器不进提示词**（PI 只列已启用的；MoS 更严：只列连上的）——否则模型会去搜一台不存在的服务器。连接失败只写 `Describe()` 快照警告。
 
 ##### 状态
 
@@ -822,7 +881,7 @@ llm.WithRetry(model, llm.RetryPolicy{
 | `agent/skill` 包 + `skill` 工具 + 事件（**不做技能级守卫**） | ✅（S8.1） |
 | `tool/mcp` 包（官方 SDK 客户端 + 两个 transport + 适配器 + 换代） | ✅（S8.2） |
 | 装配层入口（`Config.Skills` / `Config.MCP`）+ deferred 联动 + 失败隔离 + 说明注入 | ✅（S8.3） |
-| 六项「不做」的可用性优化（参考分析已出，**待拍板**） | ⬜（见上节「六项「不做」的可用性优化」） |
+| 六项「不做」的可用性优化（参考分析已出，**已拍板**） | 🔄（S8.4-A ✅ / B、C、D、E ⬜，见上节） |
 | PRD 状态同步（Skills 状态、FR-D8 措辞、开放问题 2/5） | ✅（本片，PRD 已改） |
 
 ### 3.17 挂起-恢复（FR-G3：跨进程续跑）

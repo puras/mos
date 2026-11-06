@@ -145,6 +145,28 @@ func TestDefaultGolden(t *testing.T) {
 	}
 }
 
+func TestAddMCPServers(t *testing.T) {
+	b := Default()
+	// 空正文 → 不加分节（不留空洞）。
+	if err := b.AddMCPServers("   "); err != nil {
+		t.Fatalf("AddMCPServers: %v", err)
+	}
+	if got := b.Render(); strings.Contains(got, "mcp_servers") {
+		t.Fatalf("空正文不该加分节:\n%s", got)
+	}
+	if err := b.AddMCPServers("以下 MCP 服务器的工具不在你的清单里，用 tool_search 加载。"); err != nil {
+		t.Fatalf("AddMCPServers: %v", err)
+	}
+	got := b.Render()
+	if !strings.Contains(got, "tool_search") {
+		t.Fatalf("应渲染 MCP 服务器摘要:\n%s", got)
+	}
+	// 重名即报错（装配错误当场暴露）。
+	if err := b.AddMCPServers("再来一次"); err == nil {
+		t.Fatal("重复注入应报错")
+	}
+}
+
 func TestAddToolGuidelines(t *testing.T) {
 	reg := tool.NewRegistry()
 	mustRegister := func(ts ...tool.Tool) {

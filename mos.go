@@ -406,10 +406,10 @@ func New(cfg Config) (*Agent, error) {
 			}
 		}
 	}
-	if pb != nil {
-		systemPrompt = pb.Render()
-	}
-
+	// 提示词渲染**故意挪后**：MCP 服务器摘要节要进系统提示词，而 MCP 装配
+	// 在注册表之后（工具注册序不能变——变了工具清单顺序就变，prompt cache
+	// 与模型行为都跟着抖）。所以：先装 MCP，最后统一渲染。
+	//
 	// 工具注册表：宿主自备优先，nil = 空注册表。
 	reg := cfg.Tools
 	if reg == nil {
@@ -466,6 +466,23 @@ func New(cfg Config) (*Agent, error) {
 		mcpInstructionMax = cfg.MCP.MaxInstructionBytes
 		// hidden 档：可见性层（与 policy 那层 AND 叠加——谁也不覆盖谁）。
 		reg.SetVisibilitySlot(mcp.HiddenSlot, mcpMgr.HiddenFilter())
+		// 服务器摘要节：模型看不见的服务器（deferred 工具）得让它知道存在。
+		//
+		// 进**静态**系统提示词：摘要取宿主配置的 Description（静态字符串），
+		// 不取连接的 instructions（那个走 user 侧一次性注入，会变）——静态
+		// 内容进静态提示词不破 prompt cache。
+		if text := mcp.RenderServersSection(mcpMgr.Summaries(), 0); text != "" {
+			if pb != nil {
+				if err := pb.AddMCPServers(text); err != nil {
+					return nil, fmt.Errorf("mos: 装配 MCP 服务器摘要: %w", err)
+				}
+			} else {
+				if systemPrompt != "" {
+					systemPrompt += "\n\n"
+				}
+				systemPrompt += text
+			}
+		}
 	}
 
 	// tool_search：deferred 集非空才注册（能力即证据——没有懒加载工具就不给
@@ -489,6 +506,12 @@ func New(cfg Config) (*Agent, error) {
 				return nil, fmt.Errorf("mos: 注册 skill 工具: %w", err)
 			}
 		}
+	}
+
+	// 分节装配器到此才渲染：所有要进提示词的分节（项目约定、技能清单、
+	// MCP 服务器摘要）都已就位。
+	if pb != nil {
+		systemPrompt = pb.Render()
 	}
 
 	// 守卫总线（单调裁决）与钩子总线（可改写环节）：两条轨道，互不绕过。

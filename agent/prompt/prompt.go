@@ -45,6 +45,12 @@ const (
 	// 技能清单是「额外有哪些能力可用」的索引，放在能力说明（工具指引）之前
 	// 更自然：先知道有什么，再看怎么用。
 	OrderSkills = 800
+	// OrderMCPServers 是 MCP 服务器摘要的位置：在技能清单之后、工具指引之前。
+	//
+	// 同样是「有哪些能力可用」的索引，但它是**模型看不见的那部分**能力
+	// （deferred 工具不在清单里），所以排在技能清单之后：本地技能更常用，
+	// 远端服务器工具是补充。
+	OrderMCPServers = 850
 	// OrderToolBase 是工具指引的起点：AddToolGuidelines 按注册序依次 +1。
 	OrderToolBase = 1000
 	// OrderRuntime 是易变部署事实的位置（工作目录、审批模式等，宿主自决是否加入）。
@@ -69,6 +75,9 @@ const SectionProjectContext = "project_context"
 
 // SectionSkills 是技能清单分节的名字（宿主用 agent/skill 渲染正文后注入）。
 const SectionSkills = "skills"
+
+// SectionMCPServers 是 MCP 服务器摘要分节的名字（宿主用 tool/mcp 渲染正文后注入）。
+const SectionMCPServers = "mcp_servers"
 
 // Builder 收集分节并渲染最终字符串。零值可直接用；非并发安全——
 // 装配发生在启动期（或每个智能体实例各自装配），渲染结果随后只读。
@@ -164,6 +173,23 @@ func (b *Builder) AddSkills(text string) error {
 	return b.Add(Section{
 		Name:  SectionSkills,
 		Order: OrderSkills,
+		Text:  text,
+	})
+}
+
+// AddMCPServers 注入 MCP 服务器摘要正文（tool/mcp 渲染的 mcp_servers 块）：
+// 位置固定在 OrderMCPServers。
+//
+// 正文为空 = 没有需要指引的 MCP 服务器（模型直接看得见的不列）：不加分节
+// （不留空洞）。
+// 重名即报错——同一个 Builder 注入两次是装配错误，当场暴露。
+func (b *Builder) AddMCPServers(text string) error {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	return b.Add(Section{
+		Name:  SectionMCPServers,
+		Order: OrderMCPServers,
 		Text:  text,
 	})
 }

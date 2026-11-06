@@ -231,6 +231,94 @@ func TestMCPNotConfigured(t *testing.T) {
 	}
 }
 
+// S8.4-A：MCP 服务器摘要进**静态**系统提示词——模型得知道有哪些服务器
+// 存在（否则不搜就不知道）。
+func TestMCPServersSectionInSystemPrompt(t *testing.T) {
+	reg := newTestRegistry(t)
+	client := &mcpStubClient{tools: []mcp.ToolInfo{{Name: "issue", Description: "查工单"}}}
+	a, err := mos.New(mos.Config{
+		Model: &stubModel{reply: "ok"},
+		Tools: reg,
+		MCP: &mos.MCPConfig{
+			Servers: []mcp.ServerConfig{{Name: "gh", Description: "GitHub 工单与仓库"}},
+			Dial:    mcpDialer(map[string]*mcpStubClient{"gh": client}),
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer a.Close()
+
+	sp := a.RunContext().SystemPrompt
+	if !strings.Contains(sp, "mcp__gh") {
+		t.Fatalf("系统提示词应列出 MCP 服务器：\n%s", sp)
+	}
+	if !strings.Contains(sp, "GitHub 工单与仓库") {
+		t.Fatalf("系统提示词应带服务器摘要：\n%s", sp)
+	}
+	if !strings.Contains(sp, "tool_search") {
+		t.Fatalf("系统提示词应说明怎么够到：\n%s", sp)
+	}
+}
+
+// 摘要节是**静态**的：两次装配逐字节一致（保 prompt cache）。
+func TestMCPServersSectionIsStatic(t *testing.T) {
+	build := func() string {
+		reg := newTestRegistry(t)
+		client := &mcpStubClient{tools: []mcp.ToolInfo{{Name: "issue", Description: "查工单"}}}
+		a, err := mos.New(mos.Config{
+			Model: &stubModel{reply: "ok"},
+			Tools: reg,
+			MCP: &mos.MCPConfig{
+				Servers: []mcp.ServerConfig{{Name: "gh", Description: "GitHub 工单"}},
+				Dial:    mcpDialer(map[string]*mcpStubClient{"gh": client}),
+			},
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		defer a.Close()
+		return a.RunContext().SystemPrompt
+	}
+	if build() != build() {
+		t.Fatal("系统提示词两次装配应逐字节一致（静态，保 prompt cache）")
+	}
+}
+
+// 只列模型够得着的服务器：direct 的不用列（模型看得见），连不上的不列。
+func TestMCPServersSectionSkipsUnreachable(t *testing.T) {
+	reg := newTestRegistry(t)
+	direct := &mcpStubClient{tools: []mcp.ToolInfo{{Name: "r", Description: "direct"}}}
+	a, err := mos.New(mos.Config{
+		Model: &stubModel{reply: "ok"},
+		Tools: reg,
+		MCP: &mos.MCPConfig{
+			Servers: []mcp.ServerConfig{
+				{Name: "directonly", Description: "模型直接看得见", ToolExposure: map[string]mcp.Exposure{"r": mcp.ExposureDirect}},
+				{Name: "down", Description: "连不上"},
+			},
+			Dial: func(_ context.Context, cfg mcp.ServerConfig, _ mcp.Options) (mcp.Client, error) {
+				if cfg.Name == "down" {
+					return nil, errors.New("连不上")
+				}
+				return direct, nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer a.Close()
+
+	sp := a.RunContext().SystemPrompt
+	if strings.Contains(sp, "directonly") {
+		t.Fatalf("全是 direct 的服务器不该进摘要节：\n%s", sp)
+	}
+	if strings.Contains(sp, "down") {
+		t.Fatalf("连不上的服务器不该进摘要节：\n%s", sp)
+	}
+}
+
 // newTestRegistry 造一个空注册表。
 func newTestRegistry(t *testing.T) *tool.Registry {
 	t.Helper()
