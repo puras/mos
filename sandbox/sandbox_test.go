@@ -347,7 +347,10 @@ func TestLocalPathScope(t *testing.T) {
 	if strings.Contains(res.Output, "touched=0") {
 		t.Fatalf("写工作区外应被 OS 层拒绝: out=%s", res.Output)
 	}
-	if !strings.Contains(res.Output, "Operation not permitted") {
+	// 内核级拒绝的报文按后端不同：Seatbelt 是 "Operation not permitted"，
+	// Landlock（errno EACCES）是 "Permission denied"。两者都算内核拒绝。
+	if !strings.Contains(res.Output, "Operation not permitted") &&
+		!strings.Contains(res.Output, "Permission denied") {
 		t.Fatalf("应是内核级拒绝: out=%s", res.Output)
 	}
 

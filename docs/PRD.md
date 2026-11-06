@@ -1,6 +1,7 @@
 # MoS PRD（产品需求文档）
 
 > 版本：v0.2（草案）｜ 日期：2026-11-04 ｜ 维护：puras
+> 更新记录：**2026-11-04** —— **FR-D11 可用性优化第三片（S8.4-D）**：**`allowed-tools` 求交诊断**——技能激活时把声明的 `allowed-tools` 与当前可见工具集求交，缺失写进新事件 `skill/allowed-tools-mismatch` 与 `Describe()` 快照；**只诊断、不收窄**（工具面不变，模型返回值不出现诊断文案）。注册表增 `Visible()`（模型可见工具名，与 `List()` 同一过滤）；`skill.Options.ToolProbe` 由装配层注入探针。分析见 `docs/ARCHITECTURE.md` §3.16，说明见 `docs/s8.4-usability.md`。
 > 更新记录：**2026-11-04** —— **FR-D11 可用性优化（S8.4-C）**：**技能正文调用时现读 + 宿主显式重扫**——目录扫描只取 frontmatter 元数据与正文路径（`Skill.Body` → `Skill.BodyPath`），正文在 `skill` 工具 / `/name` 展开时现读（改了 `SKILL.md` 立刻生效）；`Catalog` 改快照持有者（`atomic.Pointer[Snapshot]`，重扫整体换指针）；`Agent.ReloadSkills()` 显式、幂等、全量重扫，**摘要不含正文**（改正文不必 reload）；清单变化走 **user 侧替换目录消息**（静态提示词不重渲染，保 prompt cache）；正文预算改为调用时校验。**破坏性变更**：`ExpandSkill` / `ExpandInvocation` 增返回 `error`。分析见 `docs/ARCHITECTURE.md` §3.16，说明见 `docs/s8.4-usability.md`。
 > 更新记录：**2026-11-04** —— **FR-D8 可用性优化第二片（S8.4-B）**：**认证可诊断 + `TokenProvider`**——`ErrorKind` 新增 `auth` 类（HTTP 401/403 与取凭据失败）；`ServerConfig.TokenProvider`（每次请求取一次，**不缓存不刷新**，空串 = 不注入头）；凭据注入点 = HTTP RoundTripper（`tool/mcp/auth.go`，把状态码变成结构化分类，而不是解析 SDK 的错误文本）；静态 `Headers` 此前是死配置，本片接线。**不做** OAuth 流程（凭据生命周期归宿主）。分析见 `docs/ARCHITECTURE.md` §3.16，说明见 `docs/s8.4-usability.md`。
 > 更新记录：**2026-11-04** —— **FR-D8 可用性优化第一片（S8.4-A）**：**MCP 服务器摘要进静态系统提示词**——`agent/prompt` 新增 `mcp_servers` 节（`OrderMCPServers = 850`）、`tool/mcp/summary.go` 渲染器（只列连接成功且有 deferred 工具的服务器；摘要取静态 `ServerConfig.Description` 首行；整节 ≤4KB、单条 ≤250 字节；渲染层自己排序保证确定性）、装配层把提示词渲染点后移到 MCP 装配之后。分析见 `docs/ARCHITECTURE.md` §3.16，说明见 `docs/s8.4-usability.md`。
@@ -122,7 +123,7 @@ Harness Engineering 四铁律 + Loop Engineering 九杠杆 + Audit Gate 审计�
 | M3a | FR-D11 Skills 重做：`agent/skill` 新包（frontmatter 解析 + 目录发现 + `<available_skills>` 清单 + `<skill_content>` 正文 + `/name` 展开器 + 本轮激活状态）+ 专用 `skill` 工具（正文走普通工具结果）+ `skill/activate` 事件 + 装配入口（`mos.Config.Skills` / `Agent.ExpandSkill`） | ✅（2026-11-04，S8.1；说明见 `docs/s8.1-skills.md`） |
 | M3a | FR-D8 MCP 接入：`tool/mcp` 新包（**官方 Go SDK**：`github.com/modelcontextprotocol/go-sdk` v1.8.0；stdio + streamable-http 两个 transport；协议基线 `2026-07-28`）+ 工具适配（`mcp__<server>__<tool>` 命名、schema 直通、结果投影）+ 两阶段原子换代 + 装配入口（`mos.Config.MCP`：一开即装、默认 deferred、hidden 档、失败隔离、服务器说明每会话一次性注入、`Describe()` 快照） | ✅（2026-11-04，S8.2 + S8.3；说明见 `docs/s8.2-mcp.md`） |
 | M3a | FR-D8 可用性优化 **S8.4-A**：MCP 服务器摘要进**静态**系统提示词（`agent/prompt` 新增 `mcp_servers` 节 + `tool/mcp` 渲染器 + 装配期接线；只列连上且有 deferred 工具的服务器） | ✅（2026-11-04，S8.4-A；说明见 `docs/s8.4-usability.md`） |
-| M3a | FR-D8/D11 可用性优化 **S8.4-B/C/D/E**：认证可诊断 + `TokenProvider`、技能正文现读 + `Agent.ReloadSkills()`、`allowed-tools` 求交诊断、MCP 资源工具（三个共享工具） | 🔄（B ✅ / C ✅ 2026-11-04；D / E ⬜；分析见 `docs/ARCHITECTURE.md` §3.16） |
+| M3a | FR-D8/D11 可用性优化 **S8.4-B/C/D/E**：认证可诊断 + `TokenProvider`、技能正文现读 + `Agent.ReloadSkills()`、`allowed-tools` 求交诊断、MCP 资源工具（三个共享工具） | 🔄（B ✅ / C ✅ / D ✅ 2026-11-04；E ⬜；分析见 `docs/ARCHITECTURE.md` §3.16） |
 | M3 ~ M5 | 见 §5 需求 | ◐ M3a（FR-D11 Skills / FR-D8 MCP）已落地；M3b（SubAgent / AgentTeam / 并行 DAG）未开始 |
 
 ---
@@ -175,7 +176,7 @@ Harness Engineering 四铁律 + Loop Engineering 九杠杆 + Audit Gate 审计�
 | 编号 | 需求 | 验收标准 |
 | --- | --- | --- |
 | FR-E1 | 异常处理与恢复三阶段：检测（工具输出验证 / API 错误码 / 超时）→ 处理（日志/重试/回退/优雅降级/通知）→ 恢复（状态回滚 / 诊断 / 自我纠正 / 升级） | 注入故障演练集通过；升级路径接 Approval |
-| FR-E2 | 沙箱强隔离后端（L3）：Docker / containerd 替换进程级实现——**宿主侧实现，经 `sandbox.Runner` 注入**（强隔离属宿主侧：它替换整条执行能力，不是同世界路径强制后端；MoS 出同世界后端，归属见 ARCHITECTURE §3.10.1） | `sandbox.Runner` 接口不变，后端可切换（前置：`mos.Config.Sandbox` 从 `*sandbox.Local` 改成接口）；越狱测试通过 |
+| FR-E2 | 沙箱强隔离后端（L3）：Docker / containerd 替换进程级实现——**宿主侧实现，经 `sandbox.Runner` 注入**（强隔离属宿主侧：它替换整条执行能力，不是同世界路径强制后端；MoS 出同世界后端，归属见 ARCHITECTURE §3.10.1。**已达成部分（2026-11-06）**：macOS Seatbelt / Linux Landlock / Windows 低完整性 token 的内核级**写范围**强制（§3.10）） | `sandbox.Runner` 接口不变，后端可切换（前置：`mos.Config.Sandbox` 从 `*sandbox.Local` 改成接口）；越狱测试通过 |
 | FR-E3 | 模型分级路由：按任务复杂度选档（简单→经济模型、复杂→强模型），附顺序回退链 | 分级决策可配置可审计；回退链演练通过 |
 | FR-E4 | 评估与监控（知识进化第 2 层 = 配置进化）：轨迹评估 Golden 测试集 + LLM-as-a-Judge 结构化评分 + 漂移检测 + 配置 A/B 择优（工具描述 / 提示词 / 路由与 Policy 规则版本化晋级） | 评估跑批可重复；版本化档案支持回滚 |
 | FR-E5 | 优先级调度与配额：紧急性/重要性/依赖关系，限流配额按优先级区分 | 调度策略接口化（策略由平台注入） |
@@ -212,7 +213,7 @@ Harness Engineering 四铁律 + Loop Engineering 九杠杆 + Audit Gate 审计�
 | NFR-3 | **零开销降级**：钩子 / 守卫 / 压缩器 / 截断器 / 审批通道未注入时零额外开销（未注入 = 行为与没用该能力完全一致） | no-op 路径基准测试 |
 | NFR-4 | **日志即事实**：会话日志 append-only、`Append` 同步落盘 fail-fast、事件 Seq 连续可重放；日志不允许截断（崩溃恢复只补事件不改写） | 已执行；重放测试覆盖 |
 | NFR-5 | **审计不变式**：任何智能体（含 SubAgent / 队友）的自述不入 `TaskState`，环境验证说了算；机器可回放信号优先于 LLM 判断 | 已执行；M3 多智能体延续 |
-| NFR-6 | **依赖纪律**：近零依赖（协议层 + uuid + yaml.v3）；协议仓库只读（AGENTS.md 硬规则）；MoS 只消费协议层 `pkg/` 纯定义包，不依赖网关实现层 | `go.mod` 审计 + import 边界检查 |
+| NFR-6 | **依赖纪律**：近零依赖（协议层 + uuid + yaml.v3）；**例外**：Linux 路径强制后端引入 `landlock-lsm/go-landlock`（内核 API 无标准库绑定，自研 syscall = 自己实现内核 ABI）；协议仓库只读（AGENTS.md 硬规则）；MoS 只消费协议层 `pkg/` 纯定义包，不依赖网关实现层 | `go.mod` 审计 + import 边界检查 |
 | NFR-7 | **可测试性**：适配器用 httptest 协议模拟不依赖真实网络；关键行为用守护测试钉住（如 schema 逐字节不变、提示词两次 Render 一致） | `go test ./...` 全绿（注：需嵌套 Seatbelt 的沙箱 / shell 类测试要在允许 sandbox 的常规环境跑） |
 | NFR-8 | **API 演进纪律**：未发布、无兼容负担，可按目标架构直接落地；但破坏性变更（如文件工具改名 `read_file`→`read`、提示词分节改名）必须在文档更新记录显式声明 | 更新记录惯例执行 |
 

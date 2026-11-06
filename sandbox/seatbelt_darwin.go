@@ -35,21 +35,21 @@ const seatbeltBin = "/usr/bin/sandbox-exec"
 // 写全开（写根含 "/"）→ 原样返回：没有要强制的边界，也不做样子。
 // 其他情况：sandbox-exec 可用则包 profile；不可用 → ErrPathScopeUnsupported
 // （fail-closed：绝不退化成"没隔离的假装隔离"）。
-func wrapPathScope(eff *PathScope, base []string) ([]string, error) {
+func wrapPathScope(eff *PathScope, base []string) (invocation, error) {
 	if writeOpen(eff) {
-		return base, nil
+		return invocation{argv: base}, nil
 	}
 	if _, err := exec.LookPath(seatbeltBin); err != nil {
-		return nil, fmt.Errorf("%w: sandbox-exec 不可用（%s 缺失？）", ErrPathScopeUnsupported, seatbeltBin)
+		return invocation{}, fmt.Errorf("%w: sandbox-exec 不可用（%s 缺失？）", ErrPathScopeUnsupported, seatbeltBin)
 	}
 	profile, err := seatbeltProfile(eff.WriteRoots)
 	if err != nil {
-		return nil, err
+		return invocation{}, err
 	}
 	argv := make([]string, 0, len(base)+3)
 	argv = append(argv, seatbeltBin, "-p", profile)
 	argv = append(argv, base...)
-	return argv, nil
+	return invocation{argv: argv}, nil
 }
 
 // seatbeltProfile 生成 SBPL profile（一行形态，DSH 同款）。

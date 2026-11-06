@@ -38,7 +38,7 @@
 | `agent/hook` | 双轨制：HookBus（waterfall 可改写）+ GuardBus（serial 单调裁决） | 移植裁剪 | S5b ✅ |
 | `agent/policy` | 工具名级策略：fail-closed 黑白名单 + YAML 装配 | 移植裁剪 | S5c ✅ |
 | `filesystem` | 文件 jail：宿主声明可读/可写根 + Lexical/Realpath 双层校验 | 移植裁剪 | S5d ✅ |
-| `sandbox` | 进程隔离：超时 + 进程组击杀 + 输出上限 + 资源限制 + 环境裁剪；**路径强制后端**（macOS Seatbelt ✅ / Linux Landlock ⬜ / Windows 受限令牌 ⬜，归属决策见 §3.10.1） | 移植裁剪 | S5f-1 ✅ |
+| `sandbox` | 进程隔离：超时 + 进程组击杀 + 输出上限 + 资源限制 + 环境裁剪；**路径强制后端**（macOS Seatbelt ✅ / Linux Landlock ✅ / Windows 低完整性 token ✅，归属决策见 §3.10.1） | 移植裁剪 | S5f-1 ✅ / S5f-2b ✅ |
 | `agent/prompt` | 系统提示词分节装配：`Section`/`Builder`（Add 严格插入 / Set 覆写 / Complete 整段替换 / Clone 派生）+ 中心顺序常量；`tool.Guideline` 可选接口让工具自带跨调用指引（文案归工具包，位置归本包）——PI 紧凑模板 × DSH 顺序中心化的中间态 | 新增 | S7 前置 ✅ |
 | `agent/contextfile` | 上下文文件（AGENTS.md / CLAUDE.md 等）发现与合并：候选名优先级 + 向上递归 + 同目录 override + 真实路径去重 + 字节预算裁剪；**I/O 以 Reader 接口注入**（框架不碰文件系统） | 新增 | S6 ✅ |
 | `agent`（上下文件） | 截断、压缩、Auditor | 重写瘦身 | S6 ✅ |
@@ -400,7 +400,7 @@ svc := approval.NewService(rt.Answerer, sessionAudit{sess: sess})
 - **词法规则的教训**（2026-10 事故）：宿主规则曾键在"含字母 r 的 flag"上——`git status --short` 误触发，而逐个 `git rm` 漏过，被拒后模型拆解命令绕过拦截。规则必须键在**语义**（"这是删除命令"）而不是**字母形状**上；且词法规则终究只是业务规则，`find -delete`、脚本语言仍绕得过——**边界只能是隔离（S5f-2b）**。
 - **边界：S5g 是阻塞式**——驱动线程等一个人工决定（DSH 也是这样：工具调用 await 一个 promise）。**跨进程的挂起-恢复**（进程死了还能接着跑）属 `agent/checkpoint` 那一片；审批接口不关心决定怎么来，所以那一片落地时这里不用改。
 
-### 3.10 路径强制隔离（S5f-2b：macOS Seatbelt ✅ / Linux Landlock ⬜ / Windows ⬜；归属决策见 §3.10.1）
+### 3.10 路径强制隔离（S5f-2b：macOS Seatbelt ✅ / Linux Landlock ✅ / Windows 低完整性 token ✅；归属决策见 §3.10.1）
 
 **边界只能是对进程的内核约束**。词法规则与审批是"减事故面"——2026-10 的事故证明它们会被拆解命令绕过；而内核约束与命令怎么拼写无关（`git rm -r` 和逐个 `git rm` 删的是同一个禁区）、子进程继承、符号链接在 vnode 层解析（软链逃逸无效）。
 
@@ -422,9 +422,18 @@ sb := &sandbox.Local{WorkDir: a, Scope: sandbox.ScopeFunc(
 roots.Add(b)   // 运行期加根：文件工具与 shell 同时生效
 ```
 
-**macOS 后端（Seatbelt）**：SBPL profile 只收窄**写**——`(allow default)` → `(deny file-write*)` → 放行 `/dev/null` 与写根（DSH `profiles.ts` 同款，实战验证过的最小集）。读强制不做：`deny file-read*` 会碎掉动态链接器与系统缓存，成本远超收益，且事故威胁模型全在写侧；`ReadRoots` 参与收窄校验但此后端暂不强制（强制待 Landlock）。SBPL 按**内核解析后**的路径匹配，写根先过 `EvalSymlinks` 规范化（`/var` → `/private/var` 不规范化会让工作区写被自己拦住）。
+**两个内核后端（语义统一：只收窄写）**：
 
-**fail-closed 纪律**：sandbox-exec 不可用 → `ErrPathScopeUnsupported`；非 darwin 平台尚无后端 → 非全开的调用明确报错。**绝不退化成"没隔离的假装隔离"**——"假装有边界"比"没有边界"更危险。
+- **macOS（Seatbelt）**：SBPL profile 只收窄**写**——`(allow default)` → `(deny file-write*)` → 放行 `/dev/null` 与写根（DSH `profiles.ts` 同款，实战验证过的最小集）。读强制不做：`deny file-read*` 会碎掉动态链接器与系统缓存，成本远超收益，且事故威胁模型全在写侧；`ReadRoots` 参与收窄校验但此后端暂不强制。SBPL 按**内核解析后**的路径匹配，写根先过 `EvalSymlinks` 规范化（`/var` → `/private/var` 不规范化会让工作区写被自己拦住）。
+- **Linux（Landlock）**：`landlock_add_rule` 把**写类权限**授予写根，其余路径的写由内核拒（`landlock_restrict_self` 在 exec 时被子进程继承，后代全在约束里）。与 Seatbelt 的三点差异是**已知边界**，不是 bug：① 写根绑**目录 inode**（Seatbelt 绑路径前缀）——声明时尚不存在的根放不了（fail-closed：写它被拒）；② 跨目录重命名/链接（refer）要内核 ≥5.19；③ 截断写（`> file`，truncate）要内核 ≥6.2——更老的内核上这两类写不在强制范围内（写明在 `sandbox/landlock_linux.go` 里，不假装没有）。
+  **子进程怎么单独套约束**：Landlock 的 `landlock_restrict_self(2)` 只对调用它的**线程**生效，而 Go 没有 fork→exec 之间的钩子（golang/go#68595 在讨论给 `syscall.SysProcAttr` 加字段）。所以父进程把命令与写根通过管道交给「**重新执行出来的自己**」，子进程在包初始化阶段套上约束，再 exec 真正的命令（`/bin/sh -c ...`）——约束由内核在 exec 时继承。已知窗口：子进程里在 sandbox 包初始化**之前**跑的宿主初始化代码不受约束（那是宿主自己的可信代码，模型的命令还没开始跑）。
+
+**fail-closed 纪律**：macOS 的 sandbox-exec 不可用 → `ErrPathScopeUnsupported`；Linux 内核没有 Landlock（<5.13 或未启用 `CONFIG_SECURITY_LANDLOCK`）→ 同样报错；Windows 与其它平台尚无路径后端 → 非全开的调用明确报错。**绝不退化成"没隔离的假装隔离"**——"假装有边界"比"没有边界"更危险。
+
+**Windows 后端（低完整性 token ✅）**：Windows 没有 Landlock 那样“只收窄写”的内核原语，但有等价机制——**低完整性（Low integrity）token**：低完整性进程可以读普通文件，但**写不了**中完整性以上的对象（MIC 的“不可向上写”规则）。把写根标成低完整性并**临时授予**写权限，就得到“只有写根能写、别处能读”的语义——与另两个后端一致。实施细节交给 `github.com/SivanCola/windows-sandbox`（MIT、只依赖 `x/sys`）：复制 token 并降完整性级别 → 给写根打 Low 标签 + 临时写 ACE → 子进程挂进 Job Object（关句柄即杀整树）→ `TEMP/TMP` 重定向到本次命令的临时目录。**临时 ACL 命令结束即回收**（长跑服务不会攒 ACL）。
+  **为什么中间加一层启动器**：库自己 spawn 子进程，父进程拿不到子进程 PID（超时时没法精确杀树）→ 让它 spawn **我们自己**（重新执行），启动器再跑 `cmd.exe /C <命令>`：token 由子进程继承，完整性级别一路传下去；启动器在启动时把自己的 PID 写进 pid 文件，父进程超时读到 PID 后 `taskkill /T /F` 杀整棵树。与 Linux 的 Landlock 启动器同一套形状（重新执行 + 管道载荷 + PID 回收）。
+
+**AppContainer 为何不用**：AppContainer（能力模型，每个进程一套虚拟文件系统视图）也能做路径边界，但它比低完整性 token 重得多（要建 profile、给允许的路径授权 ACE、启动子进程得走 `STARTUPINFOEX` + `CreateProcess`——`os/exec` 不支持），而且语义是**读写都按能力授权**（连 Go module 缓存、`.gitconfig` 都读不到），与另两个后端的「只收窄写」不同，要单独设计读写白名单。
 
 **与文件 jail 的分工**：jail 管**工具**（read/write/edit）的路径；`PathScope` 管**子进程**能碰到的路径——命令可以绕过工具直接 `cat /etc/passwd`，jail 管不着。两层都要。**两层共用一份根集合**（§3.5.1 的 `RootSet`）时，加根一次两层同时生效；不共用就要接受两层边界不一致（那就得由宿主自己保证一致）。
 
@@ -454,13 +463,13 @@ roots.Add(b)   // 运行期加根：文件工具与 shell 同时生效
 
 **两家都没有的空白 / MoS 自创**——MoS 现有的 `PathScope{ReadRoots, WriteRoots}` 双根 + “请求只能收窄”语义，两家都没有等价物（DSH 是三档 mode + 单 `workspaceRoot`；PI 扩展是 allow/deny 列表）。这是自创：好处是“读/写两根分别表达 + 运行期收窄”比三档 mode 细；代价是宿主要多理解一层语义，且**必须接受某些后端只强制写侧**（`ReadRoots` 在 Seatbelt 后端上就只是校验用的声明、不是强制项，§3.10 已如实标注）。风险：新后端若把“只强制写”悄悄说成“读写都强制”，就是 DSH 反复警告的“假装有边界”。→ 对策：**能力探针 + 强制完整度上报**（DSH 有 `full` / `partial` 的对位物，MoS 现在只有“支持 / 不支持”二值）：`sandbox.Capabilities()` 返回 `{Backend, Enforcement: none | write-only | read-write, Reason}`——宿主据此决策，框架据此 fail-closed。
 
-**现状差距（2026-11 实测）**——补后端之前有三处硬伤：
+**现状差距（2026-11 实测）→ 2026-11-06 后端补齐（PR #1）后已收敛**——补后端之前有三处硬伤，逐一交代：
 
-1. **仓库今天在 Linux 上编译不过**：`tool/builtin/observe_version_unix.go`（`//go:build unix`）与 `tool/builtin/observe_version_linux.go`（`//go:build linux`）重复声明 `fileIdentity`，且前者用了 Linux 没有的 `st.Mtimespec`（Linux 是 `Mtim`）——`GOOS=linux go build ./...` 直接失败。**Linux 沙箱的前置是先修可移植性**，不是先写 Landlock。
-2. **Windows 同样编译不过**：`sandbox/sandbox.go` 用了 `syscall.SysProcAttr{Setpgid: true}` 与 `syscall.Kill`（Unix 专有）。Windows 侧要对位的是 **Job Object**（`AssignProcessToJobObject` + `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`）替“进程组击杀”，命令解释器也要从 `/bin/sh -c` 改成 `cmd /c` 或 `pwsh -NoProfile -Command`。
-3. **强隔离注不进来**：`mos.Config.Sandbox` 的类型是具体结构 `*sandbox.Local`（`mos.go:91`），不是 `sandbox.Runner` 接口——宿主想注 Docker / containerd 后端必须改框架源码。**这是“强隔离归宿主”路线的硬阻塞**：把该字段改成接口（`builtin.NewShell` 本来就收 `sandbox.Runner`，改动面很小），宿主才有地方放自己的后端。
+1. **仓库在 Linux 上编译不过**：`tool/builtin/observe_version_unix.go`（`//go:build unix`）与 `tool/builtin/observe_version_linux.go`（`//go:build linux`）重复声明 `fileIdentity`，且前者用了 Linux 没有的 `st.Mtimespec`（Linux 是 `Mtim`）——**已修**（“Linux 沙箱的前置是先修可移植性”的判断兑现），按平台拆分落实。
+2. **Windows 编译不过**：`sandbox/sandbox.go` 曾用 `syscall.SysProcAttr{Setpgid: true}` 与 `syscall.Kill`（Unix 专有）——**已修**：进程组击杀与命令执行按平台拆文件（`sandbox/proc_unix.go` / `proc_windows.go` / `run_unix.go` / `run_windows.go`），Windows 侧进程组击杀改走 Job Object。
+3. **强隔离注不进来**：`mos.Config.Sandbox` 的类型仍是具体结构 `*sandbox.Local`（`mos.go:91`），不是 `sandbox.Runner` 接口——宿主想注 Docker / containerd 后端必须改框架源码。**这是“强隔离归宿主”路线仅剩的硬阻塞**：把该字段改成接口（`builtin.NewShell` 本来就收 `sandbox.Runner`，改动面很小），宿主才有地方放自己的后端。
 
-**待拍板项**：(a) 能力探针的 API 形状（`sandbox.Capabilities()` 返回什么、宿主在哪读——装配期快照还是每次调用）；(b) Linux 后端优先级（Landlock 优先还是 bwrap 优先——DSH 是 bwrap 优先，MoS 的 `PathScope` 双根语义更贴 Landlock 的 grant 模型）；(c) Windows 后端默认开还是默认关（它要改宿主 DACL，与 §4 治理规则 5 “框架层不碰文件系统”的取向有张力）。
+**待拍板项（2026-11-06 更新）**：(a) 能力探针仍待做——`sandbox.Capabilities()`（返回 `{Backend, Enforcement, Reason}`）尚未实现，后端补齐后它的价值更高（Windows 后端语义是 partial，必须如实上报）；(b) Linux 后端**已定 Landlock 直接实现**（bwrap 备选未做，理由照旧——`PathScope` 双根语义更贴 Landlock 的 grant 模型）；(c) Windows 后端默认开还是默认关仍待拍板（它要改宿主 DACL，与 §4 治理规则 5 “框架层不碰文件系统”的取向有张力）。
 
 ### 3.11 模型调用的重试（S2b）
 
@@ -858,7 +867,7 @@ llm.WithRetry(model, llm.RetryPolicy{
 | S8.4-A | ⑥ 服务器摘要进**静态**系统提示词 | `tool/mcp/summary.go` + `agent/prompt` + `mos` | ✅ |
 | S8.4-B | ① 认证可诊断（401/403）+ `ServerConfig.TokenProvider` | `tool/mcp` | ✅ |
 | S8.4-C | ⑤ 正文调用时现读 + `Agent.ReloadSkills()`（显式、幂等、全量重扫） | `agent/skill` + `mos` | ✅ |
-| S8.4-D | ④ `allowed-tools` × 当前可见工具集 求交诊断（不收窄） | `agent/skill` + `mos` | ⬜ |
+| S8.4-D | ④ `allowed-tools` × 当前可见工具集 求交诊断（不收窄） | `agent/skill` + `mos` | ✅ |
 | S8.4-E | ② MCP 资源工具（三个共享工具 + 显式 server 参数） | `tool/mcp` + `mos` | ⬜ |
 
 **S8.4-A 的实现取舍（与上文⑥对齐，差异处标出）**
@@ -894,6 +903,16 @@ llm.WithRetry(model, llm.RetryPolicy{
 - **坏技能在重扫时降级**（跳过 + 诊断）；**诊断变化会刷新快照但不通知模型**（有效技能集合没变 → `Changed=false`）——新增一个坏技能不打扰模型。
 - **API 变更（破坏性）**：`Skill.Body` → `Skill.BodyPath`（正文不再随技能对象分发）；`Catalog.ExpandInvocation` / `Agent.ExpandSkill` 增返回 `error`（正文读不出来要可见，不能拿半截正文糊弄用户）。
 
+**S8.4-D 的实现取舍（与上文④对齐，差异处标出）**
+
+- **求交是纯函数**（`agent/skill/allowed_tools.go` 的 `checkAllowedTools`）：声明列表 × 可见集，缺失按字典序，返回 `Missing` + `Notice`。无执行语义、无状态。
+- **可见集由探针注入**（`Options.ToolProbe` / `Catalog.SetToolProbe`）：agent/skill 不知道 `tool.Registry` 的存在（治理规则 5：框架不绑实现）——装配层接 `Registry.Visible`。没接 = 不诊断（零开销降级，字段退回装配期那条「不生效」警告）。
+- **注册表新增 `Visible()`**（与 `List()` 同一过滤：可见性层 + deferred 未激活不算，按注册顺序）——装配层原本只有 `Names()`（不过滤）。**探针每次激活时现查**（不缓存）：policy 热替换、MCP 换代后自然跟上。
+- **可见集**不含 **deferred 未激活**的工具：技能声明的 MCP 工具若还没被 `tool_search` 激活，也会列进缺失——文案提示「可用 tool_search 激活」（这正是 deferred 的用法，是提示不是错误）。
+- **诊断只进事件与快照，不进模型返回值**：工具面模型自己看不见，告诉它「某工具不可用」它也无从行动，反而困惑；缺失是给**人**看的（宿主调 `Describe()`、审计看事件）。
+- **事件独立成 `skill/allowed-tools-mismatch`**（拍板原文「写进 skill/activate 事件与快照」——实现拆成单独事件：激活事件的 fail-fast 语义（写失败不拦加载）与诊断的降级语义（写失败只损失可观测性）不同，混在一个事件里会让审计链口径含糊；独立事件也更好查「哪些技能声明了缺失工具」）。`Recorder` 接口增 `RecordAllowedToolsMismatch`（独立方法，老实现补一个空实现即可）。
+- **快照（`Describe()`）逐技能写缺失**：`⚠ 技能 "x": 技能声明的工具当前不可用: …`，沿用装配期「该字段当前不生效」的措辞风格（不假装生效）。
+
 ##### 状态
 
 | 项 | 状态 |
@@ -903,7 +922,7 @@ llm.WithRetry(model, llm.RetryPolicy{
 | `agent/skill` 包 + `skill` 工具 + 事件（**不做技能级守卫**） | ✅（S8.1） |
 | `tool/mcp` 包（官方 SDK 客户端 + 两个 transport + 适配器 + 换代） | ✅（S8.2） |
 | 装配层入口（`Config.Skills` / `Config.MCP`）+ deferred 联动 + 失败隔离 + 说明注入 | ✅（S8.3） |
-| 六项「不做」的可用性优化（参考分析已出，**已拍板**） | 🔄（S8.4-A ✅ / B ✅ / C ✅ / D、E ⬜，见上节） |
+| 六项「不做」的可用性优化（参考分析已出，**已拍板**） | 🔄（S8.4-A ✅ / B ✅ / C ✅ / D ✅ / E ⬜，见上节） |
 | PRD 状态同步（Skills 状态、FR-D8 措辞、开放问题 2/5） | ✅（本片，PRD 已改） |
 
 ### 3.17 挂起-恢复（FR-G3：跨进程续跑）

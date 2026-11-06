@@ -129,6 +129,7 @@ type SearchArgs struct {
 - 框架**不碰文件系统与网络**：需要 I/O 的能力以接口注入（`session.Persistence`、`contextfile.Reader`），宿主选实现；
 - 近零依赖：协议层 + `google/uuid` + `gopkg.in/yaml.v3`，无其他第三方依赖。
   **例外（2026-11-04，S8.2）**：MCP 协议层引入**官方 Go SDK** `github.com/modelcontextprotocol/go-sdk` v1.8.0（另带 9 个传递依赖）——换取 `2026-07-28` 协议的正确性、版本协商、分页与边界情况；SDK 只在 `tool/mcp` 内部使用，对外仍是 MoS 自己的 `ServerConfig`/`Client`/`Tool`（SDK 类型不外泄）。
+  **例外（2026-11-06，路径强制补齐）**：`landlock-lsm/go-landlock`（连带 `golang.org/x/sys` 与 kernel.org 的 `psx`）与 `SivanCola/windows-sandbox`（Windows 后端，只依赖 `x/sys`）。同样是**有意识的破例**（PRD NFR-6）：Landlock 是内核 API，标准库没有绑定；自己手写 syscall 等于自己实现一遍内核 ABI——出错的后果不是“报错”，而是“没隔离的假装隔离”。官方绑定是这个边界的唯一可信来源。`psx` 是它“把策略套到所有 OS 线程”的依赖，纯 Go 回落（不引入 cgo）。Windows 侧的 `windows-sandbox` 同样是“内核 API 没有标准库绑定”的情形（低完整性 token + ACL + Job Object），且它把**临时 ACL 的申请与回收**封在一次调用里——自己实现这套东西，ACL 残留与并发竞态的坑很深。
 
 ## 文档
 
@@ -138,7 +139,7 @@ type SearchArgs struct {
 - [docs/release-v0.1.0.md](docs/release-v0.1.0.md) — v0.1.0 发布说明（首个公开版本）
 - [docs/s8.1-skills.md](docs/s8.1-skills.md) — S8.1 Skills 重做一页说明（M3a / FR-D11）
 - [docs/s8.2-mcp.md](docs/s8.2-mcp.md) — S8.2/S8.3 MCP 接入一页说明（FR-D8；官方 SDK / 协议基线 2026-07-28）
-- [docs/s8.4-usability.md](docs/s8.4-usability.md) — S8.4 可用性优化一页说明（S8.4-A 服务器摘要 ✅ / S8.4-B 认证可诊断 ✅ / S8.4-C 技能正文现读 + 显式 reload ✅ / D~E 实施中）
+- [docs/s8.4-usability.md](docs/s8.4-usability.md) — S8.4 可用性优化一页说明（S8.4-A 服务器摘要 ✅ / S8.4-B 认证可诊断 ✅ / S8.4-C 技能正文现读 + 显式 reload ✅ / S8.4-D `allowed-tools` 求交诊断 ✅ / E 实施中）
 - 旧实现与旧文档考古：`main_bak1015` 分支（如 `git show main_bak1015:README.md`）
 
 ## 示例
@@ -154,7 +155,7 @@ type SearchArgs struct {
 - ✅ **已交付**：统一 LLM 接入、工具系统、ReAct 循环、执行通道、安全纵深、上下文工程、装配层、联网工具、工具规模化（M2.10）
 - ✅ **R（发布准备，P0）**：协议层脱离本地 replace，外部工程 `go get` 可构建（v0.1.0 已发布）
 - ⬜ **挂起-恢复**（`agent/checkpoint` + `agent/handle`，M2.8 重建未做）：G4 的另一半，M4「可恢复运行目录」的前置——见 [docs/PRD.md](docs/PRD.md) FR-G3
-- ⬜ **M3** 多智能体：SubAgent（agents-as-tools）、AgentTeam、并行 DAG；其中 **S8 预切片**：Skills 重做 ✅（S8.1，2026-11-04）→ MCP 客户端 + 装配 ✅（S8.2 / S8.3，2026-11-04，官方 SDK）→ **S8.4 可用性优化** 🔄（A 服务器摘要 ✅、B 认证可诊断 + TokenProvider ✅、C 技能正文现读 + 显式 reload ✅；D `allowed-tools` 求交诊断、E MCP 资源工具）→ SubAgent（先 MCP 后 SubAgent），设计与 PI/DSH 对账见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §3.16
+- ⬜ **M3** 多智能体：SubAgent（agents-as-tools）、AgentTeam、并行 DAG；其中 **S8 预切片**：Skills 重做 ✅（S8.1，2026-11-04）→ MCP 客户端 + 装配 ✅（S8.2 / S8.3，2026-11-04，官方 SDK）→ **S8.4 可用性优化** 🔄（A 服务器摘要 ✅、B 认证可诊断 + TokenProvider ✅、C 技能正文现读 + 显式 reload ✅、D `allowed-tools` 求交诊断 ✅；E MCP 资源工具）→ SubAgent（先 MCP 后 SubAgent），设计与 PI/DSH 对账见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §3.16
 - ⬜ **M4** 生产化：Docker 强隔离、模型分级路由、评估与监控、可恢复运行目录
 - ⬜ **M5** 自我进化（实验性）
 
