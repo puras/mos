@@ -1,6 +1,7 @@
 # MoS PRD（产品需求文档）
 
 > 版本：v0.2（草案）｜ 日期：2026-11-04 ｜ 维护：puras
+> 更新记录：**2026-11-06** —— **FR-G3 挂起-恢复重裁（已拍板，未实现）**：**「日志即 checkpoint」**——不另设 checkpoint 文件、**不建 `agent/checkpoint` / `agent/handle` 两个包**、不引入 PI 的 phase 状态机；恢复所需的事实**已在会话日志里**（`approval/asked`/`decided` 带 `Turn` + `CallID`；`tool/call` 无 `tool/result` = 悬空调用），要补的只是**读（派生）与补（续跑）**。**三片**：S9.1 = `session` 三个纯读派生接口（`PendingApprovals` / `ApprovalOutcome` / `HangingCalls`）+ `agent/approval` 注入式先验决定复用（`Prior`，匹配键 `(Turn, CallID)`，复用时**记新 id** + 载荷加 `reusedFrom`）；S9.2 = react 把「合成失败回执」那条路径改成「按宿主指示续跑那一次调用」+ 幂等边界文档；S9.3 = kill -9 E2E。**七条拍板（全部按建议）**：①恢复语义 = **默认只报告 + 宿主显式指示才续跑那一次调用**（整轮重跑是宿主手动选项）；②shell 副作用重复执行接受并写进「诚实的边界」，**不做**「跳过已执行调用」机制；③**不提供** MoS 侧 run 句柄（归平台层 FR-E6）；④排期 = S9.1 插在 S8.5 期间、S9.2/S9.3 在 M3b 之前（偏离原「先于 M3a」：M3a 已开坑）；⑤复用时记新 id + `reusedFrom`（**不新增事件类型**）；⑥**必须宿主显式指示**才续跑；⑦验收措辞改为「kill -9 → 列出未决/悬空 → 宿主指示 → 续完 → 本轮正常收尾」。**关键约束**：决定复用只在**同一轮内**成立（整轮重跑 turn 号变 → 匹配不上 → 审批必然重新问）→ **续跑与复用必须配套**。**宿主核查（mos-web，只读）**：它的 ask/approval 待批状态只在进程内存（`ApprovalHub.pending`；注释自陈「权威记录仍在 `approval/asked` 事件里」），审批等待上限 `MOS_APPROVAL_TIMEOUT` 默认 300s 且超时按拒绝，重开会话只把孤儿 turn 合成 `interrupted`（不续跑）——故 MoS 侧净增量 = **派生原语 + 续跑语义**，**不是**「审批跨进程留存」。分析见 `docs/ARCHITECTURE.md` §3.17。
 > 更新记录：**2026-11-06** —— **FR-D3 SubAgent 设计分析已出 + 六条拍板已定（未实现）**：PI/DSH 源码级对账落 `docs/ARCHITECTURE.md` §3.18（一页说明 `docs/s8.5-subagent.md`）——实查结论：**PI 没有子代理委派层**（只有可复用的 agent loop + codemode 替代路径），**DSH 有完整 `packages/subagent/*` 包族**（provider 接缝 + one-shot/continuable + 能力探测 fail-closed + 深度闸 + `toolFilter`/父策略向下委派 + 异步 id 通知）。**拍板（六条全按建议）**：①形态取 **agents-as-tools + 声明式 frontmatter 定义**（对齐 `.claude/agents/`，两家都没有 → MoS 自创），工具名 `subagent__<name>`；②交付取**同步**（不抄 DSH 的异步 id + 通知，MoS 没有运行期消息回注通道）；③白名单与父策略**取交集、deny 优先**（声明不能放大宿主策略）；④允许声明 `model`，但宿主目录里没有 → **装配期报错**（声明了却没装 = 假能力）；⑤子代理**不能再委派**（深度 0）；⑥子代理工具面**不经** `tool_search`，子代理工具本身**不** deferred 化。另两个自创点：回执固定结构且**自述与事实分离**（NFR-5：子代理自述不进 `TaskState`，父模型要自己复核）、**不加** `subagent/*` 事件（治理规则 2 预算制，那一档留给 M3b 的 AgentTeam）。**分期勘误**：§5 分期表把 FR-D3 列在 M3a，§4 状态行原写「M3b（SubAgent / AgentTeam / 并行 DAG）」——以 §5 为准，**FR-D3 属 M3a 收尾**，AgentTeam（FR-D6）/ 并行 DAG（FR-D4/D5）/ 合约 + Elo（FR-D7/D10）属 M3b。
 > 更新记录：**2026-11-06** —— **FR-D8 / FR-C 收尾（四项 E2E + 四处修复与口径变更）**：①**激活在同轮内生效**——驱动每轮重取声明清单，`tool_search` 激活后下一次请求即声明（原先要等下一个 turn；对齐 PI 的「下一轮请求声明给模型」）。②**装配期 `Config.Policy` 守卫 fail-open 已修**——装配中途的 `a.rt` 是空壳（`Guards` 为 nil，`GuardBus.Add` 是 no-op），`SetPolicy` 挂守卫等于丢掉：拒绝名单里的工具「模型看不见却调得动」；改为 `a.rt` 装好后再挂（与热替换同一条路）。③**`DeferredTools()` 与 `List()` 同口径**——被策略拒绝的 deferred 工具不再能被 `tool_search` 搜到并激活（「看不见」与「搜不到」一致）。④**401/403 恒归认证类**——认证层无条件装上，不再只在配了凭据时才装。另补三项验收：真 MCP 工具经 `tool_search` 激活 E2E、MCP 工具受 policy/guard 拦截 E2E、streamable-http 真服务端联调（官方 SDK handler + `httptest`）。说明见 `docs/s8.2-mcp.md`。
 > 更新记录：**2026-11-04** —— **FR-D8 可用性优化第四片（S8.4-E）**：**MCP 资源工具**——三个共享工具 `mcp_resource_list` / `mcp_resource_templates` / `mcp_resource_read`（显式 `server` 参数，工具面恒为 0 或 3，不随服务器数增长）；只对「非 hidden 且确实有资源」的服务器可达（hidden 资源不泄露）；文本直返、二进制降级 OpaquePart 占位；SDK 类型不外泄（`Client` 增三个资源方法，投影成 MoS 类型）。名字带 `mcp_resource_` 前缀（两家参考源不带前缀、与 `mcp__<server>__<tool>` 不统一）。分析见 `docs/ARCHITECTURE.md` §3.16，说明见 `docs/s8.4-usability.md`。
@@ -105,7 +106,7 @@ Harness Engineering 四铁律 + Loop Engineering 九杠杆 + Audit Gate 审计�
 | 会话与状态 | `session` append-only 事件日志 + 确定性投影 + JSONL 持久化（fail-fast）+ 崩溃恢复（孤儿 turn 合成 interrupted）+ `TaskState` 外置 + `agent` 的 Auditor 审计门 | fork（Header 已预留 `parentId` / `seedSeq` 字段，能力未做） |
 | 上下文工程 | `agent` 截断（行/字节双限 + 全文落盘可回读）+ fresh-context 压缩（token 预算触发 + 模型生成摘要落日志 + 投影遮蔽）；`agent/prompt` 分节装配（Add / Set / Complete + 工具自带指引通道）；`agent/contextfile` 上下文文件发现（AGENTS.md / CLAUDE.md 向上递归 + 同目录 override + 字节预算）；**`agent/skill` 技能（FR-D11，2026-11-04 落地）**：目录发现 + 清单进系统提示词 + 专用 `skill` 工具按需加载正文 | 40% Dumb Zone 告警、Doom Loop 守卫、RAG / `memory.Retriever` |
 | 循环生态 | `agent/driver` LoopDriver + `agent/driver/react` ReAct；批量工具三阶段执行（preflight → 屏障式有界并发 → 按调用序回填） | PlanExecute / Reflection / Scripted 驱动、HybridRouter、`agent/driver/scripted` |
-| 生命周期 | `agent/approval`（问人由宿主注入 + 审计落会话日志）；`filesystem.RootSet` 运行期加根 | `agent/scope`、`agent/checkpoint`、`agent/handle`（→ FR-G3） |
+| 生命周期 | `agent/approval`（问人由宿主注入 + 审计落会话日志）；`filesystem.RootSet` 运行期加根 | `agent/scope`；`agent/checkpoint`、`agent/handle`（→ FR-G3；**2026-11-06 重定后不建这两个包**：恢复改由会话日志派生 + 宿主指示续跑） |
 | 可观测 | 事件类型覆盖 turn / assistant / tool / approval / compaction；`sess.Events()` 可遍历；`Describe()` 装配快照（装了什么 + 没装什么 + 降级警告） | `EventBus` 四模式、`Observer` 回调、Telemetry seam、`fs/resolve` 审计事件 |
 | 装配 | 根包 `mos.New(mos.Config)` + 运行期旋钮（并发 / 决策轮次 / 换模型）+ `mos.NewModel` / `session.Open` / `builtin.ToolsIn` 样板收进框架；`mos.Version` 版本常量 | `assistant.Config`、`agent/seam` + `agent/config`（YAML → Agent）、声明式驱动选择 |
 | 示例与文档 | `examples/minimal`（装配层最小示例）、`examples/chat`（全功能演示）、`examples/agents`（多 Agent 协作示例）；`docs/ARCHITECTURE.md` / `docs/platform-contract.md` / `docs/assembly.md` / `docs/tutorial.html` / `docs/index.html` / `docs/release-v0.1.0.md` | `examples/cli` / `examples/protocli` / `examples/agentcli`、`docs/agent/` 18 篇、`docs/assistant.md`、`docs/llm.md`、`FEATURES.md` |
@@ -119,7 +120,7 @@ Harness Engineering 四铁律 + Loop Engineering 九杠杆 + Audit Gate 审计�
 | v2 架构重构（v2.3 ~ v2.17） | EventBus / Session 日志 / Hook+Guard / RunContext+LoopDriver / seam / router / executor / scope / 持久化 / telemetry | ◐ 重建带回：Session 日志 / Hook+Guard / RunContext+LoopDriver / 持久化；**未带回**：EventBus / seam / router / executor / scope / telemetry（归档在 `main_bak1015`，按 §4.2 末列处置） |
 | M2.8 异步 Approval | `agent/approval`：四档结果 + 问人由宿主注入 + `approval/asked` / `approval/decided` 审计落会话日志 | ✅（重建期 S5g） |
 | M2.8+ 文件工具 Jail | `filesystem`：Lexical + Realpath 双校验 + symlink 逃逸防护；写前观察门（S5h） | ✅（重建期 S5d / S5h） |
-| M2.8+ Checkpointer + AgentHandle | 跨进程挂起-续跑（checkpoint 快照 + handle create/resume/dispose） | ⬜ **重建未做** → FR-G3（FR-E6 的前置） |
+| M2.8+ Checkpointer + AgentHandle | 跨进程挂起-续跑（checkpoint 快照 + handle create/resume/dispose） | ⬜ **重建未做** → FR-G3（FR-E6 的前置）。**2026-11-06 重定**：FR-G3 改为「日志即 checkpoint + 派生原语 + 宿主指示续跑」，**不建 `agent/checkpoint` / `agent/handle` 两个包** |
 | M2.10 | FR-C 工具规模化：deferred 懒加载 + `tool_search` BM25 发现激活（C1 缓存在重建时已落地；C2/C4 守护测试锁定）；C3 的「超阈值自动启用」改为「deferred 集非空才装配 `tool_search`」（PI/DSH 均无阈值机制，不自创，分析见 ARCHITECTURE §3.15） | ✅（重建周期 S7.3） |
 | M2.9 | FR-B 经验记忆 | ❌ 已决定不做（2026-10，用户拍板） |
 | 重建补齐 | FR-G1 上下文文件（`agent/contextfile` + `agent/prompt`）/ FR-G2 联网工具（`tool/web`） | ✅（2026-10/11 落地，PRD 于 2026-11-03 回填登记） |
@@ -187,7 +188,7 @@ Harness Engineering 四铁律 + Loop Engineering 九杠杆 + Audit Gate 审计�
 | FR-E7 | 人工网关 + Dashboard 可视化（平台侧消费 SDK 事件流实现） | 事件契约（`docs/platform-contract.md` §2 事件 JSON）稳定不再变更 |
 | FR-E8 | 限流 / 重试 / 缓存（横切能力下沉至 llm 装饰器与 transport 层） | 指标可观测 |
 | FR-E9 | 插件化：对齐 Agent Plugins 1.0 目录规范（`plugin.json` + `skills/` + `mcp.json` + 客户端命名空间目录）；组件独立校验（单个 skill 无效跳过、MCP 失败不阻塞其余）；安装/权限/来源验证走 MoS 的 Policy/Sandbox/Approval | 合规 plugin 目录可被 `mos.New` 加载；可移植字段不污染 |
-| FR-E10 | M2.8 收尾：Approval TTL 自动超时、checkpoint 加密/签名（多句柄并发恢复维持业务层职责） | TTL 到期 fail-closed（默认拒绝）；checkpoint 防篡改校验 |
+| FR-E10 | M2.8 收尾：Approval TTL 自动超时、checkpoint 加密/签名（多句柄并发恢复维持业务层职责） | TTL 到期 fail-closed（默认拒绝）；checkpoint 防篡改校验（**「checkpoint 加密/签名」随 2026-11-06 FR-G3 重定失去对象——无 checkpoint 文件 → 待复核**） |
 
 ### 5.6 FR-F：M5 自我进化第 3 层（P2，实验性）
 
@@ -203,7 +204,7 @@ Harness Engineering 四铁律 + Loop Engineering 九杠杆 + Audit Gate 审计�
 | --- | --- | --- | --- |
 | FR-G1 | 上下文文件（`agent/contextfile` + `agent/prompt` 分节装配）：候选名优先级（`AGENTS.override.md` > `AGENTS.md` > `AGENTS.MD` > `CLAUDE.md` > `CLAUDE.MD`）+ 向上递归 + 同目录 override + 真实路径去重 + 字节预算裁剪；正文作为「项目约定」节进系统提示词 | 装配快照写明装了哪些文件、多少字节、降级警告；读取以 `Reader` 接口注入（框架不碰文件系统）；未装则零开销 | ✅（2026-10-27 落地；2026-11-03 回填登记） |
 | FR-G2 | 联网工具包（`tool/web`）：`web_search` / `web_fetch`，含 SSRF 防御（私有网段 / 环回拦截） | 抓取目标越界即拒；工具进注册表后与内置工具同受 Policy/Guard 管辖 | ✅（2026-10-28 落地；2026-11-03 回填登记） |
-| FR-G3 | 挂起-恢复（`agent/checkpoint` + `agent/handle`）：把「跑到一半」的智能体挂起，恢复后接着跑；审批决定可跨进程留存 | kill 后从 checkpoint 恢复续跑 E2E；checkpoint 只记可重放事实；**是 FR-E6（`runs/<run-id>` 可恢复运行目录）的前置**。设计草案见 `docs/ARCHITECTURE.md` §3.17（PI/DSH 对账 + 取舍 + 待拍板项） | ⬜ **未做**（重建树无此包）；建议排期先于 M3a |
+| FR-G3 | 挂起-恢复（**日志即 checkpoint**）：从会话日志派生未决审批与悬空调用；宿主显式指示后**续跑那一次工具调用**；审批决定在同一轮内可复用（不重复问人） | kill -9 → 重开会话 → 列出未决审批与悬空调用 → 宿主指示 → 续完该次调用 → 本轮正常收尾；文件类重跑被观察门 CAS 拒；**是 FR-E6（`runs/<run-id>` 可恢复运行目录）的前置**。设计见 `docs/ARCHITECTURE.md` §3.17（PI/DSH 对账 + 取舍 + 拍板结果，2026-11-06） | ⬜ **未做**；**不建 `agent/checkpoint` / `agent/handle` 包**（由 `session` 派生接口 + `agent/approval` 先验复用 + react 续跑承担）；排期：S9.1 插在 S8.5 期间，S9.2/S9.3 在 M3b 之前 |
 
 ---
 
@@ -229,7 +230,7 @@ Harness Engineering 四铁律 + Loop Engineering 九杠杆 + Audit Gate 审计�
 | **R（发布准备）** | FR-A1 协议层独立发布、FR-A2 文档同步 | P0 | ✅ 已完成（v0.1.0 已发布，2026-11） |
 | ~~**M2.9**~~ | ~~FR-B1/B2 经验记忆~~ | ~~P1~~ | 已决定不做（2026-10） |
 | **M2.10** | ~~FR-C1~C4 工具规模化~~ | ~~P1~~ | ✅ 已交付（S7.3） |
-| **FR-G3 挂起-恢复** | checkpoint + handle（跨进程续跑） | P1 | 无；**FR-E6 的前置**，建议先于 M3a |
+| **FR-G3 挂起-恢复** | 日志即 checkpoint（派生未决/悬空 + 宿主指示续跑；不建 checkpoint/handle 包） | P1 | 无；**FR-E6 的前置**；排期：S9.1 插在 S8.5 期间，S9.2/S9.3 在 M3b 之前 |
 | **M3a** | FR-D1/D2/D3/D8/D9/**D11**（路由拓扑、三权分离、SubAgent、MCP、Loop 升级、Skills 重做；MCP 先于 SubAgent） | P1 | R |
 | **M3b** | FR-D4~D7/D10（双阶段、并行 DAG、AgentTeam、合约+Elo、显式图） | P1 | M3a |
 | **M4** | FR-E1~E10 生产化 | P1 | M3a（部分项可并行） |
