@@ -817,7 +817,7 @@ llm.WithRetry(model, llm.RetryPolicy{
   3. 触发源：**只做宿主显式 `Agent.ReloadSkills()`**（PI 式）；**不提供 watcher 接口**——理由见下方「推荐形态」。框架不自带文件监视（治理规则 5），读文件始终走注入的 `Reader`。
   代价：正文不再在装配期校验预算（超限从「装配期跳过」变成「调用时报错」）；清单仍是静态提示词之外的 user 侧内容（cache 不受影响）。
 
-  **推荐形态（2026-11-04 建议，待拍板）**：PI 式三件套——① **正文调用时现读**（读文件走注入的 `Reader`，不违反治理规则 5）；② **`Agent.ReloadSkills()` 显式、幂等、全量重扫**（宿主想 watch 就自己 watch，然后调它——pull 而非 push）；③ **只在真有差异时**追加一条 user 侧短消息（新增 / 删除 / 改名摘要，DSH 的「目录 digest 变了才替换」思路），**不重渲染静态提示词**（保 prompt cache）。
+  **推荐形态（2026-11-04 已拍板，已实现为 S8.4-C）**：PI 式三件套——① **正文调用时现读**（读文件走注入的 `Reader`，不违反治理规则 5）；② **`Agent.ReloadSkills()` 显式、幂等、全量重扫**（宿主想 watch 就自己 watch，然后调它——pull 而非 push）；③ **只在真有差异时**追加一条 user 侧短消息（新增 / 删除 / 改名摘要，DSH 的「目录 digest 变了才替换」思路），**不重渲染静态提示词**（保 prompt cache）。实现取舍与验收见下方「S8.4-C 的实现取舍」。
 
   **为什么不接宿主注入的 watcher（DSH 式）**：① **收益几乎为零**——正文现读后「改 SKILL.md 内容」已实时生效，watcher 唯一多做的事是「清单变了自动刷新」，而清单变化是低频事件、watcher 是常驻成本（句柄、平台差异、稳定性窗口、误触发；DSH 为此写了整套合并失效 / 缺失根探测 / 项目上限，见 `skill-filesystem/README.zh.md:113`）；② **MoS 是 SDK，宿主（CLI / 服务 / IDE 插件）本来就有文件监视能力**，定义 watcher 接口 = 框架替宿主做宿主能做的事，还要替它定义「什么算变化、怎么合并、误触怎么办」的语义；③ **自动往对话里插消息有代价**——DSH 的 watch 失效会追加一条替换目录并为此专写指引（`packages/skill/tool-skill/src/index.ts:288`），不可预期的 user 消息插入会让模型困惑，而 MoS 已定语义是「一次性注入由宿主显式触发」（拍板 #4 预留的也是显式路径）。
 - **两家都没有的空白**：两家都没定义「目录变化时**已经加载进上下文的技能正文**怎么办」（PI 重载后旧正文仍在上下文里）。MoS 需定义：替换目录消息里是否提示「以下技能已变化，请重新加载」。属措辞层自创，风险低。
@@ -857,7 +857,7 @@ llm.WithRetry(model, llm.RetryPolicy{
 | --- | --- | --- | --- |
 | S8.4-A | ⑥ 服务器摘要进**静态**系统提示词 | `tool/mcp/summary.go` + `agent/prompt` + `mos` | ✅ |
 | S8.4-B | ① 认证可诊断（401/403）+ `ServerConfig.TokenProvider` | `tool/mcp` | ✅ |
-| S8.4-C | ⑤ 正文调用时现读 + `Agent.ReloadSkills()`（显式、幂等、全量重扫） | `agent/skill` + `mos` | ⬜ |
+| S8.4-C | ⑤ 正文调用时现读 + `Agent.ReloadSkills()`（显式、幂等、全量重扫） | `agent/skill` + `mos` | ✅ |
 | S8.4-D | ④ `allowed-tools` × 当前可见工具集 求交诊断（不收窄） | `agent/skill` + `mos` | ⬜ |
 | S8.4-E | ② MCP 资源工具（三个共享工具 + 显式 server 参数） | `tool/mcp` + `mos` | ⬜ |
 
@@ -883,6 +883,17 @@ llm.WithRetry(model, llm.RetryPolicy{
 - **新增 `ErrorKind = "auth"`**：与 transport 分开——传输层错误重试有用，认证错误重试多少次都一样。`wrapError` 保留内层的结构化分类（SDK 会把 RoundTripper 的错误层层包装，一律当传输层就把「需要认证」这条诊断丢了）。
 - **快照写「需要认证」**：连接失败若是认证类 → `Describe()` 写「MCP 服务器 "x" 需要认证（不可用，请检查 token 或 TokenProvider）」。
 
+**S8.4-C 的实现取舍（与上文⑤对齐，差异处标出）**
+
+- **目录/正文分离**（DSH 的核心）：目录扫描只取 **frontmatter 元数据 + 正文路径**（`Skill.BodyPath`），**正文不驻留**；`skill` 工具与 `/name` 展开都在**调用时现读**（`Catalog.Body`）。改了 `SKILL.md` 立刻生效——不重扫、不重启、不盯文件。
+- **快照 + 原子替换**：`Catalog` 持有 `atomic.Pointer[Snapshot]`（一次扫描的结果不可变），重扫整体换指针——正在跑的会话继续用旧快照，不会出现「半个目录」的中间态。
+- **目录摘要**（`digest`）**不含正文**：只算「技能名 + 元数据」。所以**只改正文不触发 reload**（DSH 同款：正文每次都重读，不需要 hash / 修订号 / 缓存失效）。
+- **显式 reload，不接 watcher**（拍板）：`Agent.ReloadSkills()` 全量重扫、**幂等**（摘要没变就不换快照）；宿主想自动盯文件，自己盯完调它（pull 而非 push）。
+- **静态提示词不重渲染**（保 prompt cache）：清单变化走 **user 侧消息**（DSH 的「替换目录」语义）——`ReloadResult.Notice` 是**当前完整清单**，宿主追加到会话里即可。内容与系统提示词里的清单同格式（同一个渲染器），模型不用认第二种格式。
+- **正文预算改为调用时检查**：装配期判死（跳过超限技能）会让模型以为技能不存在；现在是「技能在清单里，但加载时报错」（真信息）。
+- **坏技能在重扫时降级**（跳过 + 诊断）；**诊断变化会刷新快照但不通知模型**（有效技能集合没变 → `Changed=false`）——新增一个坏技能不打扰模型。
+- **API 变更（破坏性）**：`Skill.Body` → `Skill.BodyPath`（正文不再随技能对象分发）；`Catalog.ExpandInvocation` / `Agent.ExpandSkill` 增返回 `error`（正文读不出来要可见，不能拿半截正文糊弄用户）。
+
 ##### 状态
 
 | 项 | 状态 |
@@ -892,7 +903,7 @@ llm.WithRetry(model, llm.RetryPolicy{
 | `agent/skill` 包 + `skill` 工具 + 事件（**不做技能级守卫**） | ✅（S8.1） |
 | `tool/mcp` 包（官方 SDK 客户端 + 两个 transport + 适配器 + 换代） | ✅（S8.2） |
 | 装配层入口（`Config.Skills` / `Config.MCP`）+ deferred 联动 + 失败隔离 + 说明注入 | ✅（S8.3） |
-| 六项「不做」的可用性优化（参考分析已出，**已拍板**） | 🔄（S8.4-A ✅ / B、C、D、E ⬜，见上节） |
+| 六项「不做」的可用性优化（参考分析已出，**已拍板**） | 🔄（S8.4-A ✅ / B ✅ / C ✅ / D、E ⬜，见上节） |
 | PRD 状态同步（Skills 状态、FR-D8 措辞、开放问题 2/5） | ✅（本片，PRD 已改） |
 
 ### 3.17 挂起-恢复（FR-G3：跨进程续跑）

@@ -85,14 +85,8 @@ func renderCatalog(skills []Skill, withDesc bool, omitted int) string {
 	return b.String()
 }
 
-// RenderContent 渲染技能正文（进工具结果）。
-//
-// 正文包在标签里：模型据此知道这段是「某个技能的操作说明」，而不是用户
-// 的话或环境输出。
-func (s Skill) RenderContent() string {
-	return fmt.Sprintf("<%s name=%q>\n%s\n</%s>",
-		ContentTag, s.Name, escapeTag(s.Body, ContentTag), ContentTag)
-}
+// RenderContent 渲染技能正文块（进工具结果 / 用户手势展开）——
+// 见 reload.go：正文现读（S8.4-C），读不到就报错。
 
 // escapeTag 转义正文里出现的框架标签序列。
 //

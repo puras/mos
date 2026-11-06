@@ -196,18 +196,87 @@ func TestExpandSkillFromAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	out, ok := a.ExpandSkill("/deploy 生产环境")
+	out, ok, err := a.ExpandSkill("/deploy 生产环境")
+	if err != nil {
+		t.Fatalf("ExpandSkill: %v", err)
+	}
 	if !ok {
 		t.Fatal("应命中手势")
 	}
 	if !strings.Contains(out, "步骤 1") || !strings.Contains(out, "生产环境") {
 		t.Fatalf("展开结果：\n%s", out)
 	}
-	if _, ok := a.ExpandSkill("/nope"); ok {
+	if _, ok, _ := a.ExpandSkill("/nope"); ok {
 		t.Fatal("未知技能不该展开")
 	}
 	if len(a.Skills()) != 1 || a.Skills()[0].Name != "deploy" {
 		t.Fatalf("技能清单 = %+v", a.Skills())
+	}
+}
+
+// S8.4-C：宿主显式重扫技能目录——幂等、差异通知，且**静态提示词不变**
+// （保 prompt cache；清单变化走 user 侧消息）。
+func TestReloadSkillsFromAgent(t *testing.T) {
+	skillDir := t.TempDir()
+	writeSkillFile(t, filepath.Join(skillDir, "deploy"), "name: deploy\ndescription: 部署流程", "步骤 1")
+
+	a, err := mos.New(mos.Config{
+		Model:  &stubModel{reply: "ok"},
+		Skills: &mos.SkillConfig{Dirs: []string{skillDir}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	before := a.RunContext().SystemPrompt
+
+	// 幂等：没改目录 → 无变化、无通知。
+	if res := a.ReloadSkills(); res.Changed || res.Notice != "" {
+		t.Fatalf("目录没变不该有变化：%+v", res)
+	}
+
+	// 新增一个技能 → 有变化 + 通知。
+	writeSkillFile(t, filepath.Join(skillDir, "fresh"), "name: fresh\ndescription: 新技能", "新正文")
+	res := a.ReloadSkills()
+	if !res.Changed {
+		t.Fatalf("新增技能应算变化：%+v", res)
+	}
+	if len(res.Added) != 1 || res.Added[0] != "fresh" {
+		t.Fatalf("新增 = %v", res.Added)
+	}
+	if !strings.Contains(res.Notice, "fresh") {
+		t.Fatalf("通知应带新清单：\n%s", res.Notice)
+	}
+	// 静态提示词**不重渲染**（保 prompt cache）。
+	if a.RunContext().SystemPrompt != before {
+		t.Fatalf("静态提示词不该因 reload 而变：\n%s", a.RunContext().SystemPrompt)
+	}
+	// 新技能可加载（工具读的是当前快照）。
+	if len(a.Skills()) != 2 {
+		t.Fatalf("技能清单 = %+v", a.Skills())
+	}
+}
+
+// S8.4-C：正文调用时现读——改了 SKILL.md 不重扫也生效。
+func TestSkillBodyReadAtCallTimeFromAgent(t *testing.T) {
+	skillDir := t.TempDir()
+	dir := filepath.Join(skillDir, "deploy")
+	writeSkillFile(t, dir, "name: deploy\ndescription: 部署流程", "旧步骤")
+
+	a, err := mos.New(mos.Config{
+		Model:  &stubModel{reply: "ok"},
+		Skills: &mos.SkillConfig{Dirs: []string{skillDir}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	writeSkillFile(t, dir, "name: deploy\ndescription: 部署流程", "新步骤")
+
+	out, ok, err := a.ExpandSkill("/deploy")
+	if err != nil || !ok {
+		t.Fatalf("ExpandSkill: ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(out, "新步骤") {
+		t.Fatalf("应读到改后的正文：\n%s", out)
 	}
 }
 

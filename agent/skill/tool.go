@@ -61,11 +61,19 @@ func (t *Tool) Execute(ctx context.Context, args json.RawMessage) (any, error) {
 	}
 	sk, ok := t.catalog.Lookup(name)
 	if !ok {
-		return nil, fmt.Errorf("技能 %q 不存在（可用技能见系统提示词的 %s 清单）", name, CatalogTag)
+		// 目录可能已经重扫过（技能被删/改名）：提示模型目录已更新，
+		// 而不是让它以为技能从来不存在。
+		return nil, fmt.Errorf("技能 %q 不在当前技能目录里（目录可能已更新；可用技能见系统提示词的 %s 清单）", name, CatalogTag)
 	}
 	if sk.DisableModelInvocation {
 		// fail-closed：标记为「仅用户显式调用」的技能，模型不许加载。
 		return nil, fmt.Errorf("技能 %q 仅限用户显式调用（disable-model-invocation），模型不可加载", name)
+	}
+	// 正文现读（S8.4-C）：改了 SKILL.md 立刻生效，不重扫、不重启。
+	// 读失败 → 不加载（半截指令比没指令更糟）。
+	content, err := t.catalog.RenderContent(sk)
+	if err != nil {
+		return nil, err
 	}
 	// 留痕：**先事件、后状态**。顺序有讲究——审计写失败就不该留下「已激活」
 	// 的痕迹（状态变了、正文没返回 = 一笔糊涂账）。
@@ -83,6 +91,6 @@ func (t *Tool) Execute(ctx context.Context, args json.RawMessage) (any, error) {
 	return map[string]any{
 		"name":    sk.Name,
 		"dir":     sk.Dir,
-		"content": sk.RenderContent(),
+		"content": content,
 	}, nil
 }

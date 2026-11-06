@@ -64,7 +64,7 @@ func TestToolUnknownSkillFails(t *testing.T) {
 	tool := NewTool(twoSkills(t))
 	if _, err := tool.Execute(context.Background(), json.RawMessage(`{"name":"nope"}`)); err == nil {
 		t.Fatal("不存在的技能应报错")
-	} else if !strings.Contains(err.Error(), "不存在") {
+	} else if !strings.Contains(err.Error(), "不在当前技能目录里") {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -137,7 +137,10 @@ func TestToolFailsWhenRecorderFails(t *testing.T) {
 func TestExpandInvocation(t *testing.T) {
 	cat := twoSkills(t)
 
-	out, ok := cat.ExpandInvocation("/deploy 生产环境")
+	out, ok, err := cat.ExpandInvocation("/deploy 生产环境")
+	if err != nil {
+		t.Fatalf("ExpandInvocation: %v", err)
+	}
 	if !ok {
 		t.Fatal("应命中手势")
 	}
@@ -152,7 +155,10 @@ func TestExpandInvocation(t *testing.T) {
 // 未命中：原样返回，不是错误。
 func TestExpandInvocationUnknown(t *testing.T) {
 	cat := twoSkills(t)
-	out, ok := cat.ExpandInvocation("/nope 参数")
+	out, ok, err := cat.ExpandInvocation("/nope 参数")
+	if err != nil {
+		t.Fatalf("ExpandInvocation: %v", err)
+	}
 	if ok {
 		t.Fatal("不存在的技能不该展开")
 	}
@@ -167,7 +173,10 @@ func TestExpandInvocationWorksForUserOnlySkill(t *testing.T) {
 	writeSkill(t, filepath.Join(root, "user"), "name: user-only\ndescription: 仅用户\ndisable-model-invocation: true", "正文")
 	cat := Load(Options{Dirs: []string{root}})
 
-	out, ok := cat.ExpandInvocation("/user-only")
+	out, ok, err := cat.ExpandInvocation("/user-only")
+	if err != nil {
+		t.Fatalf("ExpandInvocation: %v", err)
+	}
 	if !ok {
 		t.Fatal("用户手势应能展开仅用户可调用的技能")
 	}
@@ -180,7 +189,7 @@ func TestExpandInvocationWorksForUserOnlySkill(t *testing.T) {
 func TestExpandInvocationIgnoresPlainText(t *testing.T) {
 	cat := twoSkills(t)
 	in := "帮我看看 /deploy 这个技能"
-	if _, ok := cat.ExpandInvocation(in); ok {
+	if _, ok, _ := cat.ExpandInvocation(in); ok {
 		t.Fatal("句中的 /deploy 不该被展开")
 	}
 }

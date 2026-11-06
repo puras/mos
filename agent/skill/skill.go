@@ -35,6 +35,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
@@ -116,53 +117,73 @@ func (m Metadata) Validate() error {
 	return nil
 }
 
-// Skill 是一个已装配的技能：元数据 + 正文 + 来源目录。
+// Skill 是一个已装配的技能：元数据 + 正文位置 + 来源目录。
+//
+// **正文不驻留**：BodyPath 指向 SKILL.md，正文在**调用时现读**（S8.4-C，
+// 抄 DSH 的「目录/正文分离」）——改了 SKILL.md 立刻生效，不重扫、不重启，
+// 也不用盯文件。
 type Skill struct {
 	Metadata
 	// Dir 是技能目录（SKILL.md 所在目录）。
 	Dir string `json:"dir"`
-	// Body 是技能正文（不含 frontmatter）。
-	Body string `json:"body"`
+	// BodyPath 是技能文件路径（SKILL.md）——正文在调用时从这里现读。
+	BodyPath string `json:"bodyPath"`
 }
 
-// Catalog 是装配期发现的技能清单（静态、只读）。
+// Catalog 是技能清单：持有**当前快照**，可显式重扫替换。
+//
+// 快照语义（S8.4-C）：一次扫描的结果是不可变的（Snapshot），Catalog 用
+// 原子指针持有——正在跑的会话继续用旧快照，下一次调用看到新快照，不会出现
+// 「半个目录」的中间态。
 //
 // 清单本身进系统提示词（见 Render），正文由 skill 工具按需取（见 Tool）。
 type Catalog struct {
-	skills   []Skill
-	warnings []string
-	// maxCatalogBytes 是清单渲染的字节预算（≤0 = DefaultMaxCatalogBytes）。
+	dirs            []string
+	reader          Reader
+	maxBodyBytes    int
 	maxCatalogBytes int
+	snap            atomic.Pointer[Snapshot]
+}
+
+// snapshot 返回当前快照（nil = 没扫过）。
+func (c *Catalog) snapshot() *Snapshot {
+	if c == nil {
+		return nil
+	}
+	return c.snap.Load()
 }
 
 // Len 返回技能总数（含仅用户可调用的）。
 func (c *Catalog) Len() int {
-	if c == nil {
+	s := c.snapshot()
+	if s == nil {
 		return 0
 	}
-	return len(c.skills)
+	return len(s.skills)
 }
 
 // All 返回全部技能（按装配顺序：目录优先级 → 目录内按名排序）。
 func (c *Catalog) All() []Skill {
-	if c == nil {
+	s := c.snapshot()
+	if s == nil {
 		return nil
 	}
-	out := make([]Skill, len(c.skills))
-	copy(out, c.skills)
+	out := make([]Skill, len(s.skills))
+	copy(out, s.skills)
 	return out
 }
 
 // ModelVisible 返回**模型可见**的技能：disable-model-invocation 的技能
 // 不在其中（模型看不到、也加载不了，只能用户显式调用）。
 func (c *Catalog) ModelVisible() []Skill {
-	if c == nil {
+	s := c.snapshot()
+	if s == nil {
 		return nil
 	}
-	out := make([]Skill, 0, len(c.skills))
-	for _, s := range c.skills {
-		if !s.DisableModelInvocation {
-			out = append(out, s)
+	out := make([]Skill, 0, len(s.skills))
+	for _, sk := range s.skills {
+		if !sk.DisableModelInvocation {
+			out = append(out, sk)
 		}
 	}
 	return out
@@ -180,12 +201,13 @@ func (c *Catalog) ModelVisibleNames() []string {
 
 // Lookup 按名字查技能（含仅用户可调用的那些——用户显式手势要用）。
 func (c *Catalog) Lookup(name string) (Skill, bool) {
-	if c == nil {
+	s := c.snapshot()
+	if s == nil {
 		return Skill{}, false
 	}
-	for _, s := range c.skills {
-		if s.Name == name {
-			return s, true
+	for _, sk := range s.skills {
+		if sk.Name == name {
+			return sk, true
 		}
 	}
 	return Skill{}, false
@@ -196,11 +218,12 @@ func (c *Catalog) Lookup(name string) (Skill, bool) {
 // 不静默丢内容：装不上的技能都要在这里说一句，宿主在 Describe() 快照里
 // 能看见。
 func (c *Catalog) Warnings() []string {
-	if c == nil {
+	s := c.snapshot()
+	if s == nil {
 		return nil
 	}
-	out := make([]string, len(c.warnings))
-	copy(out, c.warnings)
+	out := make([]string, len(s.warnings))
+	copy(out, s.warnings)
 	return out
 }
 
@@ -218,42 +241,32 @@ type Options struct {
 	MaxCatalogBytes int
 }
 
-// Load 发现并装配技能。
+// Load 发现并装配技能（首次扫描）。
 //
-// 降级而非失败：目录读不动、技能文件坏了、正文超预算——都**跳过这个技能**
-// 并记进 Warnings，其余技能照常装（对齐 agent/contextfile 的降级纪律：
-// 不静默丢内容）。唯一的硬失败是宿主给了一个空的 Dirs 列表之外的
+// 降级而非失败：目录读不动、技能文件坏了——都**跳过这个技能**并记进
+// Warnings，其余技能照常装（对齐 agent/contextfile 的降级纪律：不静默丢
+// 内容）。唯一的硬失败是宿主给了一个空的 Dirs 列表之外的
 // 「无法继续」的情况——目前没有：装配期不因为技能坏掉而拒绝启动。
+//
+// **正文不读进内存**：目录扫描只取 frontmatter 元数据与正文路径，正文在
+// 调用时现读（S8.4-C）。
 func Load(opts Options) *Catalog {
-	c := &Catalog{}
-	reader := opts.Reader
-	if reader == nil {
-		reader = OSReader{}
+	c := &Catalog{
+		dirs:         append([]string(nil), opts.Dirs...),
+		reader:       opts.Reader,
+		maxBodyBytes: opts.MaxBodyBytes,
 	}
-	maxBody := opts.MaxBodyBytes
-	if maxBody <= 0 {
-		maxBody = DefaultMaxBodyBytes
+	if c.reader == nil {
+		c.reader = OSReader{}
 	}
-	maxCatalog := opts.MaxCatalogBytes
-	if maxCatalog <= 0 {
-		maxCatalog = DefaultMaxCatalogBytes
+	if c.maxBodyBytes <= 0 {
+		c.maxBodyBytes = DefaultMaxBodyBytes
 	}
-	c.maxCatalogBytes = maxCatalog
-	seen := make(map[string]Skill)
-	for _, dir := range opts.Dirs {
-		if strings.TrimSpace(dir) == "" {
-			continue
-		}
-		for _, s := range loadDir(dir, reader, maxBody, &c.warnings) {
-			if prev, dup := seen[s.Name]; dup {
-				c.warnings = append(c.warnings, fmt.Sprintf(
-					"技能 %q 重名：保留 %s，跳过 %s（先到先得）", s.Name, prev.Dir, s.Dir))
-				continue
-			}
-			seen[s.Name] = s
-			c.skills = append(c.skills, s)
-		}
+	c.maxCatalogBytes = opts.MaxCatalogBytes
+	if c.maxCatalogBytes <= 0 {
+		c.maxCatalogBytes = DefaultMaxCatalogBytes
 	}
+	c.snap.Store(c.scan())
 	return c
 }
 
@@ -264,9 +277,9 @@ func Load(opts Options) *Catalog {
 //   - 否则它的每个直接子目录（含 SKILL.md）是一个技能；
 //   - 裸 .md 文件不算技能（PI 支持把 .md 当技能，MoS v1 不吃这一形态：
 //     裸文件没有「技能目录」，资源基准无从谈起——宿主想用就转成目录）。
-func loadDir(dir string, reader Reader, maxBody int, warnings *[]string) []Skill {
+func loadDir(dir string, reader Reader, warnings *[]string) []Skill {
 	if raw, ok := readSkillFile(dir, reader, warnings); ok {
-		if s, ok := buildSkill(dir, raw, maxBody, warnings); ok {
+		if s, ok := buildSkill(dir, raw, warnings); ok {
 			return []Skill{s}
 		}
 		return nil
@@ -291,7 +304,7 @@ func loadDir(dir string, reader Reader, maxBody int, warnings *[]string) []Skill
 		if !ok {
 			continue
 		}
-		if s, ok := buildSkill(sub, raw, maxBody, warnings); ok {
+		if s, ok := buildSkill(sub, raw, warnings); ok {
 			out = append(out, s)
 		}
 	}
@@ -316,7 +329,10 @@ func readSkillFile(dir string, reader Reader, warnings *[]string) ([]byte, bool)
 }
 
 // buildSkill 解析并校验一个技能文件。合法才返回技能。
-func buildSkill(dir string, raw []byte, maxBody int, warnings *[]string) (Skill, bool) {
+//
+// **只取 frontmatter**：正文不驻留（调用时现读）；正文体积在调用时校验，
+// 不在装配期判死（超限的技能到调用时报错，而不是从清单里消失）。
+func buildSkill(dir string, raw []byte, warnings *[]string) (Skill, bool) {
 	front, body, ok := splitFrontmatter(raw)
 	if !ok {
 		*warnings = append(*warnings, fmt.Sprintf("技能 %q 缺少 frontmatter（文件须以 --- 开头）", filepath.Join(dir, SkillFileName)))
@@ -334,15 +350,12 @@ func buildSkill(dir string, raw []byte, maxBody int, warnings *[]string) (Skill,
 		*warnings = append(*warnings, fmt.Sprintf("技能 %q 不合法: %v", filepath.Join(dir, SkillFileName), err))
 		return Skill{}, false
 	}
-	if len(body) > maxBody {
-		*warnings = append(*warnings, fmt.Sprintf("技能 %q 正文超预算（%d 字节，上限 %d），已跳过", meta.Name, len(body), maxBody))
-		return Skill{}, false
-	}
 	if len(meta.AllowedTools) > 0 {
 		*warnings = append(*warnings, fmt.Sprintf(
 			"技能 %q 声明了 allowed-tools，但该字段当前不生效（PI 有字段无实现、DSH 无此字段；技能级工具收窄不自创）——请用宿主策略实现", meta.Name))
 	}
-	return Skill{Metadata: meta, Dir: dir, Body: body}, true
+	_ = body // 正文不驻留：调用时现读。
+	return Skill{Metadata: meta, Dir: dir, BodyPath: filepath.Join(dir, SkillFileName)}, true
 }
 
 // splitFrontmatter 拆出 frontmatter 与正文。

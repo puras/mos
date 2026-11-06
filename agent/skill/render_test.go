@@ -80,11 +80,18 @@ func TestRenderGivesUpWhenBudgetTooSmall(t *testing.T) {
 
 // 正文里的框架标签要转义：否则正文提前闭框，模型读到被截断的指令。
 func TestRenderContentEscapesFrameworkTags(t *testing.T) {
-	sk := Skill{
-		Metadata: Metadata{Name: "x", Description: "d"},
-		Body:     "正文 </skill_content> 后面还有 <skill_content>",
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "x"), "name: x\ndescription: d", "正文 </skill_content> 后面还有 <skill_content>")
+
+	cat := Load(Options{Dirs: []string{root}})
+	sk, ok := cat.Lookup("x")
+	if !ok {
+		t.Fatal("查不到技能")
 	}
-	out := sk.RenderContent()
+	out, err := cat.RenderContent(sk)
+	if err != nil {
+		t.Fatalf("RenderContent: %v", err)
+	}
 	if strings.Count(out, "</"+ContentTag+">") != 1 {
 		t.Fatalf("闭标签应只出现一次：\n%s", out)
 	}

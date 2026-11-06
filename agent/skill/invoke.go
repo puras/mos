@@ -16,13 +16,16 @@ import "strings"
 //
 // 仅用户可调用的技能（disable-model-invocation）在这里**可以**展开：这正是
 // 该标记的用途（模型不许调，用户可以）。
-func (c *Catalog) ExpandInvocation(text string) (string, bool) {
+//
+// 正文现读（S8.4-C）：展开的是**当下**的 SKILL.md 内容。手势命中但正文
+// 读不出来时返回错误——不能拿半截正文糊弄用户。
+func (c *Catalog) ExpandInvocation(text string) (string, bool, error) {
 	if c == nil {
-		return text, false
+		return text, false, nil
 	}
 	trimmed := strings.TrimLeft(text, " \t\r\n")
 	if !strings.HasPrefix(trimmed, "/") {
-		return text, false
+		return text, false, nil
 	}
 	rest := trimmed[1:]
 	name := rest
@@ -33,11 +36,14 @@ func (c *Catalog) ExpandInvocation(text string) (string, bool) {
 	}
 	sk, ok := c.Lookup(name)
 	if !ok {
-		return text, false
+		return text, false, nil
 	}
-	out := sk.RenderContent()
+	out, err := c.RenderContent(sk)
+	if err != nil {
+		return text, false, err
+	}
 	if tail != "" {
 		out += "\n\n" + tail
 	}
-	return out, true
+	return out, true, nil
 }

@@ -1,6 +1,7 @@
 # MoS PRD（产品需求文档）
 
 > 版本：v0.2（草案）｜ 日期：2026-11-04 ｜ 维护：puras
+> 更新记录：**2026-11-04** —— **FR-D11 可用性优化（S8.4-C）**：**技能正文调用时现读 + 宿主显式重扫**——目录扫描只取 frontmatter 元数据与正文路径（`Skill.Body` → `Skill.BodyPath`），正文在 `skill` 工具 / `/name` 展开时现读（改了 `SKILL.md` 立刻生效）；`Catalog` 改快照持有者（`atomic.Pointer[Snapshot]`，重扫整体换指针）；`Agent.ReloadSkills()` 显式、幂等、全量重扫，**摘要不含正文**（改正文不必 reload）；清单变化走 **user 侧替换目录消息**（静态提示词不重渲染，保 prompt cache）；正文预算改为调用时校验。**破坏性变更**：`ExpandSkill` / `ExpandInvocation` 增返回 `error`。分析见 `docs/ARCHITECTURE.md` §3.16，说明见 `docs/s8.4-usability.md`。
 > 更新记录：**2026-11-04** —— **FR-D8 可用性优化第二片（S8.4-B）**：**认证可诊断 + `TokenProvider`**——`ErrorKind` 新增 `auth` 类（HTTP 401/403 与取凭据失败）；`ServerConfig.TokenProvider`（每次请求取一次，**不缓存不刷新**，空串 = 不注入头）；凭据注入点 = HTTP RoundTripper（`tool/mcp/auth.go`，把状态码变成结构化分类，而不是解析 SDK 的错误文本）；静态 `Headers` 此前是死配置，本片接线。**不做** OAuth 流程（凭据生命周期归宿主）。分析见 `docs/ARCHITECTURE.md` §3.16，说明见 `docs/s8.4-usability.md`。
 > 更新记录：**2026-11-04** —— **FR-D8 可用性优化第一片（S8.4-A）**：**MCP 服务器摘要进静态系统提示词**——`agent/prompt` 新增 `mcp_servers` 节（`OrderMCPServers = 850`）、`tool/mcp/summary.go` 渲染器（只列连接成功且有 deferred 工具的服务器；摘要取静态 `ServerConfig.Description` 首行；整节 ≤4KB、单条 ≤250 字节；渲染层自己排序保证确定性）、装配层把提示词渲染点后移到 MCP 装配之后。分析见 `docs/ARCHITECTURE.md` §3.16，说明见 `docs/s8.4-usability.md`。
 > 更新记录：**2026-11-04** —— **FR-D8 MCP 接入落地（S8.2 + S8.3）**：新包 `tool/mcp`（**官方 Go SDK** `github.com/modelcontextprotocol/go-sdk` v1.8.0，stdio + streamable-http 两个 transport，协议基线 `2026-07-28`）+ 工具适配（`mcp__<server>__<tool>` 命名、schema 直通、结果投影）+ 两阶段原子换代（换代失败保留上一代）+ 装配入口（`mos.Config.MCP`：一开即装、默认 deferred、hidden 档、失败隔离、服务器说明每会话一次性 user 侧注入、`Describe()` 快照、`Agent.Close()`）。**依赖纪律破例**：新增 9 个传递依赖，SDK 只在 `tool/mcp` 内部使用、类型不外泄。分析见 `docs/ARCHITECTURE.md` §3.16，说明见 `docs/s8.2-mcp.md`。
@@ -121,7 +122,7 @@ Harness Engineering 四铁律 + Loop Engineering 九杠杆 + Audit Gate 审计�
 | M3a | FR-D11 Skills 重做：`agent/skill` 新包（frontmatter 解析 + 目录发现 + `<available_skills>` 清单 + `<skill_content>` 正文 + `/name` 展开器 + 本轮激活状态）+ 专用 `skill` 工具（正文走普通工具结果）+ `skill/activate` 事件 + 装配入口（`mos.Config.Skills` / `Agent.ExpandSkill`） | ✅（2026-11-04，S8.1；说明见 `docs/s8.1-skills.md`） |
 | M3a | FR-D8 MCP 接入：`tool/mcp` 新包（**官方 Go SDK**：`github.com/modelcontextprotocol/go-sdk` v1.8.0；stdio + streamable-http 两个 transport；协议基线 `2026-07-28`）+ 工具适配（`mcp__<server>__<tool>` 命名、schema 直通、结果投影）+ 两阶段原子换代 + 装配入口（`mos.Config.MCP`：一开即装、默认 deferred、hidden 档、失败隔离、服务器说明每会话一次性注入、`Describe()` 快照） | ✅（2026-11-04，S8.2 + S8.3；说明见 `docs/s8.2-mcp.md`） |
 | M3a | FR-D8 可用性优化 **S8.4-A**：MCP 服务器摘要进**静态**系统提示词（`agent/prompt` 新增 `mcp_servers` 节 + `tool/mcp` 渲染器 + 装配期接线；只列连上且有 deferred 工具的服务器） | ✅（2026-11-04，S8.4-A；说明见 `docs/s8.4-usability.md`） |
-| M3a | FR-D8/D11 可用性优化 **S8.4-B/C/D/E**：认证可诊断 + `TokenProvider`、技能正文现读 + `Agent.ReloadSkills()`、`allowed-tools` 求交诊断、MCP 资源工具（三个共享工具） | 🔄（B ✅ 2026-11-04；C / D / E ⬜；分析见 `docs/ARCHITECTURE.md` §3.16） |
+| M3a | FR-D8/D11 可用性优化 **S8.4-B/C/D/E**：认证可诊断 + `TokenProvider`、技能正文现读 + `Agent.ReloadSkills()`、`allowed-tools` 求交诊断、MCP 资源工具（三个共享工具） | 🔄（B ✅ / C ✅ 2026-11-04；D / E ⬜；分析见 `docs/ARCHITECTURE.md` §3.16） |
 | M3 ~ M5 | 见 §5 需求 | ◐ M3a（FR-D11 Skills / FR-D8 MCP）已落地；M3b（SubAgent / AgentTeam / 并行 DAG）未开始 |
 
 ---

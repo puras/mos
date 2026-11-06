@@ -43,8 +43,12 @@ func TestLoadFindsSkillsInSubdirectories(t *testing.T) {
 	if !ok {
 		t.Fatal("查不到 deploy")
 	}
-	if sk.Body != "步骤 1" {
-		t.Fatalf("正文 = %q", sk.Body)
+	body, err := cat.Body(sk)
+	if err != nil {
+		t.Fatalf("读正文: %v", err)
+	}
+	if body != "步骤 1" {
+		t.Fatalf("正文 = %q", body)
 	}
 	if sk.Description != "部署流程" {
 		t.Fatalf("描述 = %q", sk.Description)
@@ -116,8 +120,12 @@ func TestLoadDuplicateNameKeepsFirst(t *testing.T) {
 		t.Fatalf("重名应只留一个：%v", names(cat))
 	}
 	sk, _ := cat.Lookup("dup")
-	if sk.Body != "正文甲" {
-		t.Fatalf("应保留先发现的：%q", sk.Body)
+	body, err := cat.Body(sk)
+	if err != nil {
+		t.Fatalf("读正文: %v", err)
+	}
+	if body != "正文甲" {
+		t.Fatalf("应保留先发现的：%q", body)
 	}
 	if !strings.Contains(strings.Join(cat.Warnings(), "\n"), "重名") {
 		t.Fatalf("应诊断重名：\n%v", cat.Warnings())
@@ -136,17 +144,26 @@ func TestLoadMissingDirWarns(t *testing.T) {
 	}
 }
 
-// 正文超预算：跳过该技能并出诊断（不静默截断）。
-func TestLoadBodyOverBudgetSkipped(t *testing.T) {
+// 正文超预算：**调用时报错**（S8.4-C）——不判死在装配期。
+//
+// 装配期判死（跳过技能）会让模型以为技能不存在；调用期报错才是真信息。
+func TestBodyOverBudgetFailsAtCallTime(t *testing.T) {
 	root := t.TempDir()
 	writeSkill(t, filepath.Join(root, "big"), "name: big\ndescription: 大技能", strings.Repeat("x", 100))
 
 	cat := Load(Options{Dirs: []string{root}, MaxBodyBytes: 10})
-	if cat.Len() != 0 {
-		t.Fatalf("超预算的技能不该装上：%v", names(cat))
+	// 技能仍在清单里（模型看得见）——只是加载会失败。
+	if cat.Len() != 1 {
+		t.Fatalf("超预算的技能不该从清单里消失：%v", names(cat))
 	}
-	if !strings.Contains(strings.Join(cat.Warnings(), "\n"), "正文超预算") {
-		t.Fatalf("应诊断正文超预算：\n%v", cat.Warnings())
+	sk, ok := cat.Lookup("big")
+	if !ok {
+		t.Fatal("查不到 big")
+	}
+	if _, err := cat.Body(sk); err == nil {
+		t.Fatal("正文超预算应报错")
+	} else if !strings.Contains(err.Error(), "超预算") {
+		t.Fatalf("err = %v", err)
 	}
 }
 

@@ -697,13 +697,34 @@ func renderMCPInstructions(list []mcp.Instruction, maxBytes int) string {
 //
 // 没装技能、或不是已知技能 → 原样返回 + false（不是错误）。
 //
+// 手势命中但正文读不出来 → 返回错误（不拿半截正文糊弄用户）。
+//
 // 仅用户可调用的技能（disable-model-invocation）在这里**能**展开——用户可以，
 // 模型不行。
-func (a *Agent) ExpandSkill(text string) (string, bool) {
+func (a *Agent) ExpandSkill(text string) (string, bool, error) {
 	if a == nil || a.skills == nil {
-		return text, false
+		return text, false, nil
 	}
 	return a.skills.ExpandInvocation(text)
+}
+
+// ReloadSkills 重扫技能目录（显式、幂等、全量）。
+//
+// 什么时候用：宿主改了技能目录（新增 / 删除 / 改名 / 改 frontmatter）之后，
+// 自己调一次。想自动盯文件，宿主自己盯（框架不提供 watcher 接口——
+// 治理规则 5，框架不绑文件系统）。
+//
+// **幂等**：目录摘要没变就不换快照（Changed=false、Notice 空）——可以无脑调。
+//
+// **正文不受影响**：正文在调用时现读，改了 SKILL.md 不必 reload。
+//
+// **静态系统提示词不重渲染**（保 prompt cache）：清单变化只走 Notice
+// ——宿主把它作为 user 侧消息追加到会话里（DSH 的「替换目录」语义）。
+func (a *Agent) ReloadSkills() skill.ReloadResult {
+	if a == nil || a.skills == nil {
+		return skill.ReloadResult{}
+	}
+	return a.skills.Reload()
 }
 
 // Skills 返回装配期发现的技能清单（含仅用户可调用的那些——宿主展示什么由
