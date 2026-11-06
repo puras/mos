@@ -1053,7 +1053,7 @@ func (a *Agent) Describe() string {
 	case !a.searchWired:
 		b.WriteString("  tool_search: 未装配（没有 deferred 工具）\n")
 	default:
-		b.WriteString("  tool_search: 已装配（deferred 工具经搜索激活，下一轮生效）\n")
+		b.WriteString("  tool_search: 已装配（deferred 工具经搜索激活，下一次请求起生效）\n")
 	}
 	if a.compactor != nil {
 		b.WriteString("  上下文压缩: 已装配（超预算时模型生成结构化摘要落日志）\n")

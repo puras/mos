@@ -92,7 +92,7 @@ type SearchArgs struct {
 
 - struct tag → JSON Schema，注册时生成缓存（循环内零反射）；
 - 工具实现 `tool.ConcurrencySafe(args) bool` 并返回 true 才可与同批调用并发，默认独占（fail-closed）；
-- **deferred 懒加载**（M2.10）：`RegisterDeferred` 注册的工具不进清单，模型经 `tool_search`（BM25，支持中文）按需激活，下一轮生效——工具面增长时 prompt token 亚线性；deferred 集非空时 `tool_search` 自动装配，小工具集行为不变。
+- **deferred 懒加载**（M2.10）：`RegisterDeferred` 注册的工具不进清单，模型经 `tool_search`（BM25，支持中文）按需激活，**下一次请求**起生效（同一轮内即可，不必等下一轮）——工具面增长时 prompt token 亚线性；deferred 集非空时 `tool_search` 自动装配，小工具集行为不变。
 
 ### 安全纵深（四层防线，逐层收窄）
 

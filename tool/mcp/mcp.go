@@ -42,7 +42,7 @@ type Exposure string
 
 const (
 	// ExposureDeferred：注册但不进模型清单；模型经 tool_search 搜到并
-	// 激活后，下一轮才进清单。
+	// 激活后，下一次请求起进清单。
 	ExposureDeferred Exposure = "deferred"
 	// ExposureDirect：注册后直接进模型清单。
 	ExposureDirect Exposure = "direct"

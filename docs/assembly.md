@@ -242,7 +242,7 @@ REPL 循环、事件落盘的落盘位置。
 | 通道 | 机制 | 生效时机 |
 | --- | --- | --- |
 | 宿主实现内部可变 | 注入接口（`approval.Answerer`、`sandbox.Local.Budget`、自备 `Compactor`） | 立即（宿主自己保证并发安全） |
-| 工具/钩子/守卫动态增删 | `tool.Registry`、`HookBus.On`、`GuardBus.Add` 都带锁并返回移除函数 | 下一轮 |
+| 工具/钩子/守卫动态增删 | `tool.Registry`、`HookBus.On`、`GuardBus.Add` 都带锁并返回移除函数 | 下一轮（注册表变更：下一次**请求**就生效，同一轮内也生效） |
 | **装配层旋钮** | `SetConcurrency` / `SetMaxDecisionRounds` / `SetPolicy` / `SetRules` | **下一轮** |
 | **根集合**（`Config.Roots`） | `AddRoot` / `AddReadRoot` / `AddWriteRoot` / `RemoveRoot` | **下一次工具调用**（边界每次调用现判，见 §8.1） |
 

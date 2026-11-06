@@ -108,6 +108,16 @@ func (d *Driver) Run(ctx context.Context, rt *driver.RunContext, sess *session.S
 	var repeats int
 
 	for round := 0; maxRounds <= 0 || round < maxRounds; round++ {
+		// 声明清单每轮重取：工具集可能在上一批执行期间变了——
+		// tool_search 激活了 deferred 工具、MCP 服务器换代、策略热替换改了
+		// 可见性。变了就该让模型**马上**看见（对齐 PI：激活后下一次请求就
+		// 声明），而不是等下一个 turn。
+		//
+		// 清单没变时重取不花钱、也不影响 prompt cache：请求字节一致，前缀
+		// 缓存照常命中。
+		if rt.Tools != nil {
+			defs = rt.Tools.List()
+		}
 		action, err := decide(ctx, rt, sess, turn, defs)
 		if err != nil {
 			return "", d.abort(ctx, sess, turn, err)

@@ -85,7 +85,7 @@ type Registry struct {
 	// schemas 是注册时生成的 JSON Schema 缓存：避免循环内每轮 List() 重复反射。
 	schemas map[string]map[string]any
 	// deferred 是懒加载集：注册但不进 List()（模型看不到），经 tool_search
-	// 激活后下一轮才声明。只记名字，顺序沿 order。
+	// 激活后下一次请求起声明。只记名字，顺序沿 order。
 	deferred map[string]bool
 	// scope 记每个工具的**代际归属**（Replace 的 scope 参数）：同一 scope 的
 	// 上一代工具在下次 Replace 时整体让位（服务器撤掉的工具要消失）；
@@ -415,8 +415,8 @@ func (r *Registry) Guidelines() []GuidelineText {
 
 // RegisterDeferred 注册一个懒加载工具：进注册表（可被 Call、可被守卫裁），
 // 但不进 List()/Guidelines()——模型看不到，只有它的名字与描述经
-// DeferredTools() 暴露给 tool_search。激活（Activate）后下一轮 List()
-// 才声明它（PI 的 deferred exposure / DSH 的 deferLoading 同语义）。
+// DeferredTools() 暴露给 tool_search。激活（Activate）后下一次请求起
+// List() 才声明它（PI 的 deferred exposure / DSH 的 deferLoading 同语义）。
 // 重名（含与普通注册的冲突）返回错误。
 func (r *Registry) RegisterDeferred(t Tool) error {
 	if err := r.Register(t); err != nil {
@@ -459,7 +459,7 @@ func (r *Registry) DeferredTools() []DeferredInfo {
 	return out
 }
 
-// Activate 激活若干 deferred 工具：下一轮 List() 开始声明它们。
+// Activate 激活若干 deferred 工具：下一次请求起 List() 开始声明它们。
 // 未注册的名字报错（fail-closed——激活一个不存在的工具是调用方 bug）；
 // 未注册为 deferred 的名字（已是普通工具）跳过（它已在清单里）。
 // 返回实际新激活的名字（按传入序；已激活的不重复算）。

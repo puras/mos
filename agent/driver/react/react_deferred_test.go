@@ -93,6 +93,78 @@ func TestHistoryToolNamesReactivated(t *testing.T) {
 	}
 }
 
+// 激活在**同一轮内**就能被模型看见：驱动每轮重取声明清单，激活后下一次请求
+// 就带上它（对齐 PI：下一轮请求声明给模型）。这里用 activatingPlanner 模拟
+// tool_search：第 1 轮调用搜索工具（执行时激活 lazy），第 2 轮清单里就该有它。
+type activatingPlanner struct {
+	seenTools [][]llm.Tool
+	activated bool
+}
+
+func (p *activatingPlanner) NextAction(_ context.Context, _ []llm.Message, tools []llm.Tool) (planner.Action, error) {
+	p.seenTools = append(p.seenTools, tools)
+	if !p.activated {
+		p.activated = true
+		return planner.Action{
+			ToolCalls:    []llm.ToolCall{{ID: "c1", Name: "search", Args: "{}"}},
+			FinishReason: "tool_calls",
+		}, nil
+	}
+	return planner.Action{Content: "done", FinishReason: "stop"}, nil
+}
+
+// activateTool 是「搜索工具」的替身：执行时把目标工具激活。
+type activateTool struct {
+	name   string
+	reg    *tool.Registry
+	target string
+}
+
+func (a activateTool) Name() string        { return a.name }
+func (a activateTool) Description() string { return "搜索并激活工具" }
+func (a activateTool) Parameters() any     { return struct{}{} }
+func (a activateTool) Execute(_ context.Context, _ json.RawMessage) (any, error) {
+	if _, err := a.reg.Activate([]string{a.target}); err != nil {
+		return nil, err
+	}
+	return "已激活 " + a.target, nil
+}
+
+func TestActivatedToolVisibleInSameTurn(t *testing.T) {
+	reg := tool.NewRegistry()
+	if err := reg.RegisterDeferred(echoTool{name: "lazy"}); err != nil {
+		t.Fatalf("RegisterDeferred: %v", err)
+	}
+	if err := reg.Register(activateTool{name: "search", reg: reg, target: "lazy"}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	p := &activatingPlanner{}
+	rt := &driver.RunContext{Planner: p, Tools: reg}
+	d := driver.New(rt, New())
+	sess := session.New("t", nil)
+	if _, err := d.Run(context.Background(), sess, "找个能干的工具"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(p.seenTools) != 2 {
+		t.Fatalf("应有两轮决策，实际 %d", len(p.seenTools))
+	}
+	for _, def := range p.seenTools[0] {
+		if def.Name == "lazy" {
+			t.Fatalf("激活前不该声明 lazy: %+v", p.seenTools[0])
+		}
+	}
+	found := false
+	for _, def := range p.seenTools[1] {
+		if def.Name == "lazy" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("激活后同一轮的下一轮就该声明 lazy: %+v", p.seenTools[1])
+	}
+}
+
 // 幻觉工具名（历史里有、Registry 里没有）不阻断：防御性跳过。
 func TestHistoryUnknownToolNameIgnored(t *testing.T) {
 	reg := tool.NewRegistry()

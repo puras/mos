@@ -207,6 +207,13 @@ func TestMCPToolActivatedViaToolSearchE2E(t *testing.T) {
 		t.Fatalf("deferred 的 MCP 工具不该出现在第一轮清单：%v", first)
 	}
 
+	// ①b 激活在**同一轮内**生效：激活后的下一次请求，清单里已经有它
+	//（对齐 PI 的「下一轮请求声明给模型」——不必等下一个 turn）。
+	afterActivate := model.seenAt(1)
+	if !hasToolName(afterActivate, "mcp__gh__search_issues") {
+		t.Fatalf("激活后同一轮的下一轮就该声明该 MCP 工具：%v", afterActivate)
+	}
+
 	// ② 激活回执回到了模型手里（模型据此才知道这个名字）。
 	if !sawReceipt {
 		t.Fatal("tool_search 的激活回执应回到模型（模型要能看见被激活的工具名）")
@@ -259,7 +266,7 @@ func TestMCPToolActivatedViaToolSearchE2E(t *testing.T) {
 		}
 	}
 
-	// ⑥ 下一个 turn：驱动组装清单时它已在（这是「激活后下一轮生效」的对外语义）。
+	// ⑥ 下一个 turn：它仍在清单里（激活是持久的，不是一次性的）。
 	if _, err := a.Run(context.Background(), sess, "继续"); err != nil {
 		t.Fatalf("第二轮 Run: %v", err)
 	}

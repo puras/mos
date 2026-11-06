@@ -243,7 +243,7 @@ func (t *toolSearch) Description() string {
 	return "# 工具发现\n\n" +
 		"在尚未加载的工具元数据上做检索（BM25），并把命中的工具激活供你下一轮调用。\n\n" +
 		"有些工具（例如 MCP 服务器提供的）可能没有预先提供给你；需要时用本工具（" + ToolSearchName + "）" +
-		"按用途搜索。搜索结果在下一轮起可用；回执会列出激活的工具。\n" +
+		"按用途搜索。搜索结果从你的下一次请求起可用；回执会列出激活的工具。\n" +
 		"参数 query 描述你要什么（不是工具名精确匹配）；limit 限制激活数量（默认 " +
 		fmt.Sprint(t.limit) + "）。"
 }
@@ -285,7 +285,7 @@ func (t *toolSearch) Execute(ctx context.Context, args json.RawMessage) (any, er
 	return map[string]any{
 		"found":  true,
 		"loaded": activated,
-		"text": fmt.Sprintf("已激活 %d 个工具，从你的下一轮调用起可用：\n%s",
+		"text": fmt.Sprintf("已激活 %d 个工具，从你的下一次请求起可用：\n%s",
 			len(activated), strings.Join(lines, "\n")),
 	}, nil
 }
