@@ -1172,7 +1172,7 @@ mos-web 是本仓库的宿主实现之一。核查结论：**它已覆盖什么�
 | 片 | 内容 | 验收 |
 | --- | --- | --- |
 | **S8.5-0** ✅ | PI/DSH 参考分析（本节）+ 一页说明 `docs/s8.5-subagent.md` + 拍板（六条全按建议，2026-11-06） | 本节落文档；拍板项有结论 |
-| **S8.5-A** | `agent/subagent` 包（`Definition` / `Catalog` / `Render` / `Runner` / `Result`）+ 目录发现与 frontmatter 解析（复用 `agent/skill` 的形态）+ 清单渲染 | 单测：frontmatter 解析、名字 / 描述校验（同 Skills 的 kebab-case 口径）、预算降级、拆分判据诊断 |
+| **S8.5-A** ✅ | `agent/subagent` 包（`Definition` / `Catalog` / `Render` / `Runner` / `Result`）+ 目录发现与 frontmatter 解析（复用 `agent/skill` 的形态）+ 清单渲染 | 单测：frontmatter 解析、名字 / 描述校验（同 Skills 的 kebab-case 口径）、预算降级、拆分判据诊断（**2026-11-07 落地**） |
 | **S8.5-B** | 子代理 = 一个 `tool.Tool`：白名单子注册表（交集口径）+ 独立子会话 + 固定结构回执 + 超时与取消 | 单测：白名单交集（声明放大无效）、不可见工具不进子注册表、子代理失败 → `status: error` 正常结果、父轮次取消 → 子代理跟着取消 |
 | **S8.5-C** | 装配层接线（`Config.SubAgents` + Runner 实现 + 清单进静态提示词 + `Describe()` 快照）+ 模型覆盖与缺目录降级 | E2E：模型调子代理 → 子代理用受限工具面干活 → 结构化回执回填父上下文 → 父模型看得见 findings；未装子代理时零行为变化 |
 | **S8.5-D** | 文档同步（README / ARCHITECTURE / PRD）+ `examples/subagent` | 三处状态同步；示例可跑 |
@@ -1206,7 +1206,7 @@ mos-web 是本仓库的宿主实现之一。核查结论：**它已覆盖什么�
 | PI/DSH 参考分析（SubAgent） | ✅（本节，2026-11-06） |
 | PRD 分期口径勘误（FR-D3 属 M3a 收尾） | ✅（2026-11-06，PRD 已改） |
 | 拍板（交付形态 / 命名 / 白名单合成 / 模型覆盖 / 深度 / deferred 化） | ✅（2026-11-06，用户已决：六条全按建议） |
-| S8.5-A `agent/subagent` 包 | ⬜ |
+| S8.5-A `agent/subagent` 包 | ✅（2026-11-07：`Definition` / `Catalog` / `Render` / `Runner` / `Result` + `ResolveTools` / `CheckModel` / `SplitDiagnostic` 落地；装配层接线待做） |
 | S8.5-B 工具形态与执行体 | ⬜ |
 | S8.5-C 装配层接线 | ⬜ |
 | S8.5-D 文档与示例 | ⬜ |
