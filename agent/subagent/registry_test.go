@@ -96,3 +96,65 @@ func TestChildRegistryWithoutParent(t *testing.T) {
 		t.Fatalf("声明项应全被报出来：%v", dropped)
 	}
 }
+
+// 恒定排除：深度 0——子代理不能再委派（`subagent__*` 进不了子注册表）。
+func TestChildRegistryExcludesSubagentTools(t *testing.T) {
+	parent := tool.NewRegistry()
+	for _, n := range []string{"read", "subagent__reviewer"} {
+		if err := parent.Register(stubTool{name: n}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	child, dropped := ChildRegistry(parent, []string{"read", "subagent__reviewer"})
+
+	if _, ok := child.Get("subagent__reviewer"); ok {
+		t.Fatal("子代理不该继承 subagent__*（深度 0）")
+	}
+	if got := child.Names(); len(got) != 1 || got[0] != "read" {
+		t.Fatalf("子注册表应只剩 read：%v", got)
+	}
+	if len(dropped) != 1 || dropped[0] != "subagent__reviewer" {
+		t.Fatalf("被挡掉的 subagent__* 应报出来：%v", dropped)
+	}
+}
+
+// 恒定排除：工具面不经 tool_search（`tool_search` 进不了子注册表）。
+func TestChildRegistryExcludesToolSearch(t *testing.T) {
+	parent := tool.NewRegistry()
+	for _, n := range []string{"read", "tool_search"} {
+		if err := parent.Register(stubTool{name: n}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	child, dropped := ChildRegistry(parent, []string{"read", "tool_search"})
+
+	if _, ok := child.Get("tool_search"); ok {
+		t.Fatal("子代理不该继承 tool_search（工具面不经 search）")
+	}
+	if got := child.Names(); len(got) != 1 || got[0] != "read" {
+		t.Fatalf("子注册表应只剩 read：%v", got)
+	}
+	if len(dropped) != 1 || dropped[0] != "tool_search" {
+		t.Fatalf("被挡掉的 tool_search 应报出来：%v", dropped)
+	}
+}
+
+// 空白名单时也恒定排除这两类（不然「没声明」就等于「全继承」）。
+func TestChildRegistryExcludesEvenWithEmptyWhitelist(t *testing.T) {
+	parent := tool.NewRegistry()
+	for _, n := range []string{"read", "tool_search", "subagent__reviewer"} {
+		if err := parent.Register(stubTool{name: n}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	child, _ := ChildRegistry(parent, nil)
+
+	for _, n := range []string{"tool_search", "subagent__reviewer"} {
+		if _, ok := child.Get(n); ok {
+			t.Fatalf("%s 不该进子注册表：%v", n, child.Names())
+		}
+	}
+	if got := child.Names(); len(got) != 1 || got[0] != "read" {
+		t.Fatalf("子注册表应只剩 read：%v", got)
+	}
+}
