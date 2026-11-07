@@ -154,3 +154,14 @@ func (c *modelCatalog) list() []ModelOption {
 	}
 	return out
 }
+
+// lookup 按 ID 取模型（子代理的模型覆盖用它）。
+func (c *modelCatalog) lookup(id string) (llm.ChatModel, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	opt, ok := c.byID[id]
+	if !ok {
+		return nil, false
+	}
+	return opt.Chat, true
+}

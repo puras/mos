@@ -47,6 +47,7 @@ import (
 	"github.com/puras/mos/agent/policy"
 	"github.com/puras/mos/agent/prompt"
 	"github.com/puras/mos/agent/skill"
+	"github.com/puras/mos/agent/subagent"
 	"github.com/puras/mos/filesystem"
 	"github.com/puras/mos/llm"
 	"github.com/puras/mos/planner"
@@ -163,6 +164,19 @@ type Config struct {
 	//
 	// 连接是**长连接**（stdio 是子进程）：宿主用完请调 a.Close() 收掉。
 	MCP *MCPConfig
+	// SubAgents 是子代理装配参数（nil = 不提供这个能力）。
+	//
+	// 子代理 = 一个普通工具（PRD FR-D3）：清单（name / description）进**静态**
+	// 系统提示词（装配期渲染一次 → 保 prompt cache），每个子代理注册成一个
+	// `subagent__<name>` 工具，模型点名调用。
+	//
+	// 子代理跑在自己的会话里、用**收窄过的工具面**（声明白名单 ∩ 父可见
+	// 工具集，deny 优先），只回一段固定结构的回执。
+	//
+	// 给了目录但没装出子代理（目录不存在 / 全被跳过）不算装配失败：降级说明
+	// 进 Describe() 快照，不静默丢。**声明了宿主目录里没有的模型**则装配
+	// 失败（假能力，fail-closed）。
+	SubAgents *SubAgentConfig
 	// WorkDir 是工作目录：文件工具的沙箱根、截断落盘目录的父目录。空 = 当前目录。
 	WorkDir string
 	// ContextWindow 是模型上下文窗口（token）。0 = 默认 128K；确切窗口更小的
@@ -243,6 +257,14 @@ type Agent struct {
 
 	// skills 是装配期发现的技能清单（nil = 没装技能这个能力）。
 	skills *skill.Catalog
+	// skillsText 是技能清单的渲染正文（子代理提示词用：子代理带了 skill
+	// 工具时得告诉它有哪些技能）。
+	skillsText string
+
+	// subagents 是装配期发现的子代理清单（nil = 没装子代理这个能力）。
+	subagents *subagent.Catalog
+	// subagentSeq 是子会话序号（派生可辨认的子会话 id）。
+	subagentSeq atomic.Uint64
 
 	// mcp 是 MCP 编排器（nil = 没装 MCP 这个能力）。
 	mcp *mcp.Manager
@@ -253,6 +275,12 @@ type Agent struct {
 
 	// catalog 是模型目录（多模型模式；nil = 单模型模式）。
 	catalog *modelCatalog
+	// baseModel 是单模型模式下的模型（多模型模式用 catalog.shell 转发）。
+	baseModel llm.ChatModel
+	// persistence 是会话落盘后端（子会话用同一个后端，宿主可查子会话日志）。
+	persistence session.Persistence
+	// contextText 是项目上下文文件正文（AGENTS.md 等）：子代理提示词也带它。
+	contextText string
 
 	// 运行期旋钮（原子；下一轮生效）。
 	concurrency atomic.Int64
@@ -333,6 +361,7 @@ func New(cfg Config) (*Agent, error) {
 	// 都没给 = 没装配模型（fail-closed）；都给 = 不知道听谁的（报错，不静默挑）。
 	var catalog *modelCatalog
 	var model llm.ChatModel
+	var baseModel llm.ChatModel
 	switch {
 	case len(cfg.Models) > 0 && cfg.Model != nil:
 		return nil, errors.New("mos: Model 与 Models 二选一（两个都给，不知道听谁的）")
@@ -345,6 +374,7 @@ func New(cfg Config) (*Agent, error) {
 		model = cat.shell // 转发壳：运行期换模型只换壳里的目标
 	case cfg.Model != nil:
 		model = cfg.Model
+		baseModel = cfg.Model
 	default:
 		return nil, errors.New("mos: 未装配模型（Config.Model 或 Config.Models 必填其一）")
 	}
@@ -367,6 +397,7 @@ func New(cfg Config) (*Agent, error) {
 	var contextFiles []string
 	contextBytes := 0
 	var contextWarning []string
+	var contextText string
 	if cfg.Context != nil {
 		dir := cfg.Context.Dir
 		if dir == "" {
@@ -384,6 +415,7 @@ func New(cfg Config) (*Agent, error) {
 		}
 		contextWarning = res.Warnings
 		contextBytes = len(res.Text)
+		contextText = res.Text
 		for _, f := range res.Files {
 			contextFiles = append(contextFiles, f.Path)
 		}
@@ -406,6 +438,7 @@ func New(cfg Config) (*Agent, error) {
 	// 装配期就把技能读进来（而不是调用时再读）：技能集是静态的，坏掉的技能
 	// 文件应该在装配期就暴露成诊断，而不是跑到一半才失败。
 	var skillCatalog *skill.Catalog
+	var skillsText string
 	if cfg.Skills != nil {
 		skillCatalog = skill.Load(skill.Options{
 			Dirs:            cfg.Skills.Dirs,
@@ -414,6 +447,7 @@ func New(cfg Config) (*Agent, error) {
 			MaxCatalogBytes: cfg.Skills.MaxCatalogBytes,
 		})
 		if text := skillCatalog.Render(); text != "" {
+			skillsText = text
 			if pb != nil {
 				if err := pb.AddSkills(text); err != nil {
 					return nil, fmt.Errorf("mos: 装配技能清单: %w", err)
@@ -423,6 +457,26 @@ func New(cfg Config) (*Agent, error) {
 					systemPrompt += "\n\n"
 				}
 				systemPrompt += text
+			}
+		}
+	}
+	// 子代理（SubAgent）：清单进系统提示词，工具按名注册（不进 deferred）。
+	//
+	// 装配期就把子代理读进来（而不是调用时再读）：子代理集是静态的，坏的
+	// 定义文件应该在装配期就暴露成诊断，而不是跑到一半才失败。
+	var subagentCatalog *subagent.Catalog
+	if cfg.SubAgents != nil {
+		subagentCatalog = subagent.Load(subagent.Options{
+			Dirs:            cfg.SubAgents.Dirs,
+			Reader:          cfg.SubAgents.Reader,
+			MaxCatalogBytes: cfg.SubAgents.MaxCatalogBytes,
+		})
+		// 模型覆盖校验（装配期，fail-closed）：声明了却没装 = 假能力，
+		// 不静默降级到父模型。
+		probe := subagentModelProbe(catalog)
+		for _, d := range subagentCatalog.All() {
+			if err := subagent.CheckModel(d, probe); err != nil {
+				return nil, fmt.Errorf("mos: %w", err)
 			}
 		}
 	}
@@ -545,8 +599,50 @@ func New(cfg Config) (*Agent, error) {
 		skillCatalog.SetToolProbe(reg.Visible)
 	}
 
+	// 子代理工具：每个子代理一个（`subagent__<name>`）。
+	//
+	// **不 deferred 化**（拍板 ⑥）：子代理工具面不经 tool_search，子代理
+	// 工具本身也不 deferred——模型直接看得见有哪些子代理可派。
+	//
+	// 执行体默认是根包的实现（独立子会话 + 白名单子注册表 + 模型覆盖）；
+	// 宿主可自备（SubAgentConfig.Runner）。
+	var a *Agent
+	if subagentCatalog != nil && subagentCatalog.Len() > 0 {
+		runner := cfg.SubAgents.Runner
+		if runner == nil {
+			runner = subagent.RunnerFunc(func(ctx context.Context, spec subagent.Spec) (subagent.Result, error) {
+				return a.runSubagent(ctx, spec)
+			})
+		}
+		timeout := cfg.SubAgents.Timeout
+		if timeout <= 0 {
+			timeout = DefaultSubAgentTimeout
+		}
+		for _, tl := range subagentCatalog.Tools(runner, subagent.ToolOptions{Timeout: timeout}) {
+			if _, ok := reg.Get(tl.Name()); ok {
+				return nil, fmt.Errorf("mos: 子代理工具名 %q 与已有工具重名", tl.Name())
+			}
+			if err := reg.Register(tl); err != nil {
+				return nil, fmt.Errorf("mos: 注册子代理工具: %w", err)
+			}
+		}
+		// 清单进**静态**系统提示词（装配期渲染一次 → 保 prompt cache）。
+		if text := subagentCatalog.Render(); text != "" {
+			if pb != nil {
+				if err := pb.AddSubAgents(text); err != nil {
+					return nil, fmt.Errorf("mos: 装配子代理清单: %w", err)
+				}
+			} else {
+				if systemPrompt != "" {
+					systemPrompt += "\n\n"
+				}
+				systemPrompt += text
+			}
+		}
+	}
+
 	// 分节装配器到此才渲染：所有要进提示词的分节（项目约定、技能清单、
-	// MCP 服务器摘要）都已就位。
+	// MCP 服务器摘要、子代理清单）都已就位。
 	if pb != nil {
 		systemPrompt = pb.Render()
 	}
@@ -557,7 +653,7 @@ func New(cfg Config) (*Agent, error) {
 
 	// 名字级策略：既管"能不能调"，也管"模型看不看得见"（不给模型一个它
 	// 注定调不成的工具）。
-	a := &Agent{
+	a = &Agent{
 		rt:           &driver.RunContext{},
 		driver:       react.New(),
 		tools:        reg,
@@ -576,13 +672,19 @@ func New(cfg Config) (*Agent, error) {
 		contextBytes:   contextBytes,
 		contextWarning: contextWarning,
 
-		skills: skillCatalog,
+		skills:     skillCatalog,
+		skillsText: skillsText,
+
+		subagents: subagentCatalog,
 
 		mcp:               mcpMgr,
 		mcpInstructions:   mcpInstructions,
 		mcpInstructionMax: mcpInstructionMax,
 
-		catalog: catalog,
+		catalog:     catalog,
+		baseModel:   baseModel,
+		persistence: cfg.Persistence,
+		contextText: contextText,
 	}
 	a.rules.set(cfg.Rules)
 	// 参数级规则的两个门：deny 档进守卫（单调拒绝），ask 档进 pre-execute
@@ -707,6 +809,10 @@ func (a *Agent) run(ctx context.Context, sess *session.Session, input string) (s
 			ctx = skill.WithState(ctx, skill.NewState())
 		}
 		ctx = skill.WithRecorder(ctx, skillRecorder{sess: sess})
+	}
+	// 子代理：父会话挂进 ctx（子会话 id 从它派生，宿主查得到子会话日志）。
+	if a.subagents != nil {
+		ctx = withSubagentParent(ctx, sess)
 	}
 	// 服务器说明：一次性注入（每个会话一次）。
 	//
@@ -1112,6 +1218,37 @@ func (a *Agent) Describe() string {
 				continue
 			}
 			fmt.Fprintf(&b, "    ⚠ 技能 %q: %s\n", s.Name, notice)
+		}
+	}
+	// 子代理：装了什么 + 没装什么（坏的定义、重名遮蔽都要写出来）。
+	switch {
+	case a.subagents == nil:
+		b.WriteString("  子代理: 未装配\n")
+	case a.subagents.Len() == 0:
+		b.WriteString("  子代理: 已装配，但没找到子代理\n")
+	default:
+		fmt.Fprintf(&b, "  子代理: %d 个: %s\n", a.subagents.Len(), strings.Join(a.subagents.Names(), ", "))
+		for _, d := range a.subagents.All() {
+			line := fmt.Sprintf("    - %s: %s", d.Name, d.Description)
+			if len(d.Tools) > 0 {
+				line += fmt.Sprintf("（工具 %s）", strings.Join(d.Tools, "、"))
+			}
+			if d.Model != "" {
+				line += fmt.Sprintf("（模型 %s）", d.Model)
+			}
+			b.WriteString(line + "\n")
+		}
+	}
+	if a.subagents != nil {
+		for _, w := range a.subagents.Warnings() {
+			fmt.Fprintf(&b, "    ⚠ %s\n", w)
+		}
+		// 拆分判据诊断（PRD FR-D3）：子代理与父无实质差别时给一句——只提示
+		// 不拦（判据过严会拦掉合法的「只换 instructions」）。
+		for _, d := range a.subagents.All() {
+			if msg := subagent.SplitDiagnostic(d, a.subagentParentProfile()); msg != "" {
+				fmt.Fprintf(&b, "    ⚠ %s\n", msg)
+			}
 		}
 	}
 	// MCP：装了什么 + 没装什么（连不上的服务器、换代失败都要写出来）。

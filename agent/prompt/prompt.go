@@ -51,6 +51,11 @@ const (
 	// （deferred 工具不在清单里），所以排在技能清单之后：本地技能更常用，
 	// 远端服务器工具是补充。
 	OrderMCPServers = 850
+	// OrderSubAgents 是子代理清单的位置：在 MCP 服务器摘要之后、工具指引之前。
+	//
+	// 同样是「有哪些能力可用」的索引，排在最后：子代理是**间接**能力
+	// （模型要先想到派谁才用得上），比本地技能与远端工具都更靠后。
+	OrderSubAgents = 875
 	// OrderToolBase 是工具指引的起点：AddToolGuidelines 按注册序依次 +1。
 	OrderToolBase = 1000
 	// OrderRuntime 是易变部署事实的位置（工作目录、审批模式等，宿主自决是否加入）。
@@ -78,6 +83,9 @@ const SectionSkills = "skills"
 
 // SectionMCPServers 是 MCP 服务器摘要分节的名字（宿主用 tool/mcp 渲染正文后注入）。
 const SectionMCPServers = "mcp_servers"
+
+// SectionSubAgents 是子代理清单分节的名字（宿主用 agent/subagent 渲染正文后注入）。
+const SectionSubAgents = "subagents"
 
 // Builder 收集分节并渲染最终字符串。零值可直接用；非并发安全——
 // 装配发生在启动期（或每个智能体实例各自装配），渲染结果随后只读。
@@ -190,6 +198,22 @@ func (b *Builder) AddMCPServers(text string) error {
 	return b.Add(Section{
 		Name:  SectionMCPServers,
 		Order: OrderMCPServers,
+		Text:  text,
+	})
+}
+
+// AddSubAgents 注入子代理清单正文（agent/subagent 渲染的 <available_subagents>
+// 块）：位置固定在 OrderSubAgents。
+//
+// 正文为空 = 没有子代理：不加分节（不留空洞）。
+// 重名即报错——同一个 Builder 注入两次是装配错误，当场暴露。
+func (b *Builder) AddSubAgents(text string) error {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	return b.Add(Section{
+		Name:  SectionSubAgents,
+		Order: OrderSubAgents,
 		Text:  text,
 	})
 }

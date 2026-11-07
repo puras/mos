@@ -167,6 +167,38 @@ func TestAddMCPServers(t *testing.T) {
 	}
 }
 
+func TestAddSubAgents(t *testing.T) {
+	b := Default()
+	// 空正文 → 不加分节（不留空洞）。
+	if err := b.AddSubAgents("   "); err != nil {
+		t.Fatalf("AddSubAgents: %v", err)
+	}
+	if got := b.Render(); strings.Contains(got, "available_subagents") {
+		t.Fatalf("空正文不该加分节:\n%s", got)
+	}
+	if err := b.AddSubAgents("<available_subagents>\n- reviewer: 只读代码审查\n</available_subagents>"); err != nil {
+		t.Fatalf("AddSubAgents: %v", err)
+	}
+	got := b.Render()
+	if !strings.Contains(got, "available_subagents") {
+		t.Fatalf("应渲染子代理清单:\n%s", got)
+	}
+	// 位置：MCP 服务器摘要之后、工具指引之前。
+	if err := b.Add(Section{Name: "tool:read", Order: OrderToolBase, Text: "工具指引正文"}); err != nil {
+		t.Fatalf("加分节: %v", err)
+	}
+	got = b.Render()
+	iSub := strings.Index(got, "available_subagents")
+	iTool := strings.Index(got, "工具指引正文")
+	if iSub < 0 || iTool < 0 || iSub > iTool {
+		t.Fatalf("子代理清单该在工具指引之前:\n%s", got)
+	}
+	// 重名即报错（装配错误当场暴露）。
+	if err := b.AddSubAgents("再来一次"); err == nil {
+		t.Fatal("重复注入应报错")
+	}
+}
+
 func TestAddToolGuidelines(t *testing.T) {
 	reg := tool.NewRegistry()
 	mustRegister := func(ts ...tool.Tool) {

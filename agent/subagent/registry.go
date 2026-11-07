@@ -22,8 +22,14 @@ import (
 // 子代理工具面不经 tool_search（2026-11-06 拍板 ⑥），子代理只继承父
 // **当前**能用的工具。
 //
+// **恒定扣掉两类工具**（子代理的隔离规则，拍板 ⑤⑥）：
+//   - `subagent__*`：深度 0——子代理不能再委派；
+//   - `tool_search`：给了它，子代理就能自己激活 deferred 工具，工具面
+//     就不再是交集。
+//
 // 第二个返回值是**被挡掉的声明白名单项**（诊断用：告诉宿主「你声明的
-// shell 被宿主策略挡了」）；声明白名单为空时没有挡掉项。
+// shell 被宿主策略挡了」）；声明白名单为空时只有上面两类扣掉项会出现在
+// 挡掉清单里（它们本来就不该被子代理继承）。
 func ChildRegistry(parent *tool.Registry, declared []string) (*tool.Registry, []string) {
 	child := tool.NewRegistry()
 	if parent == nil {
@@ -32,8 +38,15 @@ func ChildRegistry(parent *tool.Registry, declared []string) (*tool.Registry, []
 
 	visible := parent.Visible()
 	allowed := ResolveTools(declared, visible)
-	allowedSet := toSet(allowed)
+	kept := make([]string, 0, len(allowed))
 	for _, name := range allowed {
+		if excludedFromChild(name) {
+			continue
+		}
+		kept = append(kept, name)
+	}
+	keptSet := toSet(kept)
+	for _, name := range kept {
 		t, ok := parent.Get(name)
 		if !ok {
 			continue
@@ -49,9 +62,17 @@ func ChildRegistry(parent *tool.Registry, declared []string) (*tool.Registry, []
 		if name == "" {
 			continue
 		}
-		if _, ok := allowedSet[name]; !ok {
+		if _, ok := keptSet[name]; !ok {
 			dropped = append(dropped, name)
 		}
 	}
 	return child, dropped
+}
+
+// excludedFromChild 判断工具是否**恒定**排除在子代理工具面之外。
+//
+// 深度 0（子代理不能再委派）与「工具面不经 tool_search」是拍板结论，
+// 落在造子注册表的地方——谁造子注册表都绕不过去。
+func excludedFromChild(name string) bool {
+	return strings.HasPrefix(name, ToolPrefix) || name == "tool_search"
 }
