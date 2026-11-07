@@ -162,6 +162,17 @@ func TestInterruptedTurnDerivedFromLog(t *testing.T) {
 	if got := s.InterruptedTurn(); got != 2 {
 		t.Fatalf("3 结束后应回到 2，got %d", got)
 	}
+	// 以 interrupted 收尾的轮次**仍然算被中断**（重开会话时 Restore 合成的
+	// 就是这种收尾——那一轮还挂着悬空调用）。
+	mustAppend(t, s, Event{Kind: EventTurnEnd, Turn: 2, Reason: "interrupted"})
+	if got := s.InterruptedTurn(); got != 2 {
+		t.Fatalf("interrupted 收尾的轮次仍算被中断，got %d", got)
+	}
+	// 正常收尾的轮次不算。
+	mustAppend(t, s, Event{Kind: EventTurnEnd, Turn: 2, Reason: "completed"})
+	if got := s.InterruptedTurn(); got != 0 {
+		t.Fatalf("正常收尾的轮次不算被中断，got %d", got)
+	}
 }
 
 // 派生是纯读：不写日志、不改状态。
