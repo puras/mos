@@ -130,3 +130,103 @@ func TestServiceAuditFailureAborts(t *testing.T) {
 		t.Fatal("审计写失败就不该问人")
 	}
 }
+
+// 先验命中 → 复用决定、不问人；记新 id + reusedFrom（可审计）。
+func TestServicePriorHitReusesDecision(t *testing.T) {
+	ans := &fakeAnswerer{out: Rejected}
+	aud := &fakeAudit{}
+	svc := NewService(ans, aud)
+	svc.SetPrior(func(ctx context.Context, req Request) (PriorDecision, bool) {
+		if req.Turn != 3 || req.CallID != "c1" {
+			return PriorDecision{}, false
+		}
+		return PriorDecision{Outcome: Approved, ReusedFrom: "ap-old"}, true
+	})
+
+	out, err := svc.Decide(context.Background(), Request{ToolName: "shell", CallID: "c1", Turn: 3})
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if out != Approved {
+		t.Fatalf("outcome = %v, want Approved（复用先验）", out)
+	}
+	if len(ans.seen) != 0 {
+		t.Fatalf("命中先验就不该问人，asked %d 次", len(ans.seen))
+	}
+	// 复用也要记审计：新 id + reusedFrom 指回被复用的那次决定。
+	if len(aud.asked) != 1 || len(aud.decided) != 1 {
+		t.Fatalf("审计应各记一条: asked=%d decided=%d", len(aud.asked), len(aud.decided))
+	}
+	if aud.asked[0].ID == "" || aud.asked[0].ID == "ap-old" {
+		t.Fatalf("复用应记新 id，got %q", aud.asked[0].ID)
+	}
+	if aud.asked[0].ReusedFrom != "ap-old" {
+		t.Fatalf("复用应指回原决定: %+v", aud.asked[0])
+	}
+	if aud.decided[0] != Approved {
+		t.Fatalf("审计结果 = %v", aud.decided[0])
+	}
+}
+
+// 先验没命中 → 照常问人。
+func TestServicePriorMissAsksNormally(t *testing.T) {
+	ans := &fakeAnswerer{out: Approved}
+	aud := &fakeAudit{}
+	svc := NewService(ans, aud)
+	svc.SetPrior(func(ctx context.Context, req Request) (PriorDecision, bool) {
+		return PriorDecision{}, false
+	})
+
+	out, err := svc.Decide(context.Background(), Request{ToolName: "shell", CallID: "c1", Turn: 3})
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if out != Approved {
+		t.Fatalf("outcome = %v", out)
+	}
+	if len(ans.seen) != 1 {
+		t.Fatalf("没命中就该问人，asked %d 次", len(ans.seen))
+	}
+	if aud.asked[0].ReusedFrom != "" {
+		t.Fatalf("不是复用就不该带 reusedFrom: %+v", aud.asked[0])
+	}
+}
+
+// 先验返回的不是「真决定」（撤回 / 无人应答）→ 不复用，照常问人。
+func TestServicePriorNonDecisionFallsBackToAsking(t *testing.T) {
+	for _, prior := range []Outcome{Cancelled, Unavailable} {
+		ans := &fakeAnswerer{out: Approved}
+		aud := &fakeAudit{}
+		svc := NewService(ans, aud)
+		svc.SetPrior(func(ctx context.Context, req Request) (PriorDecision, bool) {
+			return PriorDecision{Outcome: prior, ReusedFrom: "ap-old"}, true
+		})
+
+		out, err := svc.Decide(context.Background(), Request{ToolName: "shell", CallID: "c1", Turn: 3})
+		if err != nil {
+			t.Fatalf("Decide: %v", err)
+		}
+		if out != Approved {
+			t.Fatalf("outcome = %v, want Approved（应回落问人）", out)
+		}
+		if len(ans.seen) != 1 {
+			t.Fatalf("先验 outcome=%v 不该复用，asked %d 次", prior, len(ans.seen))
+		}
+		if aud.asked[0].ReusedFrom != "" {
+			t.Fatalf("没复用就不该带 reusedFrom: %+v", aud.asked[0])
+		}
+	}
+}
+
+// 结果名解析（与 Outcome.String 互逆）。
+func TestParseOutcome(t *testing.T) {
+	for _, o := range []Outcome{Approved, Rejected, Cancelled, Unavailable} {
+		got, ok := ParseOutcome(o.String())
+		if !ok || got != o {
+			t.Fatalf("%q 解析回 %v ok=%v", o.String(), got, ok)
+		}
+	}
+	if _, ok := ParseOutcome("approved-ish"); ok {
+		t.Fatal("不认识的结果名不该解析成功")
+	}
+}

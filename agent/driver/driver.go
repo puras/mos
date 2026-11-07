@@ -67,6 +67,15 @@ type RunContext struct {
 	// 从另一个进程收决定都行。nil 时，pre-execute 的「需人工确认」降级为
 	// 拒绝（fail-closed）。
 	Answerer approval.Answerer
+	// PriorApproval 是「先验决定查询」（可选，nil = 不查）。
+	//
+	// 命中时审批**不再问人**，直接复用同一轮同一次调用上已有的决定
+	//（FR-G3 / S9.1）。匹配键是 `(Turn, CallID)`——每次审批都签发新 id，
+	// 拿 id 匹配等于永远匹配不上。
+	//
+	// 实现方由**装配层**注入（框架层不绑 session：治理规则 5）；sess 由驱动
+	// 传入（决定查询要对着**本会话**的日志查）。
+	PriorApproval func(ctx context.Context, sess *session.Session, req approval.Request) (approval.PriorDecision, bool)
 	// Compactor 是上下文压缩器（可选，nil = 不压缩）。每次决策前，超过
 	// token 预算（contextWindow - reserveTokens，PI 同款）时：从投影视图
 	// 定切割点（永不落在 tool 结果上）→ 模型生成结构化摘要 → 摘要作为

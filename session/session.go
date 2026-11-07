@@ -89,6 +89,12 @@ type Approval struct {
 	// Outcome 是审批结果（decided 才有）：approved / rejected / cancelled /
 	// unavailable。
 	Outcome string `json:"outcome,omitempty"`
+	// ReusedFrom 是「本次结果复用了哪一次审批决定」（S9.1 先验复用）。
+	//
+	// 复用时**记新 id**（事件流里每次审批身份独立、可审计），载荷用这个
+	// 字段指回被复用的那次决定的 id——审计看得出「这次没重新问人」。
+	// 空 = 不是复用（正常新问的一次）。
+	ReusedFrom string `json:"reusedFrom,omitempty"`
 }
 
 // SkillEvent 是技能事件载荷（skill/activate 与 skill/allowed-tools-mismatch）。

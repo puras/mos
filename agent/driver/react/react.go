@@ -185,7 +185,15 @@ func (d *Driver) Run(ctx context.Context, rt *driver.RunContext, sess *session.S
 		// 的「未装配审批通道 → 拒绝」分支才真的走得到，拒绝理由里也带着
 		// "为什么要人工确认"。
 		if rt.Answerer != nil {
-			opts.Approver = approval.NewService(rt.Answerer, sessionAudit{sess: sess})
+			svc := approval.NewService(rt.Answerer, sessionAudit{sess: sess})
+			// 先验决定（FR-G3 / S9.1）：命中就复用，不再问人。
+			// 实现方在装配层（它才知道怎么从会话日志派生）。
+			if rt.PriorApproval != nil {
+				svc.SetPrior(func(ctx context.Context, req approval.Request) (approval.PriorDecision, bool) {
+					return rt.PriorApproval(ctx, sess, req)
+				})
+			}
+			opts.Approver = svc
 		}
 		outcomes := execpath.ExecuteBatch(ctx, rt.Tools, action.ToolCalls, opts)
 		terminated := false
@@ -304,6 +312,7 @@ func (a sessionAudit) Asked(req approval.Request) error {
 		Kind: session.EventApprovalAsked, Turn: req.Turn,
 		Approval: &session.Approval{
 			ID: req.ID, ToolName: req.ToolName, CallID: req.CallID, Reason: req.Reason,
+			ReusedFrom: req.ReusedFrom,
 		},
 	})
 	return err
@@ -315,6 +324,7 @@ func (a sessionAudit) Decided(req approval.Request, out approval.Outcome) error 
 		Kind: session.EventApprovalDecided, Turn: req.Turn,
 		Approval: &session.Approval{
 			ID: req.ID, ToolName: req.ToolName, CallID: req.CallID, Outcome: out.String(),
+			ReusedFrom: req.ReusedFrom,
 		},
 	})
 	return err

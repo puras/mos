@@ -832,6 +832,9 @@ func (a *Agent) run(ctx context.Context, sess *session.Session, input string) (s
 	rt := *a.rt
 	rt.Concurrency = int(a.concurrency.Load())
 	rt.MaxDecisionRounds = int(a.maxRounds.Load())
+	// 审批先验（FR-G3 / S9.1）：同一轮同一次调用上已有人批过、且那次调用
+	// 还悬空 → 复用决定，不再问人（否则每次恢复都要重新问一遍）。
+	rt.PriorApproval = approvalPrior(sess)
 	return a.driver.Run(ctx, &rt, sess, input)
 }
 
