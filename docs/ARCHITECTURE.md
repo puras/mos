@@ -1175,7 +1175,7 @@ mos-web 是本仓库的宿主实现之一。核查结论：**它已覆盖什么�
 | **S8.5-A** ✅ | `agent/subagent` 包（`Definition` / `Catalog` / `Render` / `Runner` / `Result`）+ 目录发现与 frontmatter 解析（复用 `agent/skill` 的形态）+ 清单渲染 | 单测：frontmatter 解析、名字 / 描述校验（同 Skills 的 kebab-case 口径）、预算降级、拆分判据诊断（**2026-11-07 落地**） |
 | **S8.5-B** ✅ | 子代理 = 一个 `tool.Tool`：白名单子注册表（交集口径）+ 固定结构回执 + 超时与取消（**2026-11-07 落地**） | 单测：白名单交集（声明放大无效）、不可见工具不进子注册表、子代理失败 → `status: error` 正常结果、父轮次取消 → 子代理跟着取消 |
 | **S8.5-C** ✅ | 装配层接线（`Config.SubAgents` + Runner 实现 + 清单进静态提示词 + `Describe()` 快照）+ 模型覆盖与缺目录降级（**2026-11-07 落地**） | E2E：模型调子代理 → 子代理用受限工具面干活 → 结构化回执回填父上下文 → 父模型看得见 findings；未装子代理时零行为变化 |
-| **S8.5-D** | 文档同步（README / ARCHITECTURE / PRD）+ `examples/subagent` | 三处状态同步；示例可跑 |
+| **S8.5-D** ✅ | 文档同步（README / ARCHITECTURE / PRD）+ `examples/subagent`（**2026-11-07 落地**） | 三处状态同步；示例可跑 |
 
 **自创点与风险登记**
 
@@ -1230,7 +1230,7 @@ mos-web 是本仓库的宿主实现之一。核查结论：**它已覆盖什么�
 | S8.5-A `agent/subagent` 包 | ✅（2026-11-07：`Definition` / `Catalog` / `Render` / `Runner` / `Result` + `ResolveTools` / `CheckModel` / `SplitDiagnostic` 落地；装配层接线待做） |
 | S8.5-B 工具形态与执行体 | ✅（2026-11-07：`tool.Tool` 封装（`subagent__<name>`）+ `ChildRegistry` 白名单交集 + 固定结构回执 + 工具级超时与取消透传落地；「独立子会话」改由 S8.5-C 装配层落地，见切片口径修正） |
 | S8.5-C 装配层接线 | ✅（2026-11-07：`Config.SubAgents` + 默认 Runner（独立子会话 + 白名单子注册表 + 模型覆盖）+ 清单进静态提示词（`<available_subagents>`）+ `Describe()` 快照 + 模型覆盖装配期校验落地） |
-| S8.5-D 文档与示例 | ⬜ |
+| S8.5-D 文档与示例 | ✅（2026-11-07：README / ARCHITECTURE / PRD 状态同步 + `examples/subagent`（两个子代理声明 + 可跑示例）） |
 
 ## 4. 治理规则（防再膨胀）
 

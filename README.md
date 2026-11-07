@@ -142,7 +142,7 @@ type SearchArgs struct {
 - [docs/s8.1-skills.md](docs/s8.1-skills.md) — S8.1 Skills 重做一页说明（M3a / FR-D11）
 - [docs/s8.2-mcp.md](docs/s8.2-mcp.md) — S8.2/S8.3 MCP 接入一页说明（FR-D8；官方 SDK / 协议基线 2026-07-28）
 - [docs/s8.4-usability.md](docs/s8.4-usability.md) — S8.4 可用性优化一页说明（A 服务器摘要 ✅ / B 认证可诊断 ✅ / C 技能正文现读 + 显式 reload ✅ / D `allowed-tools` 求交诊断 ✅ / E MCP 资源工具 ✅）
-- [docs/s8.5-subagent.md](docs/s8.5-subagent.md) — S8.5 SubAgent（FR-D3）一页说明（**设计分析已出 + 六条拍板已定**：agents-as-tools + 声明式定义；实现待做）
+- [docs/s8.5-subagent.md](docs/s8.5-subagent.md) — S8.5 SubAgent（FR-D3）一页说明（**设计分析已出 + 六条拍板已定**：agents-as-tools + 声明式定义；A/B/C 已落地，实现待做 S8.5-D）
 - 旧实现与旧文档考古：`main_bak1015` 分支（如 `git show main_bak1015:README.md`）
 
 ## 示例
@@ -154,13 +154,14 @@ type SearchArgs struct {
 | [examples/agents](examples/agents/) | 多 Agent 协作：拆解 / 执行 / 验收三角色 + 任务列表驱动 |
 | [examples/mcp](examples/mcp/) | MCP 接入：连一台服务器、工具经 `tool_search` 搜到才进清单、暴露档与连接方式怎么换 |
 | [examples/skills](examples/skills/) | 技能：目录即授权边界、清单进提示词而正文现读、`/技能名` 手势展开 |
+| [examples/subagent](examples/subagent/) | 子代理：子代理目录即声明源、每个子代理是一个 `subagent__<名字>` 工具、白名单收窄的工具面、独立子会话与固定结构回执 |
 
 ## 路线图
 
 - ✅ **已交付**：统一 LLM 接入、工具系统、ReAct 循环、执行通道、安全纵深、上下文工程、装配层、联网工具、工具规模化（M2.10）
 - ✅ **R（发布准备，P0）**：协议层脱离本地 replace，外部工程 `go get` 可构建（v0.1.0 已发布）
 - ⬜ **挂起-恢复**（FR-G3，2026-11-06 重裁）：**「日志即 checkpoint」**——不另设 checkpoint 文件、不建 `agent/checkpoint` / `agent/handle` 包；从会话日志派生未决审批与悬空调用，**宿主显式指示后**续跑那一次调用（审批决定同一轮内复用，不重复问人）。G4 的另一半，M4「可恢复运行目录」的前置——见 [docs/PRD.md](docs/PRD.md) FR-G3
-- ⬜ **M3** 多智能体：SubAgent（agents-as-tools）、AgentTeam、并行 DAG；其中 **S8 预切片**：Skills 重做 ✅（S8.1，2026-11-04）→ MCP 客户端 + 装配 ✅（S8.2 / S8.3，2026-11-04，官方 SDK）→ **S8.4 可用性优化** ✅（A 服务器摘要、B 认证可诊断 + TokenProvider、C 技能正文现读 + 显式 reload、D `allowed-tools` 求交诊断、E MCP 资源工具，2026-11-04 全部落地）→ SubAgent（先 MCP 后 SubAgent）：**设计分析已出 + 六条拍板已定**（2026-11-06，PI/DSH 对账见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §3.18，一页说明见 [docs/s8.5-subagent.md](docs/s8.5-subagent.md)；Skills / MCP 的对账见 §3.16），实现待做（S8.5-A/B/C/D）
+- ⬜ **M3** 多智能体：SubAgent（agents-as-tools）、AgentTeam、并行 DAG；其中 **S8 预切片**：Skills 重做 ✅（S8.1，2026-11-04）→ MCP 客户端 + 装配 ✅（S8.2 / S8.3，2026-11-04，官方 SDK）→ **S8.4 可用性优化** ✅（A 服务器摘要、B 认证可诊断 + TokenProvider、C 技能正文现读 + 显式 reload、D `allowed-tools` 求交诊断、E MCP 资源工具，2026-11-04 全部落地）→ SubAgent（先 MCP 后 SubAgent）：**设计分析已出 + 六条拍板已定**（2026-11-06，PI/DSH 对账见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §3.18，一页说明见 [docs/s8.5-subagent.md](docs/s8.5-subagent.md)；Skills / MCP 的对账见 §3.16）；**S8.5-A/B/C/D 已落地**（2026-11-07：声明与接缝 → 工具形态与白名单子注册表 → 装配层接线（独立子会话 + 模型覆盖）→ 文档与示例）
 - ⬜ **M4** 生产化：Docker 强隔离、模型分级路由、评估与监控、可恢复运行目录
 - ⬜ **M5** 自我进化（实验性）
 
