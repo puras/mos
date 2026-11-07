@@ -109,6 +109,7 @@ type SearchArgs struct {
 - 消息投影确定性可重放；工具调用与结果按 CallID 配对，投影对服务商永远合法；
 - `session.Open(dir, id)` 一行建/恢复；`sess.TotalUsage()` 给出跨轮累计用量。
 - **取消原因可分辨**：轮次被取消时 `turn/end.error` 与返回错误写明**原因**（宿主用 `context.WithCancelCause` 给，或用 `mos.Agent.RunWithCause(ctx, sess, input, cause)` 兜底）——宿主一眼能分清「用户点了停止」「超时中止」「进程退出」，不是一个分不清的裸 `context canceled`；原因没给就仍是裸的（框架不猜）。
+- **空回复不当成完成**：模型这一轮**既无正文也无工具调用**（推理模型把「下一步要做什么」写进思维链就收手的典型产物）→ 本轮以 `turn/end{reason:"error"}` 收尾并返回 `react.ErrNoAnswer`（宿主可 `errors.Is` 认；详情写明「只有思维链 / finish_reason」），**不记成 completed**——那种失败在日志里没有错误、在界面上一切正常，最难排查。事实照旧留痕（那一轮的 assistant 事件带思维链与用量）；空回复不进模型历史（部分厂商拒收「既无 content 又无 tool_calls」的 assistant 消息）。
 
 ### 上下文工程
 

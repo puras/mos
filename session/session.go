@@ -32,6 +32,7 @@ package session
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -438,6 +439,15 @@ func projectSeq(events []Event) []SeqMessage {
 			out = append(out, SeqMessage{Seq: ev.Seq, Message: llm.Message{Role: llm.RoleUser, Content: ev.Text}})
 		case EventAssistant:
 			flush()
+			// 空回复不进投影：既无正文也无工具调用（推理模型把「下一步要做什么」
+			// 写进思维链就收手的典型产物）——投给模型的历史里留着它，部分厂商
+			// 会拒收「既无 content 也无 tool_calls」的 assistant 消息（PI 同款
+			// 跳过：packages/ai/src/api/openai-completions.ts 的 "Skip assistant
+			// messages that have no content and no tool calls"）。日志不动：
+			// 那条 assistant 事件是发生过的事实（思维链与用量都在里面）。
+			if strings.TrimSpace(ev.Text) == "" && len(ev.ToolCalls) == 0 {
+				continue
+			}
 			lastAssistantSeq = ev.Seq
 			out = append(out, SeqMessage{Seq: ev.Seq, Message: llm.Message{
 				Role:             llm.RoleAssistant,

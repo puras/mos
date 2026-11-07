@@ -35,6 +35,18 @@ var ErrToolsUnsupported = errors.New("react: 模型请求工具调用，但 RunC
 // 空转应由连续相同调用的提醒（advisory）打断，而不是烧到上限。
 var ErrMaxDecisionRounds = errors.New("react: 单轮决策次数超出上限（工具可能在空转）")
 
+// ErrNoAnswer 表示模型这一轮**没有给出可交付的答复**：既无正文，也无工具调用。
+//
+// 推理模型（DeepSeek-R1 一类）常把「下一步要做什么」写进思维链就收手——正文
+// 空、工具调用也空。这**不是**一次正常完成：判据不能只看「有没有工具调用」，
+// 还要看正文是否为空。fail-closed：宁可报错、让宿主提示人接手（发「继续」
+// 还是换模型），也不把「静默的空回复」记成 completed——那种失败在日志里
+// 没有错误、在界面上一切正常，是最难排查的一种。
+//
+// 事实照旧留痕：那一轮的 assistant 事件（思维链 + 用量）已经落库，宿主能
+// 看到模型确实说过什么；只是这一轮**以失败收尾**，不冒充完成。
+var ErrNoAnswer = errors.New("react: 模型没有给出最终答复")
+
 const (
 	// repeatRemindAt 与 repeatRemindEvery 控制连续相同调用的提醒节奏：
 	// 第 3 次起提醒，之后每 3 次再提一次（advisory，不 veto——DSH 的
@@ -156,6 +168,13 @@ func (d *Driver) Run(ctx context.Context, rt *driver.RunContext, sess *session.S
 
 		// 无工具调用 = 产出最终作答，收尾
 		if !action.HasToolCalls() {
+			// fail-closed：**空回复不是「完成」**。正文空（只有思维链）时若照旧
+			// 记 completed，宿主与用户都以为这一轮正常结束——实测 mos-web 的
+			// 83 个会话里有 12 轮如此，且日志里查不到任何错误。输出被截断
+			// （finish_reason=length）把正文切光时同样落在这里，一并拦下。
+			if blankAnswer(action) {
+				return "", d.abort(ctx, sess, turn, noAnswerError(action))
+			}
 			if _, err := sess.Append(session.Event{Kind: session.EventTurnEnd, Turn: turn, Reason: "completed"}); err != nil {
 				return "", err
 			}
@@ -280,6 +299,29 @@ func terminateDetail(outcomes []execpath.Outcome) string {
 		}
 	}
 	return ""
+}
+
+// blankAnswer 判断这次决策「什么也没说」：既无正文，也无工具调用。
+//
+// 空白正文按没有正文算（模型只吐了空白字符同样不算作答）。
+func blankAnswer(a planner.Action) bool {
+	return strings.TrimSpace(a.Content) == "" && !a.HasToolCalls()
+}
+
+// noAnswerError 构造「模型没有给出最终答复」的错误：分类（ErrNoAnswer）+
+// 可读详情。详情带上**能帮人判断下一步**的三样：有没有思维链、结束原因
+// （length = 输出被截断）、有没有工具调用——宿主据此提示「发继续」还是
+// 「换模型」，而不是只显示一句「失败了」。
+func noAnswerError(a planner.Action) error {
+	var detail strings.Builder
+	detail.WriteString("响应既无正文也无工具调用")
+	if a.ReasoningContent != "" {
+		detail.WriteString("（只有思维链）")
+	}
+	if a.FinishReason != "" {
+		fmt.Fprintf(&detail, "；finish_reason=%s", a.FinishReason)
+	}
+	return fmt.Errorf("%w: %s", ErrNoAnswer, detail.String())
 }
 
 // truncatedFinish 判断停止原因是否意味着"输出被截断"。
