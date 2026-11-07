@@ -138,6 +138,7 @@ type SearchArgs struct {
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 目标架构与不变式（怎么立），含每个子系统契约
 - [docs/tutorial.html](docs/tutorial.html) — 从零上手教程（可复制可编译）
 - [docs/release-v0.1.0.md](docs/release-v0.1.0.md) — v0.1.0 发布说明（首个公开版本）
+- [docs/release-v0.2.0.md](docs/release-v0.2.0.md) — v0.2.0 发布说明（Skills 与 MCP 接入；含修正清单与迁移提示）
 - [docs/s8.1-skills.md](docs/s8.1-skills.md) — S8.1 Skills 重做一页说明（M3a / FR-D11）
 - [docs/s8.2-mcp.md](docs/s8.2-mcp.md) — S8.2/S8.3 MCP 接入一页说明（FR-D8；官方 SDK / 协议基线 2026-07-28）
 - [docs/s8.4-usability.md](docs/s8.4-usability.md) — S8.4 可用性优化一页说明（A 服务器摘要 ✅ / B 认证可诊断 ✅ / C 技能正文现读 + 显式 reload ✅ / D `allowed-tools` 求交诊断 ✅ / E MCP 资源工具 ✅）
