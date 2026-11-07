@@ -185,6 +185,34 @@ turn/start → user → (assistant → tool/call* → tool/result*)* → assista
 - `Session.TotalUsage()`：会话累计用量（派生值）。
 - 框架配置（模型对象、工具集、策略）**不序列化**——产品层自己持有并重建。
 
+### 3.3 挂起与续跑契约（FR-G3）
+
+**前提**：会话日志是**权威状态**，不另设 checkpoint 文件。挂起的现场一律从
+日志**派生**（纯读，不改日志、不写文件）：
+
+| 接口 | 回答什么 |
+| --- | --- |
+| `Session.PendingApprovals() []session.Approval` | 哪些审批还没人回答（按 id 配对 `approval/asked` 与 `approval/decided`） |
+| `Session.ApprovalOutcome(id string) (string, bool)` | 某个审批 id 的结论（`approved` / `rejected` / …） |
+| `Session.ApprovalDecision(turn int, callID string) (session.Approval, bool)` | **同一轮、同一调用**的已决审批（匹配键是 `(Turn, CallID)`，不是每次新签发的审批 id） |
+| `Session.HangingCalls() []session.HangingCall` | 发了 `tool/call` 却还没有 `tool/result` 的调用 |
+| `Session.InterruptedTurn() int` | 最后一个被中断的轮次号（`turn/end{reason:"interrupted"}` 也算被中断；正常收尾的轮次不算） |
+
+**续跑由宿主显式发起**：`Agent.Resume(ctx, sess, mos.ResumeOptions{Turn, Calls})`。
+框架**不会自动**拾起挂起轮次——默认只报告，要不要续由宿主决定。
+
+- `Turn == 0`：自动选最后一个被中断的轮次；`Calls` 为空：续该轮全部悬空调用；
+  `Calls` 非空：只续点名的调用，其余继续悬空。
+- 续跑**沿用原轮次号**、原样重放日志里的调用载荷；**不回写 `tool/call`**，
+  只补真实的 `tool/result`，然后继续模型循环并正常写 `turn/end`。
+- 无可续内容 → 明确报错（`react.ErrNothingToResume`），那一轮**保持挂起**：
+  「收尾」会抹掉尚欠调用的日志事实。
+- **可能重复外部副作用**：续跑会把那次调用**再执行一遍**（如 shell）。框架不猜
+  「是否已经执行过」——宿主要按幂等设计自己的工具，或在续跑前先核对现场。
+- **审批决定可复用**：同一轮同一调用已有 `approved` / `rejected` 时，续跑**不再问人**；
+  但仍写一对新的 `approval/asked` / `approval/decided`（**新 id**，`reusedFrom`
+  指回原决定）。`cancelled` / `unavailable` 不是人的决定，**不复用**。
+
 ---
 
 ## 4. 权威快照 vs transient 事件（硬约束）
@@ -209,6 +237,7 @@ turn/start → user → (assistant → tool/call* → tool/result*)* → assista
 - **一个 `Session` 同一时刻只允许一个 `Run`**（`Session.Append` 内部加锁仅防误用，
   不承载多写者语义）。
   产品层收到"该会话已有运行"时应**拒绝**（HTTP 409），不要排队、不要并发跑。
+  **续跑（`Agent.Resume`）也是一次 Run**——同一会话同时只能有一个正常轮或续跑。
 - `driver.Agent` 无运行期可变状态，**可被多个 goroutine 并发复用**（不同 Session）。
 - `tool.Registry` 线程安全。
 - 审批的 `Answerer.Decide` 是**阻塞式**的：驱动线程等一个人工决定。
@@ -236,6 +265,11 @@ turn/start → user → (assistant → tool/call* → tool/result*)* → assista
   用同一个 id 配对）。
 - 拒绝理由回填给模型时，框架已带好"不许绕"的语义（模型该停下解释，
   而不是拆解命令绕过）。
+- **续跑时的先验复用**：同一轮同一调用若已有人的决定（`approved` / `rejected`），
+  框架**不再问人**——但仍会写一对新的 `approval/asked` / `approval/decided`
+  （新 id + `reusedFrom` 指回原决定），所以审计链完整。
+  产品层**不得**把「复用」当成「预批准」：被复用的只有**已经发生过的那一次决定**，
+  换个轮次、换个调用都不算数（匹配键是 `(Turn, CallID)`）。
 
 ---
 
