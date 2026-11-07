@@ -115,6 +115,36 @@ func (s *Session) ApprovalDecision(turn int, callID string) (Approval, bool) {
 	return out, found
 }
 
+// InterruptedTurn 返回「被中断的那一轮」（有 `turn/start` 无 `turn/end` 的
+// 最后一轮）。0 = 没有被中断的轮次。
+//
+// 续跑要沿用**同一轮**的轮次号：审批决定的复用键是 `(Turn, CallID)`，轮次号
+// 一变就匹配不上（整轮重跑必然重新问人——这是设计如此，不是缺陷）。
+func (s *Session) InterruptedTurn() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	started := make(map[int]bool, 4)
+	ended := make(map[int]bool, 4)
+	for i := range s.events {
+		ev := &s.events[i]
+		switch ev.Kind {
+		case EventTurnStart:
+			started[ev.Turn] = true
+		case EventTurnEnd:
+			ended[ev.Turn] = true
+		}
+	}
+	best := 0
+	for turn := range started {
+		if ended[turn] || turn <= best {
+			continue
+		}
+		best = turn
+	}
+	return best
+}
+
 // HangingCalls 返回「声明了但没有结果」的调用（派生：`tool/call` 有、
 // `tool/result` 无，按 CallID 配对）。
 //

@@ -141,6 +141,29 @@ func TestPendingApprovalMatchesHangingCall(t *testing.T) {
 	}
 }
 
+// 被中断的轮次 = 有 turn/start 无 turn/end 的最后一轮。
+func TestInterruptedTurnDerivedFromLog(t *testing.T) {
+	s := New("t", nil)
+	mustAppend(t, s, Event{Kind: EventTurnStart, Turn: 1})
+	mustAppend(t, s, Event{Kind: EventTurnEnd, Turn: 1})
+	if got := s.InterruptedTurn(); got != 0 {
+		t.Fatalf("没有中断的轮次应返回 0，got %d", got)
+	}
+	mustAppend(t, s, Event{Kind: EventTurnStart, Turn: 2})
+	mustAppend(t, s, Event{Kind: EventToolCall, Turn: 2, ToolCall: &llm.ToolCall{ID: "c1", Name: "shell"}})
+	if got := s.InterruptedTurn(); got != 2 {
+		t.Fatalf("中断的轮次应是 2，got %d", got)
+	}
+	mustAppend(t, s, Event{Kind: EventTurnStart, Turn: 3})
+	if got := s.InterruptedTurn(); got != 3 {
+		t.Fatalf("取最后一个未结束的轮次，应是 3，got %d", got)
+	}
+	mustAppend(t, s, Event{Kind: EventTurnEnd, Turn: 3})
+	if got := s.InterruptedTurn(); got != 2 {
+		t.Fatalf("3 结束后应回到 2，got %d", got)
+	}
+}
+
 // 派生是纯读：不写日志、不改状态。
 func TestDerivedReadsDoNotMutateLog(t *testing.T) {
 	s := New("t", nil)
@@ -151,6 +174,7 @@ func TestDerivedReadsDoNotMutateLog(t *testing.T) {
 	s.ApprovalOutcome("a1")
 	s.ApprovalDecision(1, "c1")
 	s.HangingCalls()
+	s.InterruptedTurn()
 
 	if after := len(s.Events()); after != before {
 		t.Fatalf("派生读不该写日志：before=%d after=%d", before, after)

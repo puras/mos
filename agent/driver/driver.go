@@ -26,6 +26,18 @@ type LoopDriver interface {
 	Run(ctx context.Context, rt *RunContext, sess *session.Session, input string) (string, error)
 }
 
+// ResumeOptions 是「续跑」指示（宿主显式给出）。
+//
+// 续跑是**可选能力**（FR-G3 / S9.2）：默认只报告（由宿主看
+// `session.PendingApprovals()` / `session.HangingCalls()`），宿主要续才显式
+// 指示——框架不自动拾起挂起的轮次（fail-closed 取向）。
+type ResumeOptions struct {
+	// Turn 是要续的那一轮（0 = 自动选最后一个被中断的轮次）。
+	Turn int
+	// Calls 是要续的具体调用 id（空 = 那一轮的全部悬空调用）。
+	Calls []string
+}
+
 // RunContext 是驱动共享的运行上下文。
 // 只装「装配期决定、运行期只读」的东西；运行期变化的状态一律进会话日志。
 type RunContext struct {
@@ -76,6 +88,16 @@ type RunContext struct {
 	// 实现方由**装配层**注入（框架层不绑 session：治理规则 5）；sess 由驱动
 	// 传入（决定查询要对着**本会话**的日志查）。
 	PriorApproval func(ctx context.Context, sess *session.Session, req approval.Request) (approval.PriorDecision, bool)
+	// Resume 是「续跑模式」的指示（nil = 正常开新轮）。
+	//
+	// 续跑（FR-G3 / S9.2）：宿主显式指示后，驱动**必须**沿用 Resume.Turn
+	// 那一轮，把该轮的悬空调用接着走完（重走审批 → 执行 → 回填**真实**
+	// tool/result），再继续问模型 → 本轮正常收尾。沿用原轮次号是关键：
+	// 审批决定的复用键是 `(Turn, CallID)`。
+	//
+	// 驱动**不得忽略**它（当普通轮跑 = 宿主要求续跑却开了新轮，最坏的
+	// 结局）；不支持续跑的驱动应报错。
+	Resume *ResumeOptions
 	// Compactor 是上下文压缩器（可选，nil = 不压缩）。每次决策前，超过
 	// token 预算（contextWindow - reserveTokens，PI 同款）时：从投影视图
 	// 定切割点（永不落在 tool 结果上）→ 模型生成结构化摘要 → 摘要作为

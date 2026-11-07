@@ -804,16 +804,7 @@ func (a *Agent) run(ctx context.Context, sess *session.Session, input string) (s
 	//
 	// 状态用**指针**语义：宿主若自己注入了一份，Run 结束后能读到这轮加载过
 	// 哪些技能；没注入就由框架建一份（用完即弃，不跨轮共享）。
-	if a.skills != nil {
-		if skill.StateFrom(ctx) == nil {
-			ctx = skill.WithState(ctx, skill.NewState())
-		}
-		ctx = skill.WithRecorder(ctx, skillRecorder{sess: sess})
-	}
-	// 子代理：父会话挂进 ctx（子会话 id 从它派生，宿主查得到子会话日志）。
-	if a.subagents != nil {
-		ctx = withSubagentParent(ctx, sess)
-	}
+	ctx = a.prepareCtx(ctx, sess)
 	// 服务器说明：一次性注入（每个会话一次）。
 	//
 	// 走 **user 侧**而不是系统提示词：系统提示词是装配期渲染一次的静态内容
@@ -836,6 +827,26 @@ func (a *Agent) run(ctx context.Context, sess *session.Session, input string) (s
 	// 还悬空 → 复用决定，不再问人（否则每次恢复都要重新问一遍）。
 	rt.PriorApproval = approvalPrior(sess)
 	return a.driver.Run(ctx, &rt, sess, input)
+}
+
+// prepareCtx 装每轮要带进上下文的东西（普通轮与续跑共用）。
+//
+// 技能：每轮一份激活状态（ctx 携带）+ 事件记录器（接会话）。
+//
+// 状态用**指针**语义：宿主若自己注入了一份，Run 结束后能读到这轮加载过
+// 哪些技能；没注入就由框架建一份（用完即弃，不跨轮共享）。
+func (a *Agent) prepareCtx(ctx context.Context, sess *session.Session) context.Context {
+	if a.skills != nil {
+		if skill.StateFrom(ctx) == nil {
+			ctx = skill.WithState(ctx, skill.NewState())
+		}
+		ctx = skill.WithRecorder(ctx, skillRecorder{sess: sess})
+	}
+	// 子代理：父会话挂进 ctx（子会话 id 从它派生，宿主查得到子会话日志）。
+	if a.subagents != nil {
+		ctx = withSubagentParent(ctx, sess)
+	}
+	return ctx
 }
 
 // mcpInstructionClaim 是「本会话已注入过服务器说明」的标记（会话级一次性）。

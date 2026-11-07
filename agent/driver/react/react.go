@@ -54,12 +54,32 @@ func New() *Driver { return &Driver{} }
 func (d *Driver) Run(ctx context.Context, rt *driver.RunContext, sess *session.Session, input string) (string, error) {
 	turn := sess.NextTurn()
 
-	// 记录本轮输入（投影即由此带上 user 消息）
-	if _, err := sess.Append(session.Event{Kind: session.EventTurnStart, Turn: turn}); err != nil {
-		return "", err
-	}
-	if _, err := sess.Append(session.Event{Kind: session.EventUser, Turn: turn, Text: input}); err != nil {
-		return "", err
+	if rt.Resume != nil {
+		// **续跑模式**（FR-G3 / S9.2）：沿用被中断的那一轮，不开新轮、不记
+		// 新的 user 消息（那一轮的输入已经在日志里）。先把悬空调用补完
+		// （重走审批 → 执行 → 回填真实 tool/result），再进决策循环。
+		turn = rt.Resume.Turn
+		if turn == 0 {
+			turn = sess.InterruptedTurn()
+		}
+		if turn == 0 {
+			return "", ErrNothingToResume
+		}
+		if err := d.resumeCalls(ctx, rt, sess, turn, rt.Resume.Calls); err != nil {
+			if errors.Is(err, ErrNothingToResume) {
+				// 没有可续的：那一轮**别收尾**（它还挂着，宿主可以稍后续）。
+				return "", err
+			}
+			return "", d.abort(ctx, sess, turn, err)
+		}
+	} else {
+		// 记录本轮输入（投影即由此带上 user 消息）
+		if _, err := sess.Append(session.Event{Kind: session.EventTurnStart, Turn: turn}); err != nil {
+			return "", err
+		}
+		if _, err := sess.Append(session.Event{Kind: session.EventUser, Turn: turn, Text: input}); err != nil {
+			return "", err
+		}
 	}
 
 	var defs []llm.Tool
@@ -174,28 +194,7 @@ func (d *Driver) Run(ctx context.Context, rt *driver.RunContext, sess *session.S
 
 		// 执行统一走 execpath 通道（守卫裁决 / 调度 / 回填顺序的全库唯一语义）；
 		// 驱动只负责把结果落成 tool/result 事件。
-		opts := execpath.Options{
-			Turn:        turn,
-			Guards:      rt.Guards,
-			Hooks:       rt.Hooks,
-			Concurrency: rt.Concurrency,
-		}
-		// 审批通道：宿主注入应答方，框架负责签发 id 与记审计。
-		// **没注入应答方就不装通道**（而不是装一个空的）——这样执行通道那边
-		// 的「未装配审批通道 → 拒绝」分支才真的走得到，拒绝理由里也带着
-		// "为什么要人工确认"。
-		if rt.Answerer != nil {
-			svc := approval.NewService(rt.Answerer, sessionAudit{sess: sess})
-			// 先验决定（FR-G3 / S9.1）：命中就复用，不再问人。
-			// 实现方在装配层（它才知道怎么从会话日志派生）。
-			if rt.PriorApproval != nil {
-				svc.SetPrior(func(ctx context.Context, req approval.Request) (approval.PriorDecision, bool) {
-					return rt.PriorApproval(ctx, sess, req)
-				})
-			}
-			opts.Approver = svc
-		}
-		outcomes := execpath.ExecuteBatch(ctx, rt.Tools, action.ToolCalls, opts)
+		outcomes := execpath.ExecuteBatch(ctx, rt.Tools, action.ToolCalls, execOptions(rt, sess, turn))
 		terminated := false
 		for _, oc := range outcomes {
 			content := oc.Content
