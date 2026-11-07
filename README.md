@@ -158,6 +158,7 @@ type SearchArgs struct {
 | [examples/mcp](examples/mcp/) | MCP 接入：连一台服务器、工具经 `tool_search` 搜到才进清单、暴露档与连接方式怎么换 |
 | [examples/skills](examples/skills/) | 技能：目录即授权边界、清单进提示词而正文现读、`/技能名` 手势展开 |
 | [examples/subagent](examples/subagent/) | 子代理：子代理目录即声明源、每个子代理是一个 `subagent__<名字>` 工具、白名单收窄的工具面、独立子会话与固定结构回执 |
+| [examples/recovery](examples/recovery/) | 挂起-恢复：真进程 kill -9 → 重开会话 → 派生未决审批与悬空调用 → 宿主显式续跑 → 本轮正常收尾（不需要 API Key） |
 
 ## 路线图
 
