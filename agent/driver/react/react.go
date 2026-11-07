@@ -377,6 +377,11 @@ func appendAssistant(sess *session.Session, turn int, action planner.Action) err
 	if action.ReasoningContent != "" {
 		ev.Reasoning = action.ReasoningContent
 	}
+	// 停止原因一并留痕：截断的正文照样交付，但日志要能分出「说完的」与
+	// 「被切开的」（length/max_tokens）。
+	if action.FinishReason != "" {
+		ev.FinishReason = action.FinishReason
+	}
 	if len(action.ToolCalls) > 0 {
 		ev.ToolCalls = action.ToolCalls
 	}

@@ -68,6 +68,28 @@ func TestChatWithToolCall(t *testing.T) {
 	}
 }
 
+// TestChatFinishReasonNonStream：非流式路径也必须带停止原因——
+// 驱动层对「被截断的工具调用」的 fail-closed 认 length/max_tokens，
+// 漏带时那层防线在非流式下等于空转。
+func TestChatFinishReasonNonStream(t *testing.T) {
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"index":0,"message":{"role":"assistant","content":"半句"},
+			"finish_reason":"length"}]}`)
+	})
+	defer srv.Close()
+
+	resp, err := p.Chat(context.Background(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.FinishReason != "length" {
+		t.Fatalf("FinishReason = %q, want length", resp.FinishReason)
+	}
+}
+
 func TestChatStream(t *testing.T) {
 	sse := strings.Join([]string{
 		`data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}`,

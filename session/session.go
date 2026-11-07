@@ -148,20 +148,27 @@ const CompactionSummaryPrefix = "[历史摘要]"
 
 // Event 是日志中的一条记录。Seq 由 Session.Append 统一分配，全局递增从 1 开始。
 // 载荷字段按 Kind 取用：Text（user/assistant）、Reasoning（assistant，思维链）、
-// ToolCalls（assistant）、Usage（assistant，模型调用遥测）、ToolCall（tool/call）、
+// FinishReason（assistant，模型停止原因）、ToolCalls（assistant）、
+// Usage（assistant，模型调用遥测）、ToolCall（tool/call）、
 // ToolResult（tool/result）、Reason 与 Error（turn/end）、Approval（approval/*）。
 type Event struct {
-	Seq        int64          `json:"seq"`
-	Kind       EventKind      `json:"kind"`
-	Turn       int            `json:"turn,omitempty"`
-	Time       time.Time      `json:"time"`
-	Text       string         `json:"text,omitempty"`
-	Reasoning  string         `json:"reasoning,omitempty"`
-	ToolCalls  []llm.ToolCall `json:"toolCalls,omitempty"`
-	ToolCall   *llm.ToolCall  `json:"toolCall,omitempty"`
-	ToolResult *ToolResult    `json:"toolResult,omitempty"`
-	Usage      *llm.Usage     `json:"usage,omitempty"`
-	Reason     string         `json:"reason,omitempty"`
+	Seq       int64     `json:"seq"`
+	Kind      EventKind `json:"kind"`
+	Turn      int       `json:"turn,omitempty"`
+	Time      time.Time `json:"time"`
+	Text      string    `json:"text,omitempty"`
+	Reasoning string    `json:"reasoning,omitempty"`
+	// FinishReason 是模型停止原因（assistant 事件）：openai stop/length/tool_calls；
+	// anthropic end_turn/max_tokens/tool_use；gemini 已转小写。
+	//
+	// 记它是为了让「输出被截断」在日志里可查：截断的正文照样交付给用户，
+	// 但只凭正文分不出「说完的」与「被切开的」——length/max_tokens 即截断。
+	FinishReason string         `json:"finishReason,omitempty"`
+	ToolCalls    []llm.ToolCall `json:"toolCalls,omitempty"`
+	ToolCall     *llm.ToolCall  `json:"toolCall,omitempty"`
+	ToolResult   *ToolResult    `json:"toolResult,omitempty"`
+	Usage        *llm.Usage     `json:"usage,omitempty"`
+	Reason       string         `json:"reason,omitempty"`
 	// Approval 是审批事件载荷（approval/asked 与 approval/decided）。
 	Approval *Approval `json:"approval,omitempty"`
 	// Skill 是技能事件载荷（skill/activate）。

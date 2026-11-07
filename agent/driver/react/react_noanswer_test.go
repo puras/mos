@@ -74,6 +74,11 @@ func TestBlankAnswerFailsClosed(t *testing.T) {
 			if asst.Reasoning != c.act.ReasoningContent {
 				t.Fatalf("思维链应留痕: %+v", asst)
 			}
+			// 停止原因一并留痕：截断的正文照样交付，但日志要能分出「说完的」
+			// 与「被切开的」。
+			if asst.FinishReason != c.act.FinishReason {
+				t.Fatalf("停止原因应留痕: %+v", asst)
+			}
 			if c.act.Usage.TotalTokens > 0 && (asst.Usage == nil || asst.Usage.TotalTokens != c.act.Usage.TotalTokens) {
 				t.Fatalf("用量应留痕: %+v", asst.Usage)
 			}

@@ -37,6 +37,7 @@
   "time": "2026-10-26T08:00:00Z",  // 落盘时刻（UTC，RFC3339）
   "text": "...",                   // user / assistant 的正文
   "reasoning": "...",              // assistant 的思维链（thinking 模式）
+  "finishReason": "stop",          // assistant 的模型停止原因（length/max_tokens = 输出被截断）
   "toolCalls": [                   // assistant 发起的工具调用
     {"id": "call_1", "name": "read", "args": "{\"path\":\"a.txt\"}"}
   ],
@@ -74,6 +75,10 @@
 - `kind` 是事件类型；其余字段按 `kind` 取用，**不适用的字段一律省略**（`omitempty`）。
   产品层解析时**不得假设某字段一定存在**。
 - `time` 是 RFC3339（UTC）。
+- `finishReason` 是**模型停止原因**（只有 `assistant` 事件有，可缺省）：openai
+  `stop/length/tool_calls`、anthropic `end_turn/max_tokens/tool_use`、gemini 已转小写。
+  `length`/`max_tokens` 表示输出被截断——正文照样交付，但日志能分出「说完的」与
+  「被切开的」。
 - `toolCall.args` 与 `toolResult.content` 是**字符串**：前者是模型给的参数 JSON，
   后者是回填给模型的文本（成功时是工具返回值的 JSON 编码，失败时是失败原因）。
 - 事件对象**只增不改**：崩溃恢复只补事件，不回写已有事件（§3.2）。
@@ -85,7 +90,7 @@
 | `turn/start` | `turn` | ✗ | 一轮开始 |
 | `turn/end` | `turn` `reason` `error` | ✗ | 一轮结束；`reason` 是分类，`error` 是详情（只进日志，不进模型投影） |
 | `user` | `turn` `text` | ✓ user | 用户输入 |
-| `assistant` | `turn` `text` `reasoning` `toolCalls` `usage` | ✓ assistant | 模型输出 |
+| `assistant` | `turn` `text` `reasoning` `finishReason` `toolCalls` `usage` | ✓ assistant | 模型输出 |
 | `tool/call` | `turn` `toolCall` | ✗（仅审计） | 工具调用留痕，**含被守卫拦截的调用** |
 | `tool/result` | `turn` `toolResult` | ✓ tool | 工具结果回填（按 `callId` 配对） |
 | `approval/asked` | `turn` `approval` | ✗（仅审计） | 问了人工 |
@@ -94,6 +99,11 @@
 **投影不变式**：assistant 的 `toolCalls` 与随后的 `tool/result` 按 `callId` 成对——
 投给模型的历史始终是合法的（缺 tool 消息会触发服务商报错）。产品层渲染时
 也按 `callId` 配对，别按顺序猜。
+
+**空回复不进投影**：assistant 事件**既无正文也无工具调用**时（推理模型把
+「下一步要做什么」写进思维链就收手的典型产物），该事件**留在日志里**（审计凭据：
+思维链与用量都在里面），但**不投影**给模型——部分厂商拒收「既无 content 又无
+tool_calls」的 assistant 消息。带工具调用的 assistant（正文空）照旧投影。
 
 **目录预算制**：新增一种事件前先删一种。`approval/*` 是 PRD 点名的例外
 （§可观测「approval/* 等事件全量落会话日志」、G4「审批挂起-恢复 E2E」），不走预算制。
@@ -108,6 +118,10 @@ turn/start → user → (assistant → tool/call* → tool/result*)* → assista
 - 任何出错路径都以 `turn/end{reason:"error"}` 收尾，不留孤儿 turn。
 - 人工拒绝**不终止本轮**：模型应停止调工具、改为向用户说明——这需要循环继续一轮。
 - 扩展点请求终止本轮时 `turn/end{reason:"terminated"}`。
+- **模型没给出答复时也是 `error`，不是 `completed`**：既无正文也无工具调用
+  （空回复 / 只有思维链 / 正文被截断切光）→ `turn/end{reason:"error"}`，
+  `error` 写明详情。宿主据此提示人接手（发「继续」还是换模型）——别把这种轮次
+  当成"正常完成"渲染（详见 docs/ARCHITECTURE.md §3.1）。
 
 ### 2.4 用量口径
 
