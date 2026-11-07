@@ -10,10 +10,10 @@ go build ./... && go test ./...
 ```
 
 ```bash
-go get github.com/puras/mos@v0.1.0   # 最新已发布版本
+go get github.com/puras/mos@v0.2.0   # 最新已发布版本
 ```
 
-> `main` 上的开发对应 **v0.2.0**（开发中，尚未发布；发布时才打 `v0.2.0` 标签）。框架版本也有代码常量 `mos.Version`，与发布标签同名；`a.Describe()` 的快照第一行会打印它。
+> `main` 上的开发对应 **v0.3.0**（开发中，尚未发布；发布时才打 `v0.3.0` 标签）。框架版本也有代码常量 `mos.Version`，与发布标签同名；`a.Describe()` 的快照第一行会打印它。
 
 跑一个真实的智能体（`examples/minimal`，十几行装配）：
 
