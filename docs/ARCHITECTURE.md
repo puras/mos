@@ -1081,7 +1081,7 @@ llm.WithRetry(model, llm.RetryPolicy{
 
 | 片 | 内容 | 验收 |
 | --- | --- | --- |
-| **S9.1** | `session` 的三个派生读接口 + `agent/approval` 的注入式先验决定复用（`Prior`）+ `reusedFrom` 载荷字段 | 派生正确：有 asked 无 decided = 未决；有 decided = 已决且**不再问人**；同一 id 配对不串；悬空调用与未决审批能对上；**复用时记新 id 且 `reusedFrom` 可审计** |
+| **S9.1** ✅ | `session` 的三个派生读接口 + `agent/approval` 的注入式先验决定复用（`Prior`）+ `reusedFrom` 载荷字段（**2026-11-07 落地**） | 派生正确：有 asked 无 decided = 未决；有 decided = 已决且**不再问人**；同一 id 配对不串；悬空调用与未决审批能对上；**复用时记新 id 且 `reusedFrom` 可审计** |
 | **S9.2** | 续跑落地（react 驱动：报告状态 → 宿主显式指示 → 续完悬空调用）+ 幂等纪律与边界文档 | 文件类工具重跑不覆盖他人改动（观察门 CAS 拒）；shell 副作用可能重复的**诚实行为**有测试记录；**「不自动续跑」有守护测试**；投影仍满足 `tool/call` 与 `tool/result` 成对 |
 | **S9.3** | E2E 演练：kill -9 → 重开会话 → 看到未决审批与悬空调用 → 宿主指示 → 续完 | PRD FR-G3 验收（措辞已改写）：**kill 后从会话日志恢复续跑 E2E 通过**——「checkpoint」= 会话日志，不是另设的快照文件 |
 
@@ -1096,6 +1096,22 @@ llm.WithRetry(model, llm.RetryPolicy{
 | 恢复不自动发生（宿主显式指定） | 两家都没答案；MoS 偏保守（fail-closed） | 自动化程度低 | 平台层可用 FR-E6 的 run 目录实现自动化，不进 SDK |
 | 恢复 = 从会话日志派生 + 宿主指示才续跑（**不引入 checkpoint 文件与 phase 状态机**） | PI 有完整执行级状态机；MoS 的事实已在日志里，只补「读 + 补」两个动作 | 能力比 PI 窄：不能从任意执行点续，只能续「悬空的那一次调用」 | turn 边界够用；宿主可用「整轮重跑」兜底 |
 | 审批决定复用按 `(Turn, CallID)` 匹配，复用时记**新 id** + `reusedFrom` | 复用必须可审计（不能悄悄顶替一次审批） | 同一轮内若出现重复 callId 会误匹配 | callId 由模型给出、一轮内唯一；`reusedFrom` 让审计看得出这是一次复用 |
+
+**S9.1 落地口径（2026-11-07）**
+
+上面那张设计表里的「三个纯读派生接口」实际落了**四个**——因为先验复用的匹配键是 `(Turn, CallID)`，而 `ApprovalOutcome(id)` 只能按 id 查；再拿 id 匹配等于永远匹配不上（每次审批都签发新 id）。补的那个接口是 `ApprovalDecision(turn, callID)`。
+
+| 项 | 口径 | 理由 |
+| --- | --- | --- |
+| 派生接口 | `PendingApprovals()`（asked 无 decided，按 id 配对）/ `ApprovalOutcome(id)` / `ApprovalDecision(turn, callID)` / `HangingCalls()`（call 无 result，按 CallID 配对） | 两种配对各走各的（id vs CallID），不互相干扰；**纯读**（不写日志、不改状态） |
+| 先验查询签名 | `Prior func(ctx, req) (PriorDecision, bool)`，`PriorDecision{Outcome, ReusedFrom}` | 设计表里的 `(Outcome, bool)` **载不下被复用的那次 id**——而拍板 ⑤ 要求复用时记新 id + `reusedFrom` 指回原决定 → 签名必须带 id |
+| 命中条件 | **两个都满足**才复用：① 日志里有 `(Turn, CallID)` 对应的 `approval/decided`；② 那次调用**仍悬空**（没有 `tool/result`） | ② 是「批准只对本次调用生效」（DSH allowed-once）的护栏：已跑完的调用不借用决定，否则模型换个参数重发同一个 callId 就能白嫖一次批准 |
+| 可复用的结果 | 只有 `approved` / `rejected` | `cancelled`（撤回）与 `unavailable`（无人应答）**不是人的决定**，复用它们等于把「没人答」当成「批过了」 |
+| 复用的审计 | 记一对 `approval/asked` + `approval/decided`（**新 id**），两条载荷都带 `reusedFrom` | 保持「每个决定都有配对的 asked」这条不变式（宿主按事件流对账不会看到孤儿）；`asked` 在这里表示「这次调用进了审批通道」，是不是真问过人由 `reusedFrom` 说 |
+| 胶水在哪 | 装配层（根包 `prior.go`）：把 `session` 的派生读接口包成 `approval.Prior` → `driver.RunContext.PriorApproval` | 治理规则 5：框架层不依赖 session（`agent/approval` 不引 session） |
+| 轮次约束 | 匹配键含 `Turn` → **整轮重跑必然重新问人**（turn 号变了） | 与拍板 ① 一致：复用只在「续跑那一次调用」时成立（S9.2） |
+
+> **现状**：S9.1 只落了**读**与**复用**；「续跑那一次调用」（S9.2）与 kill -9 演练（S9.3）未做。因此当前**没有一个公开入口能把同一轮重新跑起来**——先验复用的价值要等 S9.2 落地才显形（现在只能在同一轮内重复发起同一次调用时命中）。
 
 **拍板结果**（2026-11-06，用户已决：全部按建议执行）
 
@@ -1118,7 +1134,7 @@ llm.WithRetry(model, llm.RetryPolicy{
 | 拍板（恢复语义 / shell 副作用 / 句柄 / 排期 / id 复用 / 自动续跑 / 验收措辞） | ✅（2026-11-06，用户已决：按建议） |
 | PRD FR-G3 重定回填（措辞 + 排期 + 不建 checkpoint/handle 包） | ✅（2026-11-06，本批） |
 | 宿主（mos-web）现状核查 | ✅（2026-11-06，本节文末附注） |
-| S9.1 派生读接口 + 先验决定复用 | ⬜ 未开工 |
+| S9.1 派生读接口 + 先验决定复用 | ✅（2026-11-07：`session` 四个派生读接口 + `approval.Prior` 注入式复用 + `reusedFrom` 载荷落地；口径见下面「S9.1 落地口径」） |
 | S9.2 续跑那一次调用 + 幂等边界 | ⬜ 未开工 |
 | S9.3 kill -9 E2E 演练 | ⬜ 未开工 |
 
