@@ -305,6 +305,40 @@ func TestChatStreamReasoningContent(t *testing.T) {
 	}
 }
 
+// 只发 reasoning 字段的厂商（部分 OpenRouter / 兼容层）：流式路径也要读到
+// 思维链，不能整段丢掉（非流式路径早已回退读 reasoning）。丢掉的表现是
+// 「正文空、思维链也空」——与空回复症状撞在一起。
+func TestChatStreamReasoningFallbackField(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning":"先"}}]}`,
+		`data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning":"再答"},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+	}, "\n\n") + "\n\n"
+
+	p, srv := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse)
+	})
+	defer srv.Close()
+
+	var gotReasoning []string
+	resp, err := p.ChatStream(context.Background(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+	}, func(c llm.StreamChunk) error {
+		gotReasoning = append(gotReasoning, c.Reasoning)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	if resp.Message.ReasoningContent != "先再答" {
+		t.Fatalf("reasoning content = %q", resp.Message.ReasoningContent)
+	}
+	if strings.Join(gotReasoning, "") != "先再答" {
+		t.Fatalf("chunk reasoning = %v", gotReasoning)
+	}
+}
+
 func TestChatStreamUsage(t *testing.T) {
 	sse := strings.Join([]string{
 		`data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}`,

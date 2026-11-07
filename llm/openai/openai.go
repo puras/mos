@@ -460,8 +460,16 @@ func (p *Chat) handleStream(r io.Reader, emit func(llm.StreamChunk) error) (*llm
 			acc.finish = fr
 		}
 		acc.content.WriteString(choice.Delta.Content)
-		acc.reasoning.WriteString(choice.Delta.ReasoningContent)
-		sc := llm.StreamChunk{Delta: choice.Delta.Content, Reasoning: choice.Delta.ReasoningContent, FinishReason: deref(choice.FinishReason)}
+		// 思维链增量：reasoning_content（DeepSeek/Qwen 扩展）优先，reasoning
+		// （部分 OpenRouter / 兼容层用的等价字段）兜底——非流式路径同款
+		// （fromChatMessage）。只读 reasoning_content 的流式路径会把只发
+		// reasoning 的厂商的思维链整段丢掉（表现：正文空、思维链也空）。
+		reasoning := choice.Delta.ReasoningContent
+		if reasoning == "" {
+			reasoning = choice.Delta.Reasoning
+		}
+		acc.reasoning.WriteString(reasoning)
+		sc := llm.StreamChunk{Delta: choice.Delta.Content, Reasoning: reasoning, FinishReason: deref(choice.FinishReason)}
 		if tc := acc.mergeToolCall(choice.Delta.ToolCalls); tc != nil {
 			sc.ToolCall = tc
 		}
