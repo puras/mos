@@ -48,7 +48,7 @@ v0.1.0 交付了「装配一次就能跑」的骨架：统一 LLM 接入、声�
   - `Agent.ExpandSkill(text)` / `ExpandInvocation` **增返回 `error`**：正文读不出时 fail-closed（不再降级成普通消息）
   - `Agent.ReloadSkills()` 增返回 `error`（幂等、全量重扫）
 - **`tool`**：`Registry` 增 `Replace` / `SchemaProvider` / `Visible`（新增 API，既有调用不受影响）
-- **依赖**：直接依赖 3 → 6；`github.com/google/uuid` 不再需要（沙箱路径强制后端换掉了它）；新增官方 MCP SDK v1.8.0 及其传递依赖（`go.sum` 由 4 个模块增至 18 个）
+- **依赖**：直接依赖 3 → 6；`github.com/google/uuid` 不再需要（沙箱路径强制后端换掉了它）；新增官方 MCP SDK v1.8.0 及其传递依赖（`go.sum` 涉及的模块由 4 个增至 18 个；`go list -m all` 为 20——多出的是主模块本身与本地 `replace` 的 `moproto`）
 
 ## 依赖
 
