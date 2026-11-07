@@ -258,7 +258,7 @@ Harness Engineering 四铁律 + Loop Engineering 九杠杆 + Audit Gate 审计�
 | R3 | M3 范围过大（10 项 FR），一次性实施易失控 | 分期 M3a/M3b；逐项按决策判据门控（不满足判据不引入：SubAgent「合同论」、显式图四判据） |
 | R4 | 文档与实现漂移（**已发生两次**：Skills 在 PRD 里一直标 ✅、重建树里却没有；M2.8 的 ✅ 掩盖了 checkpoint / handle 缺口） | 治理规则 1 的闸门靠 FR 登记维持：新包必登记 FR；每次切片合入同步 §4.2 / §4.3 + 顶部更新记录 |
 | R5 | 上下文工程经验参数（窗口默认 128K、预留 16384、保留 20000 token）随模型迭代可能失效 | 补偿面理论：随模型变强复测并主动简化 harness；参数全部可配置（`mos.Config.ContextWindow` / `ReserveTokens` / `KeepRecentTokens`） |
-| R6 | 协议层已独立发布（FR-A1 ✅），但仓库**无 CI**：外部拉取能否构建只靠人工一次验证 | 加 `go build/test` workflow（macOS + Linux；Linux 顺带跑 Landlock 路径） |
+| R6 | 协议层已独立发布（FR-A1 ✅），仓库**已有 CI**（2026-11-07：macOS + Linux 的 `go build` / `go vet` / `go test`，外加 ubuntu 的 `-race`）——外部拉取能否构建由 CI 持续验证，不再只靠人工一次 | CI 跑在**发布出去的依赖**上（`go.mod` 无 `replace`，协议层是独立 module）；沙箱类用例在本机受限时会失败，故 CI 必须跑在正常权限的 runner 上 |
 
 ### 8.2 开放问题（待用户/维护者决策）
 
@@ -276,5 +276,5 @@ Harness Engineering 四铁律 + Loop Engineering 九杠杆 + Audit Gate 审计�
 - 装配层：`docs/assembly.md`（`mos.New` 的不变式、默认值表、运行期变更）。
 - 平台集成契约：`docs/platform-contract.md`（职责边界 / 事件 JSON / 状态序列化 / 并发 / 人工审批）。
 - 上手与产品介绍：`docs/tutorial.html`（可复制可编译的教程）、`docs/index.html`（产品介绍）。
-- 发布说明：`docs/release-v0.1.0.md`（v0.1.0 = 首个公开版本；`main` 上的开发算 v0.2.0，发布时才打标签）。
+- 发布说明：`docs/release-v0.1.0.md`（v0.1.0 = 首个公开版本）与 `docs/release-v0.2.0.md`（v0.2.0 = Skills 重做 + MCP 接入；标签打在 `4a563df`，**不含**其后的 SubAgent 与挂起-恢复）。**发布约定**：标签处的 `mos.Version` 必须与标签同名，发布后再把 `main` 上的常量推到下一版（v0.2.0 发布后 `main` 为 `0.3.0`）。
 - 旧实现与旧文档（考古用，`main_bak1015` 分支）：`docs/architecture-v2.md`、`docs/sdk-contracts.md`、`docs/agent/`（18 篇）、`docs/assistant.md`、`docs/llm.md`、`FEATURES.md`、`examples/{cli,protocli,agentcli}`。
