@@ -1,5 +1,7 @@
 # MoS
 
+[![CI](https://github.com/puras/mos/actions/workflows/ci.yml/badge.svg)](https://github.com/puras/mos/actions/workflows/ci.yml)
+
 **MoS** 是基于 Go 的智能体基础框架（Agent Base SDK）：统一 LLM 接入、声明式工具系统、事件日志会话、可插拔循环驱动与安全纵深防御。用它构建智能体应用与智能体平台时，长程任务的可靠性问题（上下文腐化、工具误用、不可验证的"自我声明式完成"、无法断点恢复）由框架承接，业务代码只决定"要什么、允许什么"。
 
 ## 快速开始

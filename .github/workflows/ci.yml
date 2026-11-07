@@ -1,0 +1,66 @@
+# MoS CI：外部拉取能否构建，不再只靠人工验一次（PRD 风险 R6）。
+#
+# 为什么值得有：`go.mod` 里**没有 replace**——协议层已拆成独立 module
+# （github.com/puras/moproto v0.1.0，已发布），所以 CI 拉到的就是发布出去的
+# 那份依赖，验的就是外部用户 `go get github.com/puras/mos@v0.2.0` 的真实处境。
+#
+# 矩阵覆盖两个平台：Linux 顺带跑 Landlock 路径（内核级写强制），macOS 跑
+# Seatbelt。沙箱后端不可用时按设计 fail-closed 报错，测试会据此跳过而不是假装通过。
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 同一分支的新推送取消上一次未跑完的 CI（省算力，不改结果）。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: build + vet + test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # 版本以 go.mod 为准（不写死补丁号：go.mod 说 1.26.0 就用 1.26 系列）。
+          go-version-file: go.mod
+          # setup-go 自带模块缓存与构建缓存，这里显式关掉重复配置。
+          cache: true
+
+      - name: 构建
+        run: go build ./...
+
+      - name: vet
+        run: go vet ./...
+
+      - name: 测试
+        run: go test -timeout 15m ./...
+
+  race:
+    name: race (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # 竞态只在一个平台上跑：并发缺陷与平台无关，重复跑两份只是翻倍耗时。
+      - name: 竞态测试
+        run: go test -race -timeout 20m ./...
