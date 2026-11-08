@@ -282,3 +282,12 @@ turn/start → user → (assistant → tool/call* → tool/result*)* → assista
 - 文件树 / 终端 / git diff 等具体工作台能力（产品层自行实现，
   但**文件访问应复用 `filesystem.NewSandboxed` 声明的读写根**，别在产品层
   另写一套路径判断——那会绕过 jail）
+- **会话日志的加密 / 防篡改 / 留存策略**（FR-E10，2026-11-07 已决）：
+  日志是**权威状态**，谁写它、谁管它就是宿主的责任。MoS **不做**哈希链、
+  **不做**签名——防篡改的「锚」只能由宿主保管（存在日志之外），否则能改整个
+  文件的人会重算整条链；真要强保证，做在**存储层**（文件权限 / 加密卷 /
+  只追加）比做在事件字段里更有效。MoS 负责的是事件结构与**审计链完整**
+  （`approval/asked` 与 `approval/decided` 成对、审计写失败即中止执行）。
+- **审批超时**：框架**不实现 TTL**（`approval.Service.Decide` 只阻塞等应答方）——
+  超时是宿主 `Answerer` 自己的事。框架只做 fail-closed 兜底：ctx 取消 →
+  `cancelled`，通道坏 / 未装应答方 → `unavailable`，两者**一律拒绝执行**。
